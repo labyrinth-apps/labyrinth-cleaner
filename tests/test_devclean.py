@@ -1099,6 +1099,58 @@ class CliTests(unittest.TestCase):
         for k in kept:
             self.assertTrue(os.path.exists(k), k)
 
+    def test_cli_yes_never_deletes_new_categories(self):
+        cache = mkdir(f"{self.home}/Library/Caches/com.example.tool")
+        write(f"{cache}/blob", "x" * 100)
+        log = f"{self.home}/Library/Logs/old.log"
+        write(log, "x" * 100)
+        old = time.time() - 30 * 86400
+        os.utime(log, (old, old))
+        code, out = self.run_cli("--yes", "--select", "all")
+        self.assertEqual(code, 0, out)
+        self.assertTrue(os.path.exists(cache), out)
+        self.assertTrue(os.path.exists(log), out)
+        self.assertFalse(os.path.exists(f"{self.home}/Library/Developer/Xcode/DerivedData"))
+        self.assertFalse(os.path.exists(f"{self.home}/Documents/Projects/flutter_app/build"))
+
+    def test_cli_prints_warnings(self):
+        fx = os.path.join(self.tmp, "fx")
+        os.makedirs(fx)
+        sim = incident_sim()
+        for name, data in (("simctl_list.json", sim._list), ("runtime_list.json", sim._images)):
+            with open(os.path.join(fx, name), "w") as f:
+                json.dump(data, f)
+        code, out = self.run_cli("--dry-run", "--select", "all", "--simctl-fixture", fx)
+        self.assertEqual(code, 0, out)
+        self.assertIn("! Your iPhone 18 Pro simulator stops working", out)
+        self.assertNotIn("warning: Your iPhone", out)
+
+    def test_cli_trash_item_listed_not_as_rm_and_refused_without_helper(self):
+        arch = f"{self.home}/Library/Developer/Xcode/Archives/2026-11-01/App.xcarchive"
+        code, out = self.run_cli("--dry-run", "--select", "all")
+        self.assertEqual(code, 0, out)
+        self.assertIn("(moves to Trash)", out)
+        self.assertIn("Moved to Trash (needs the app):", out)
+        self.assertFalse([l for l in out.splitlines() if l.startswith("rm ") and "Archives" in l])
+        # Executing it: the CLI has no helper, so the core refuses.
+        import importlib.machinery, importlib.util, io, contextlib
+        loader = importlib.machinery.SourceFileLoader("devclean_cli_under_test", CLI)
+        spec = importlib.util.spec_from_loader(loader.name, loader)
+        mod = importlib.util.module_from_spec(spec)
+        loader.exec_module(mod)
+        buf = io.StringIO()
+        env = {k: v for k, v in os.environ.items() if k != core.TRASH_HELPER_ENV}
+        with mock.patch.dict(os.environ, env, clear=True), \
+                mock.patch.object(sys.stdin, "isatty", return_value=True), \
+                mock.patch("builtins.input", return_value="yes"), \
+                contextlib.redirect_stdout(buf), contextlib.redirect_stderr(io.StringIO()):
+            rc = mod.main(["--home", self.home, "--min-size", "0", "--projects",
+                           os.path.join(self.home, "Documents", "Projects"),
+                           "--select", "all"])
+        self.assertEqual(rc, 1, buf.getvalue())
+        self.assertIn("REFUSED: use the app to move these to the Trash", buf.getvalue())
+        self.assertTrue(os.path.exists(arch))
+
     def test_refuses_to_delete_without_tty_or_yes(self):
         before = self.snapshot()
         code, out = self.run_cli()

@@ -57,11 +57,12 @@ def print_table(res, numbered, selected):
         num = numbered.get(it.key)
         mark = ("[x]" if it.key in selected else "[ ]") if num else "   "
         label = trunc(f"{it.category}: {it.label}", 46)
+        note = f"{it.note} (moves to Trash)" if it.kind == "trash" else it.note
         line = (f"{num if num else '':>3}  {mark} {it.tier:8} {label:46} "
-                f"{human(it.size):>9}  {age(it.mtime):10}  {it.note}")
+                f"{human(it.size):>9}  {age(it.mtime):10}  {note}")
         print(c(line, TIER_COLOR.get(it.tier, "0")))
         if it.warning:
-            print(c(f"{'':8} warning: {it.warning}", "31"))
+            print(c(f"{'':8} ! {it.warning}", "31"))
 
 
 def summarize(res, selected_items):
@@ -235,16 +236,22 @@ def main(argv=None):
     total = sum(i.size or 0 for i in chosen)
     print(c(f"\n{'Would run' if args.dry_run else 'Will delete'} ({human(total)}):", "1"))
     for it in chosen:
-        print(f"  {human(it.size):>9}  [{it.tier}] {it.category}: {it.label}")
+        tag = " (moves to Trash)" if it.kind == "trash" else ""
+        print(f"  {human(it.size):>9}  [{it.tier}] {it.category}: {it.label}{tag}")
         if it.warning:
-            print(c(f"             warning: {it.warning}", "31"))
+            print(c(f"             ! {it.warning}", "31"))
     # Command lines carry nothing but the command: zsh has INTERACTIVE_COMMENTS
     # off by default, so a trailing "# note" would become extra rm arguments.
     # Trash items have no command: only the app can move them to the Trash.
     print("\nCommands:")
     for it in chosen:
-        if it.command:
+        if it.command and it.kind != "trash":
             print(it.command)
+    trashed = [i for i in chosen if i.kind == "trash"]
+    if trashed:
+        print("\nMoved to Trash (needs the app):")
+        for it in trashed:
+            print(f"  {it.category}: {it.label}")
 
     if args.dry_run:
         print_unselected(numbered_items, selected)
