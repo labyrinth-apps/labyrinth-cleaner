@@ -143,7 +143,7 @@ class Config:
 # ---------------------------------------------------------------- settings
 
 def settings_path(home: str) -> str:
-    return os.path.join(home, ".config", "devclean", "settings.json")
+    return os.path.join(home, "Library", "Application Support", "Labyrinth Cleaner", "settings.json")
 
 
 def load_settings(home: str) -> dict:

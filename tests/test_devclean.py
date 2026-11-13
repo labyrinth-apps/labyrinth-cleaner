@@ -737,6 +737,15 @@ class ProjectRootTests(unittest.TestCase):
         os.makedirs(d, exist_ok=True)
         self.assertEqual(core.add_project_folder(self.home, d), d)
 
+    def test_settings_path_and_content_pinned(self):
+        P = os.path.join(self.home, "Documents", "Projects")
+        core.add_project_folder(self.home, P)
+        path = os.path.join(self.home, "Library", "Application Support",
+                            "Labyrinth Cleaner", "settings.json")
+        self.assertEqual(core.settings_path(self.home), path)
+        with open(path) as f:
+            self.assertEqual(json.load(f), {"project_folders": [P]})
+
     def test_remove_project_folder(self):
         P = os.path.join(self.home, "Documents", "Projects")
         core.add_project_folder(self.home, P)

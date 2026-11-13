@@ -172,7 +172,8 @@ def main(argv=None):
     runner = core.fixture_runner if fixture else core.subprocess.run
 
     if not args.json:
-        print(f"Scanning {cfg.home} (projects: {", ".join(cfg.project_roots) or "none found"}) ...", file=sys.stderr)
+        roots = ", ".join(cfg.project_roots) or "none found"
+        print(f"Scanning {cfg.home} (projects: {roots}) ...", file=sys.stderr)
     res = core.scan(cfg, sim, xcode_check=(lambda: False) if args.home else core.xcode_running)
 
     if args.json:
