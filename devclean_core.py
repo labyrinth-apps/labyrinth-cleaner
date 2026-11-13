@@ -408,17 +408,32 @@ def _last_used(path: str) -> Optional[float]:
         return None
 
 
+def _general():
+    """devclean_general, imported on first use: it imports this module, so not at load."""
+    import devclean_general
+    return devclean_general
+
+
+def _real_running_apps() -> list:
+    return _general().running_apps()
+
+
 @dataclass
 class Env:
     """What the scan may ask the real Mac. Tests use `Env.fake()`."""
     dev_tools: Callable[[], bool] = lambda: False
     xcode_running: Callable[[], bool] = lambda: False
     last_used: Callable[[str], Optional[float]] = lambda path: None
+    # (bundle_id, name) of the running apps; raises when they can't be listed.
+    running_apps: Callable[[], list] = lambda: []
+    # A runner for docker commands (never the general runner); None = no docker.
+    docker: Optional[Callable] = None
 
     @classmethod
     def real(cls) -> "Env":
         return cls(dev_tools=_dev_tools_installed, xcode_running=xcode_running,
-                   last_used=_last_used)
+                   last_used=_last_used, running_apps=_real_running_apps,
+                   docker=subprocess.run if shutil.which("docker") else None)
 
     @classmethod
     def fake(cls, **overrides) -> "Env":
@@ -843,7 +858,8 @@ def scan_runtimes(cfg: Config, sim: SimctlProvider):
         n_types = len((r or {}).get("supportedDeviceTypes") or [])
         base = dict(key=f"runtime:{uuid}", category="Simulator", label=label,
                     size=img.get("sizeBytes"), mtime=iso_timestamp(img.get("lastUsedAt")),
-                    meta={"uuid": uuid, "runtime": rid, "types": n_types})
+                    meta={"uuid": uuid, "runtime": rid, "types": n_types,
+                          "version": img.get("version", "")})
         if r is None:
             items.append(Item(tier=PROTECTED, kind="info",
                               note="disk image not matched to a runtime, not offered", **base))
@@ -1066,6 +1082,17 @@ def cost_for(it: Item) -> tuple:
         return "~1 MIN", "Deletes its installed apps and data. Xcode can create a fresh one."
     if it.kind == "trash":
         return "TRASH", "Moved to the Trash. You can Put Back."
+    if it.key.startswith("appcache:"):
+        g = _general()
+        return ("SLOWER", g.BROWSER_CACHE_COST) if it.meta.get("browser") else ("NO COST", g.CACHE_COST)
+    if it.key.startswith("log:"):
+        return "NO COST", _general().LOG_COST
+    if it.kind == "empty-trash":
+        return "FINAL", _general().TRASH_COST
+    if it.key == "docker:builder":
+        return "~5 MIN", _general().DOCKER_BUILDER_COST
+    if it.key == "docker:images":
+        return f"{human(it.size)} DL", _general().DOCKER_IMAGES_COST
     return "?", it.note
 
 
@@ -1106,18 +1133,69 @@ def explain_for(it: Item, home: Optional[str] = None) -> tuple:
         restore = "Re-copied from the iPhone the next time you debug on it."
     elif it.category == "Android":
         restore = "Download it again in Android Studio › SDK Manager."
+    elif it.key.startswith("appcache:"):
+        restore = "The app rebuilds it as needed."
+    elif it.key.startswith("log:"):
+        restore = "Can't be restored. Only useful when debugging a crash."
+    elif it.kind == "empty-trash":
+        restore = "Can't be undone."
+    elif it.key == "docker:builder":
+        restore = "Rebuilt by the next image build."
+    elif it.key == "docker:images":
+        restore = "Downloaded again the next time a container needs them."
     else:
         restore = ""
     return deletes, restore
 
 
-def execution_order(items: list) -> list:
-    """Order to delete in: `simctl delete unavailable` first.
+def _devsupport_sort_key(name: str) -> tuple:
+    """The order scan_device_support uses to find the newest entry (oldest sorts first)."""
+    m = DEVICE_SUPPORT_RE.match(name)
+    if not m:
+        return ((), True)
+    return (version_key(m.group("ver")), _build_is_release(m.group("build")))
 
-    Deleting a runtime first would turn its simulators unavailable, and the
-    second command would then remove more simulators than were listed.
+
+def _refill(items: list, group_of: Callable, sort_key: Callable) -> list:
+    """Sort each group's members among the positions the group already occupies."""
+    groups = {}
+    for pos, it in enumerate(items):
+        g = group_of(it)
+        if g is not None:
+            groups.setdefault(g, []).append(pos)
+    out = list(items)
+    for positions in groups.values():
+        for pos, it in zip(positions, sorted((items[p] for p in positions), key=sort_key)):
+            out[pos] = it
+    return out
+
+
+def execution_order(items: list) -> list:
+    """Order to delete in, so a deliberate multi-item clean never trips the gate.
+
+    `empty-trash` first (it would otherwise empty what the Trash moves just put there),
+    then `simctl delete unavailable` (deleting a runtime first would make more simulators
+    unavailable than were listed). The rest keep their order, except that within a family
+    its members are reordered among the positions the family already occupies:
+    simulators before runtimes, runtimes by version ascending, Gradle versions ascending,
+    DeviceSupport entries oldest first per model.
     """
-    return sorted(items, key=lambda i: 0 if i.kind == "simctl-unavailable" else 1)
+    def head(i):
+        return 0 if i.kind == "empty-trash" else 1 if i.kind == "simctl-unavailable" else 2
+    ordered = sorted(items, key=head)
+    ordered = _refill(
+        ordered, lambda i: "sim" if i.kind in ("simdevice", "runtime") else None,
+        lambda i: (0, ()) if i.kind == "simdevice" else (1, version_key(i.meta.get("version", ""))))
+    ordered = _refill(ordered, lambda i: "gradle" if i.key.startswith("gradle:") else None,
+                      lambda i: version_key(i.key[len("gradle:"):]))
+
+    def model(i):
+        if not i.key.startswith("devsupport:"):
+            return None
+        m = DEVICE_SUPPORT_RE.match(i.key[len("devsupport:"):])
+        return (m.group("model") if m else None) or "(no model)"
+    return _refill(ordered, model,
+                   lambda i: _devsupport_sort_key(i.key[len("devsupport:"):]))
 
 
 def project_last_change(project_dir: str) -> Optional[float]:
@@ -1140,9 +1218,9 @@ def project_last_change(project_dir: str) -> Optional[float]:
 
 
 def fixture_runner(argv: list, **kw) -> subprocess.CompletedProcess:
-    """Runner for fixture mode: never touches the real simulators."""
-    if argv and argv[0] == "xcrun":
-        return subprocess.CompletedProcess(argv, 1, "", "fixture mode: xcrun disabled")
+    """Runner for fixture mode: never touches the real simulators, Trash or Docker."""
+    if argv and argv[0] in ("xcrun", "osascript", "docker"):
+        return subprocess.CompletedProcess(argv, 1, "", f"fixture mode: {argv[0]} disabled")
     return subprocess.run(argv, **kw)
 
 
@@ -1187,6 +1265,12 @@ def scan(cfg: Config, sim: Optional[SimctlProvider] = None,
     items += scan_archives(cfg)
     now = time.time() if now is None else now
     items += scan_downloads(cfg, env, now)
+    g = _general()
+    items += g.scan_app_caches(cfg, env, warnings)
+    items += g.scan_logs(cfg, now)
+    items += g.scan_trash(cfg)
+    items += g.scan_backups(cfg)
+    items += g.scan_docker(cfg, env)
     items += scan_info(cfg)
 
     if measure:
@@ -1282,6 +1366,14 @@ def validate_path(path: str, cfg: Config) -> str:
     # 4. iOS DeviceSupport entries
     if parent == os.path.realpath(cfg.device_support_dir):
         return real
+    # 4b. App caches: a direct child of ~/Library/Caches, not Apple's and not this app's own
+    if (parent == os.path.realpath(cfg.p("Library/Caches"))
+            and not base.lower().startswith("com.apple.") and base != _general().OWN_CACHE):
+        return real
+    # 4c. Logs: a direct child of ~/Library/Logs or its DiagnosticReports folder
+    logs = os.path.realpath(cfg.p("Library/Logs"))
+    if (parent == logs and base != "DiagnosticReports") or parent == os.path.join(logs, "DiagnosticReports"):
+        return real
     # 5. Android system image (api/tag/abi) not used by any AVD
     sysimg = os.path.realpath(cfg.system_images_dir)
     if is_within(real, sysimg) and real != sysimg:
@@ -1344,6 +1436,10 @@ RESCANNERS = {
     "android:": lambda key, cfg, sim, env, now: scan_android(cfg),
     "download:": _rescan_download,
     "archive:": lambda key, cfg, sim, env, now: scan_archives(cfg),
+    "appcache:": lambda key, cfg, sim, env, now: _general().scan_app_caches(cfg, env),
+    "log:": lambda key, cfg, sim, env, now: _general().scan_logs(cfg, now),
+    "empty-trash": lambda key, cfg, sim, env, now: _general().scan_trash(cfg),
+    "docker:": lambda key, cfg, sim, env, now: _general().scan_docker(cfg, env),
     "flutter:": _rescan_projects,
     "web:": _rescan_projects,
     "derived-data": _rescan_fixed,
@@ -1449,6 +1545,14 @@ def validate_item(it: Item, cfg: Config, sim: Optional[SimctlProvider] = None,
     if it.kind == "trash":
         validate_trash(it, cfg, env, now)
         return
+    if it.kind == "empty-trash":
+        if it.key != "empty-trash" or it.argv != _general().TRASH_ARGV:
+            raise UnsafeTarget("unexpected empty-Trash command")
+        return
+    if it.kind == "docker":
+        if it.argv is None or it.argv != _general().DOCKER_ARGV.get(it.key):
+            raise UnsafeTarget("unexpected docker command")
+        return
     raise UnsafeTarget(f"unknown item kind {it.kind}")
 
 
@@ -1457,6 +1561,7 @@ def execute_item(it: Item, cfg: Config, sim: Optional[SimctlProvider] = None,
                  now: Optional[float] = None):
     """Delete one item after re-validating it. Returns (ok, message).
 
+    Items of kind "docker" run through env.docker, never `runner`.
     Items of kind "trash" are never rm'd: they go through the trash helper named by
     LABYRINTH_TRASH_HELPER, and are refused when there is none.
     """
@@ -1464,6 +1569,9 @@ def execute_item(it: Item, cfg: Config, sim: Optional[SimctlProvider] = None,
         helper = os.environ.get(TRASH_HELPER_ENV)
         if not helper or not os.path.isfile(helper) or not os.access(helper, os.X_OK):
             return False, TRASH_REFUSAL
+    env = env if env is not None else default_env(cfg)
+    if it.kind == "docker" and env.docker is None:
+        return False, "REFUSED: docker is not available"
     try:
         validate_item(it, cfg, sim, env, now)
     except UnsafeTarget as e:
@@ -1472,7 +1580,14 @@ def execute_item(it: Item, cfg: Config, sim: Optional[SimctlProvider] = None,
         argv = [helper, it.path]
     else:
         argv = ["rm", "-rf", "--", it.path] if it.kind == "path" else it.argv
-    r = runner(argv, capture_output=True, text=True)
+    if it.kind == "docker":
+        # Docker only ever runs through env.docker, never the general runner.
+        try:
+            r = env.docker(argv, capture_output=True, text=True, timeout=900)
+        except (OSError, subprocess.SubprocessError) as e:
+            return False, str(e) or "docker failed"
+    else:
+        r = runner(argv, capture_output=True, text=True)
     if r.returncode != 0:
         return False, (r.stderr or "").strip() or f"exit {r.returncode}"
     return True, "ok"
