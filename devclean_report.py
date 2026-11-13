@@ -193,9 +193,12 @@ def scan_payload(res: core.ScanResult, cfg: core.Config, scan_id: str, duration_
         "home": cfg.home,
         "disk": {"total": res.total_bytes, "free": res.free_bytes,
                  "used": res.total_bytes - res.free_bytes},
+        # Trash moves (review tier) free nothing until the Trash is emptied, so the
+        # headline leaves them out; "with no cost" counts only NO COST safe items.
         "headline": {
-            "reclaimable": res.reclaimable(),
-            "no_cost": sum(i.size or 0 for i in res.offerable if i.tier == core.SAFE),
+            "reclaimable": sum(i.size or 0 for i in res.offerable if i.tier != core.REVIEW),
+            "no_cost": sum(i.size or 0 for i in res.offerable
+                           if i.tier == core.SAFE and i.cost_tag == "NO COST"),
         },
         "segments": disk_map(res, extras),
         "rows": build_rows(res.items, cfg.home),

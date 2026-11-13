@@ -151,9 +151,17 @@ class ReportTests(unittest.TestCase):
         p = rep.scan_payload(self.res, cfg_for(self.home), "id1", 1.5, ZERO)
         self.assertEqual(p["scan_id"], "id1")
         self.assertEqual(p["duration_s"], 1.5)
-        self.assertEqual(p["headline"]["reclaimable"], self.res.reclaimable())
-        self.assertEqual(p["headline"]["no_cost"],
-                         sum(i.size or 0 for i in self.res.offerable if i.tier == core.SAFE))
+        # Trash moves free nothing until the Trash is emptied; "no cost" means NO COST.
+        review = [i for i in self.res.offerable if i.tier == core.REVIEW]
+        self.assertTrue(review and all(i.size for i in review))
+        self.assertEqual(p["headline"]["reclaimable"],
+                         sum(i.size or 0 for i in self.res.offerable if i.tier != core.REVIEW))
+        self.assertLess(p["headline"]["reclaimable"], self.res.reclaimable())
+        no_cost = [i for i in self.res.offerable if i.tier == core.SAFE and i.cost_tag == "NO COST"]
+        self.assertTrue(no_cost)
+        self.assertTrue([i for i in self.res.offerable if i.tier == core.SAFE and i.cost_tag != "NO COST"
+                         and i.size])
+        self.assertEqual(p["headline"]["no_cost"], sum(i.size or 0 for i in no_cost))
         self.assertEqual(p["disk"]["used"], self.res.total_bytes - self.res.free_bytes)
         self.assertEqual(p["small_bytes"], 20 * 1024 * 1024)
         self.assertEqual(p["home"], self.home)
