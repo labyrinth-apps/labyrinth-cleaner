@@ -18,6 +18,26 @@ OWN_CACHE = "com.labyrinth-apps.cleaner"
 LOG_MIN_AGE_DAYS = 7
 DOCKER_TIMEOUT = 3
 RUNNING_APPS_WARNING = "couldn't list running apps; app caches are not offered"
+UNKNOWN_CACHE_WARNING = "macOS or a background tool may use this cache."
+
+# Caches of macOS daemons and frameworks that aren't named com.apple.*: never shown.
+# Compared casefolded.
+SYSTEM_CACHE_NAMES = frozenset(n.casefold() for n in (
+    "CloudKit", "PassKit", "GeoServices", "FamilyCircle", "familycircled", "askpermissiond",
+    "SiriTTS", "softwareupdate", "TemporaryItems", "ssu", "mbuseragent", "AMSDataMigratorTool",
+    "Animoji", "GameKit", "EnergyKit",
+))
+
+# A folder named like a bundle ID (com.spotify.client) names its app. Three or more
+# dot-separated labels, the first a common top-level domain, so `main.kts.compiled.cache`
+# is not one; two-label names (io.sentry) aren't either, and land in "Check first".
+REVERSE_DNS_RE = re.compile(r"^[a-z0-9-]+(?:\.[a-z0-9_-]+){2,}$", re.IGNORECASE)
+BUNDLE_TLDS = frozenset((
+    "com", "org", "net", "io", "dev", "app", "co", "us", "uk", "de", "fr", "nl", "se", "ch",
+    "at", "be", "ca", "au", "jp", "cn", "kr", "in", "it", "es", "pl", "cz", "ru", "br", "eu",
+    "me", "tv", "ai", "sh", "so", "cc", "is", "ly", "gg", "to", "xyz", "tech", "company",
+    "edu", "gov", "info", "biz",
+))
 
 CACHE_COST = "The app rebuilds it as needed."
 BROWSER_CACHE_COST = "Pages and images load a bit slower the first time. You stay logged in."
@@ -109,9 +129,25 @@ def _owner(name: str, apps: list):
     return None
 
 
+def is_system_cache(name: str) -> bool:
+    """A cache folder macOS itself owns: com.apple.* or a known daemon name."""
+    n = name.casefold()
+    return n.startswith("com.apple.") or n in SYSTEM_CACHE_NAMES
+
+
+def owner_identified(name: str) -> bool:
+    """True when the folder name says which app it belongs to: a bundle ID, or a
+    browser/publisher name we know."""
+    n = name.lower()
+    if n in BROWSER_NAMES or n in PUBLISHER_ALIASES:
+        return True
+    return bool(REVERSE_DNS_RE.match(n)) and n.split(".", 1)[0] in BUNDLE_TLDS
+
+
 def scan_app_caches(cfg: core.Config, env: core.Env, warnings: Optional[list] = None) -> list:
-    """One item per top-level folder of ~/Library/Caches. Fails closed (offers nothing, adds
-    a warning) when the running apps can't be listed."""
+    """One item per top-level folder of ~/Library/Caches, except macOS's own. Safe when the
+    folder names its app, "Check first" with a warning when it doesn't. Fails closed (offers
+    nothing, adds a warning) when the running apps can't be listed."""
     root = cfg.p("Library/Caches")
     if not os.path.isdir(root) or os.path.islink(root):
         return []
@@ -129,7 +165,7 @@ def scan_app_caches(cfg: core.Config, env: core.Env, warnings: Optional[list] = 
     items = []
     for name in names:
         path = os.path.join(root, name)
-        if (name.lower().startswith("com.apple.") or name.casefold() == OWN_CACHE.casefold()
+        if (is_system_cache(name) or name.casefold() == OWN_CACHE.casefold()
                 or os.path.realpath(path) in fixed or os.path.islink(path)
                 or not os.path.isdir(path)):
             continue
@@ -140,8 +176,12 @@ def scan_app_caches(cfg: core.Config, env: core.Env, warnings: Optional[list] = 
         if owner:
             items.append(Item(label=owner[1], tier=PROTECTED, kind="info",
                               note=f"Quit {owner[1]} first", **base))
-        else:
+        elif owner_identified(name):
             items.append(Item(label=name, tier=SAFE, kind="path", **base))
+        else:
+            # Nobody we can name owns it: offered, never as no-cost, with a warning.
+            items.append(Item(label=name, tier=CAUTION, kind="path",
+                              warning=UNKNOWN_CACHE_WARNING, **base))
     return items
 
 

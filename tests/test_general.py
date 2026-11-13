@@ -400,6 +400,49 @@ class AppCacheTests(GeneralBase):
                 core.validate_path(path, self.cfg)
         core.validate_path(os.path.join(self.caches, "Google"), self.cfg)
 
+    # ---- I3: macOS daemon caches
+
+    SYSTEM = ("CloudKit", "PassKit", "GeoServices", "FamilyCircle", "familycircled",
+              "askpermissiond", "SiriTTS", "softwareupdate", "TemporaryItems", "ssu",
+              "mbuseragent", "AMSDataMigratorTool", "Animoji", "GameKit", "EnergyKit")
+
+    def test_macos_system_caches_never_shown(self):
+        for n in self.SYSTEM:
+            write(os.path.join(self.caches, n, "f.bin"))
+        res = self.scan()
+        shown = {i.label for i in res.items if i.key.startswith("appcache:")}
+        self.assertFalse(shown & set(self.SYSTEM), shown)
+        self.assertFalse([i for i in res.items if i.path and os.path.basename(i.path) in self.SYSTEM])
+        for n in self.SYSTEM:
+            with self.assertRaises(core.UnsafeTarget, msg=n):
+                core.validate_path(os.path.join(self.caches, n), self.cfg)
+
+    def test_system_cache_names_are_case_insensitive(self):
+        write(os.path.join(self.caches, "cloudkit", "f.bin"))
+        write(os.path.join(self.caches, "SIRITTS", "f.bin"))
+        keys = set(self.by_key(self.scan()))
+        self.assertNotIn("appcache:cloudkit", keys)
+        self.assertNotIn("appcache:SIRITTS", keys)
+        with self.assertRaises(core.UnsafeTarget):
+            core.validate_path(os.path.join(self.caches, "cloudkit"), self.cfg)
+
+    def test_unidentified_cache_is_check_first_with_warning(self):
+        for n in ("segment", "io.sentry", "main.kts.compiled.cache", "Arc", "BraveSoftware",
+                  "org.swift.swiftpm", "company.thebrowser.dia"):
+            write(os.path.join(self.caches, n, "f.bin"))
+        d = self.by_key(self.scan())
+        for n in ("segment", "io.sentry", "main.kts.compiled.cache"):
+            it = d["appcache:" + n]
+            self.assertEqual((it.tier, it.preselect, it.kind, it.warning),
+                             (core.CAUTION, False, "path", general.UNKNOWN_CACHE_WARNING), n)
+            self.assertEqual(general.UNKNOWN_CACHE_WARNING,
+                             "macOS or a background tool may use this cache.")
+            core.validate_item(it, self.cfg, core.NoSimctl(), self.env(), now=self.now)
+        for n in ("Google", "com.spotify.client", "Arc", "BraveSoftware", "org.swift.swiftpm",
+                  "company.thebrowser.dia"):
+            it = d["appcache:" + n]
+            self.assertEqual((it.tier, it.warning), (core.SAFE, ""), n)
+
     def test_parse_lsappinfo(self):
         text = ('10) "Finder" ASN:0x0-0x1001:\n    bundleID="com.apple.finder"\n    pid = 1\n'
                 ' 11) "Google Chrome" ASN:0x0-0x2:\n    bundleID="com.google.Chrome"\n'

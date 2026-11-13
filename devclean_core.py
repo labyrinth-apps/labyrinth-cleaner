@@ -1455,9 +1455,9 @@ def validate_path(path: str, cfg: Config) -> str:
     # 4. iOS DeviceSupport entries
     if parent == os.path.realpath(cfg.device_support_dir):
         return real
-    # 4b. App caches: a direct child of ~/Library/Caches, not Apple's and not this app's own
+    # 4b. App caches: a direct child of ~/Library/Caches, not macOS's and not this app's own
     if (parent == os.path.realpath(cfg.p("Library/Caches"))
-            and not base.lower().startswith("com.apple.")
+            and not _general().is_system_cache(base)
             and base.casefold() != _general().OWN_CACHE.casefold()):
         return real
     # 4c. Logs: a direct child of ~/Library/Logs or its DiagnosticReports folder
