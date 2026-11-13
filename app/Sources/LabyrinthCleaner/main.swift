@@ -1,7 +1,6 @@
 import AppKit
 
-// Labyrinth Cleaner: a menu-bar app. The window arrives in a later task; for now
-// "Open Labyrinth Cleaner" starts the app-owned server and logs its port.
+// Labyrinth Cleaner: a menu-bar app that shows its window on launch (not on login launch).
 
 let app = NSApplication.shared
 let delegate = AppDelegate()

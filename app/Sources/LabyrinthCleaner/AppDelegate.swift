@@ -6,6 +6,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let notifier = Notifier()
     private var server: ServerProcess?
     private var fixture: FixtureOptions?
+    private var window: MainWindowController?
+    private var launchedAsLoginItem = false
+
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        launchedAsLoginItem = isLoginLaunch(NSAppleEventManager.shared().currentAppleEvent)
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        openWindow()
+        return true
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         #if DEBUG
@@ -17,7 +28,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusMenu.onQuit = { NSApp.terminate(nil) }
         statusMenu.onReading = { [weak self] free, text in self?.notifier.check(freeBytes: free, freeText: text) }
         statusMenu.install()
+        installMainMenu()
         if fixture == nil { warnAboutLegacyBarOnce() }   // fixture runs must not touch real defaults
+        if !launchedAsLoginItem { openWindow() }
     }
 
     private func warnAboutLegacyBarOnce() {
@@ -39,17 +52,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let helper = Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/labyrinth-trash").path
         let env = serverEnvironment(base: ProcessInfo.processInfo.environment, home: home, helperPath: helper)
         let s = ServerProcess(launch: serverLaunch(resources: resources, fixture: fixture), environment: env)
-        s.onUnexpectedExit = { [weak self] failure in self?.show(failure, title: "Labyrinth Cleaner's server stopped") }
+        s.onUnexpectedExit = { [weak self] failure in
+            guard let self else { return }
+            let wasVisible = self.window?.isVisible ?? false
+            self.window?.forgetLoadedServer()
+            if wasVisible { self.show(failure, title: "Labyrinth Cleaner's scanner stopped") }
+        }
         server = s
         return s
     }
 
-    /// Task 5 puts the window here; for now it starts the server and logs the port.
+    /// Starts the server if needed, loads its page once per server, and shows the window.
     func openWindow() {
         makeServer().start { [weak self] result in
+            guard let self else { return }
             switch result {
-            case .success(let h): NSLog("Labyrinth Cleaner server on port \(h.port)")
-            case .failure(let f): self?.show(f, title: "Labyrinth Cleaner couldn't start")
+            case .success(let h):
+                let w = self.window ?? MainWindowController()
+                self.window = w
+                w.show(handshake: h)
+            case .failure(let f): self.show(f, title: "Labyrinth Cleaner couldn't start its scanner")
             }
         }
     }
