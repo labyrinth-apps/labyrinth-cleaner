@@ -51,7 +51,7 @@ def url_file(cfg: core.Config) -> str:
 
 
 class UIServer:
-    def __init__(self, cfg: core.Config, sim: core.SimctlProvider, *, fixture: bool,
+    def __init__(self, cfg: core.Config, sim: "core.SimctlProvider | None", *, fixture: bool,
                  xcode_check=core.xcode_running, runner=None, idle_timeout: float = 3600,
                  port: int = 0, measure=core.du_bytes, options: dict = None,
                  fixed_roots: bool = False, docker=None):
@@ -447,12 +447,8 @@ def main(argv=None) -> int:
 
     cfg = core.Config(home=args.home or os.path.expanduser("~"), project_roots=tuple(
         os.path.abspath(os.path.expanduser(d)) for d in args.projects) if args.projects else None)
-    if args.simctl_fixture:
-        sim = core.FixtureSimctl.from_dir(args.simctl_fixture)
-    elif args.no_simulators or args.home:
-        sim = core.NoSimctl()
-    else:
-        sim = core.SimctlProvider()
+    # None for the real home: xcrun runs only when the developer tools are installed.
+    sim = core.pick_simctl(args.simctl_fixture, args.no_simulators, bool(args.home))
     fixture = bool(args.home or args.simctl_fixture)
     options = {
         "home": cfg.home,

@@ -1382,6 +1382,27 @@ class ProjectRootTests(unittest.TestCase):
                       env=core.Env.fake(dev_tools=lambda: True))
             self.assertTrue(calls)
 
+    def test_entry_points_let_dev_tools_decide_on_real_home(self):
+        """I2: no explicit SimctlProvider for the real home, so a Mac without developer
+        tools never runs xcrun (which would pop the install dialog)."""
+        self.assertIsNone(core.pick_simctl(None, no_simulators=False, fake_home=False))
+        self.assertIsInstance(core.pick_simctl(None, no_simulators=True, fake_home=False), core.NoSimctl)
+        self.assertIsInstance(core.pick_simctl(None, no_simulators=False, fake_home=True), core.NoSimctl)
+        self.assertIsInstance(core.pick_simctl(REAL_FIXTURE, no_simulators=False, fake_home=True),
+                              core.FixtureSimctl)
+        real = core.Config(home=os.path.expanduser("~"), project_roots=())
+        with mock.patch.object(core.SimctlProvider, "_json", side_effect=AssertionError("real xcrun")):
+            sim, _ = core.resolve_providers(real, core.pick_simctl(None, False, False),
+                                            core.Env.fake(dev_tools=lambda: False))
+        self.assertIsInstance(sim, core.NoSimctl)
+        sim, _ = core.resolve_providers(real, None, core.Env.fake(dev_tools=lambda: True))
+        self.assertIs(type(sim), core.SimctlProvider)
+        for path in (CLI, os.path.join(ROOT, "devclean_ui.py")):
+            with open(path) as f:
+                src = f.read()
+            self.assertIn("core.pick_simctl(", src, path)
+            self.assertNotIn("core.SimctlProvider()", src, path)
+
     def test_cli_projects_flag_repeatable(self):
         mkdir(os.path.join(self.home, "Developer", "app", "node_modules"))
         write(os.path.join(self.home, "Developer", "app", "package.json"), "{}")

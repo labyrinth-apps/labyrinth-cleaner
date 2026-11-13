@@ -528,6 +528,18 @@ def resolve_providers(cfg: Config, sim: Optional["SimctlProvider"], env: Optiona
     return sim, env
 
 
+def pick_simctl(simctl_fixture: Optional[str], no_simulators: bool,
+                fake_home: bool) -> Optional[SimctlProvider]:
+    """The simulator provider an entry point (CLI, page) passes on. None for the real
+    home: resolve_providers then runs xcrun only when the developer tools are installed
+    (otherwise xcrun pops the "install developer tools" dialog)."""
+    if simctl_fixture:
+        return FixtureSimctl.from_dir(simctl_fixture)
+    if no_simulators or fake_home:
+        return NoSimctl()   # never mix real xcrun data into a fake $HOME
+    return None
+
+
 # ---------------------------------------------------------------- projects
 
 def find_projects(root: str, warnings: Optional[list] = None):
