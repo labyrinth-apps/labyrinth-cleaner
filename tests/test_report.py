@@ -294,8 +294,22 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(p["project_folders"], [os.path.join(self.home, "Developer"), extra])
         self.assertEqual(p["auto_project_folders"], [os.path.join(self.home, "Developer")])
         self.assertIs(p["trash_helper"], False)
-        with mock.patch.dict(os.environ, {core.TRASH_HELPER_ENV: "/x/helper"}):
-            self.assertIs(rep.scan_payload(self.res, cfg, "id1", 1.0, ZERO)["trash_helper"], True)
+        helper = os.path.join(self.tmp, "helper")
+        with open(helper, "w") as f:
+            f.write("#!/bin/sh\n")
+        plain = os.path.join(self.tmp, "plain")
+        with open(plain, "w") as f:
+            f.write("#!/bin/sh\n")
+        os.chmod(helper, 0o755)
+        cwd = os.getcwd()
+        os.chdir(self.tmp)
+        self.addCleanup(os.chdir, cwd)
+        # Set is not enough: it must be an absolute path to an executable file.
+        for value, ok in (("/x/helper", False), ("helper", False), (plain, False),
+                          (self.tmp, False), ("", False), (helper, True)):
+            with mock.patch.dict(os.environ, {core.TRASH_HELPER_ENV: value}):
+                self.assertIs(rep.scan_payload(self.res, cfg, "id1", 1.0, ZERO)["trash_helper"], ok, value)
+                self.assertEqual(core.trash_helper(), helper if ok else None, value)
 
     def test_measure_extras(self):
         ex = rep.measure_extras(cfg_for(self.home))

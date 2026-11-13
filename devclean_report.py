@@ -204,5 +204,5 @@ def scan_payload(res: core.ScanResult, cfg: core.Config, scan_id: str, duration_
         "small_bytes": SMALL_BYTES,
         "project_folders": list(cfg.project_roots),
         "auto_project_folders": auto_project_folders(cfg),
-        "trash_helper": bool(os.environ.get(core.TRASH_HELPER_ENV)),
+        "trash_helper": core.trash_helper() is not None,
     }

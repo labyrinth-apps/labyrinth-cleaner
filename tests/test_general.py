@@ -129,6 +129,18 @@ class DownloadsTests(DownloadsBase):
                                     env=self.env(), now=self.now)
         self.assertEqual(res, (False, REFUSAL))
 
+    def test_trash_with_relative_helper_refused(self):
+        it = self.downloads()["download:Setup.dmg"]
+        helper, trash = self.make_helper()
+        cwd = os.getcwd()
+        os.chdir(os.path.dirname(helper))
+        self.addCleanup(os.chdir, cwd)
+        with mock.patch.dict(os.environ, {core.TRASH_HELPER_ENV: os.path.basename(helper)}):
+            res = core.execute_item(it, self.cfg, core.NoSimctl(), runner=core.fixture_runner,
+                                    env=self.env(), now=self.now)
+        self.assertEqual(res, (False, REFUSAL))
+        self.assertTrue(os.path.isfile(it.path))
+
     def test_trash_with_helper_moves_file(self):
         it = self.downloads()["download:Setup.dmg"]
         helper, trash = self.make_helper()

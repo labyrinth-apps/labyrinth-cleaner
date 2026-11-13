@@ -1661,6 +1661,16 @@ def validate_item(it: Item, cfg: Config, sim: Optional[SimctlProvider] = None,
     raise UnsafeTarget(f"unknown item kind {it.kind}")
 
 
+def trash_helper() -> Optional[str]:
+    """The helper named by LABYRINTH_TRASH_HELPER when it is an absolute path to an
+    executable file, else None (then nothing can be moved to the Trash)."""
+    helper = os.environ.get(TRASH_HELPER_ENV)
+    if (not helper or not os.path.isabs(helper) or not os.path.isfile(helper)
+            or not os.access(helper, os.X_OK)):
+        return None
+    return helper
+
+
 def execute_item(it: Item, cfg: Config, sim: Optional[SimctlProvider] = None,
                  runner: Callable = subprocess.run, env: Optional[Env] = None,
                  now: Optional[float] = None):
@@ -1671,8 +1681,8 @@ def execute_item(it: Item, cfg: Config, sim: Optional[SimctlProvider] = None,
     LABYRINTH_TRASH_HELPER, and are refused when there is none.
     """
     if it.kind == "trash":
-        helper = os.environ.get(TRASH_HELPER_ENV)
-        if not helper or not os.path.isfile(helper) or not os.access(helper, os.X_OK):
+        helper = trash_helper()
+        if helper is None:
             return False, TRASH_REFUSAL
     env = env if env is not None else default_env(cfg)
     if runner is fixture_runner and it.kind in ("docker", "empty-trash"):
