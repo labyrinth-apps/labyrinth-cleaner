@@ -11,26 +11,44 @@ public func realpathString(_ path: String) -> String? {
     return String(cString: r)
 }
 
-private func lstatMode(_ path: String) -> mode_t? {
+private let slash = UInt8(ascii: "/")
+
+private func cstr(_ bytes: [UInt8]) -> [CChar] { bytes.map { CChar(bitPattern: $0) } + [0] }
+
+private func lstatMode(_ bytes: [UInt8]) -> mode_t? {
     var st = stat()
-    guard lstat(path, &st) == 0 else { return nil }
+    guard lstat(cstr(bytes), &st) == 0 else { return nil }
     return st.st_mode & S_IFMT
 }
 
-private func cleanComponents(_ path: String) -> [String]? {
-    guard path.hasPrefix("/") else { return nil }
-    let parts = path.split(separator: "/", omittingEmptySubsequences: false).dropFirst().map(String.init)
-    if parts.isEmpty || parts.contains(where: { $0.isEmpty || $0 == "." || $0 == ".." }) { return nil }
+private func realpathBytes(_ bytes: [UInt8]) -> [UInt8]? {
+    guard let r = realpath(cstr(bytes), nil) else { return nil }
+    defer { free(r) }
+    return Array(UnsafeBufferPointer(start: UnsafeRawPointer(r).assumingMemoryBound(to: UInt8.self),
+                                     count: strlen(r)))
+}
+
+/// Components of an absolute path, split on raw bytes (never on grapheme clusters).
+/// nil if not absolute, or any component is empty, "." or ".." or the path holds a NUL.
+private func cleanComponents(_ bytes: [UInt8]) -> [[UInt8]]? {
+    guard bytes.first == slash, !bytes.contains(0) else { return nil }
+    let parts = bytes.dropFirst().split(separator: slash, omittingEmptySubsequences: false).map { Array($0) }
+    let dot: [UInt8] = [0x2E], dotdot: [UInt8] = [0x2E, 0x2E]
+    if parts.contains(where: { $0.isEmpty || $0 == dot || $0 == dotdot }) { return nil }
     return parts
 }
 
+private func b(_ s: String) -> [UInt8] { Array(s.utf8) }
+
 /// Mirrors devclean_core's REVIEW rules. lstat (no-follow) on every component below `home`.
+/// Every comparison and every syscall uses the raw bytes of `path`.
 public func checkTrashable(path: String, home: String) -> Result<TrashTarget, TrashRefusal> {
     func refuse(_ why: String) -> Result<TrashTarget, TrashRefusal> {
         .failure(TrashRefusal(message: why))
     }
-    guard let homeParts = cleanComponents(home) else { return refuse("not a clean absolute home: \(home)") }
-    guard let pathParts = cleanComponents(path) else { return refuse("not a clean absolute path: \(path)") }
+    let pathBytes = b(path)
+    guard let homeParts = cleanComponents(b(home)) else { return refuse("not a clean absolute home: \(home)") }
+    guard let pathParts = cleanComponents(pathBytes) else { return refuse("not a clean absolute path: \(path)") }
     guard pathParts.count > homeParts.count, Array(pathParts.prefix(homeParts.count)) == homeParts else {
         return refuse("not inside the home folder: \(path)")
     }
@@ -38,27 +56,33 @@ public func checkTrashable(path: String, home: String) -> Result<TrashTarget, Tr
 
     let target: TrashTarget
     let wantMode: mode_t
-    if rel[0] == "Downloads" && (rel.count == 2 || rel.count == 3) {
+    if rel[0] == b("Downloads") && (rel.count == 2 || rel.count == 3) {
         target = .downloadsFile
         wantMode = S_IFREG
-    } else if rel.count == 6, Array(rel.prefix(4)) == ["Library", "Developer", "Xcode", "Archives"],
-              rel[5].hasSuffix(".xcarchive") {
+    } else if rel.count == 6, Array(rel.prefix(4)) == ["Library", "Developer", "Xcode", "Archives"].map(b),
+              rel[5].count > 0, rel[5].suffix(10) == b(".xcarchive")[...] {
         target = .archive
         wantMode = S_IFDIR
     } else {
         return refuse("not a Downloads file or an Xcode archive: \(path)")
     }
 
-    var cur = home
+    // Walk the path's own bytes: the string checked is the string acted on.
+    var cur = Array(pathBytes.prefix(1 + homeParts.reduce(0) { $0 + $1.count + 1 } - 1))
     for (i, comp) in rel.enumerated() {
-        cur += "/" + comp
-        guard let mode = lstatMode(cur) else { return refuse("\(cur) is gone") }
-        if mode == S_IFLNK { return refuse("is a symlink: \(cur)") }
+        cur += [slash] + comp
+        let shown = String(decoding: cur, as: UTF8.self)
+        guard let mode = lstatMode(cur) else { return refuse("\(shown) is gone") }
+        if mode == S_IFLNK { return refuse("is a symlink: \(shown)") }
         if i < rel.count - 1 {
-            if mode != S_IFDIR { return refuse("not a folder: \(cur)") }
+            if mode != S_IFDIR { return refuse("not a folder: \(shown)") }
         } else if mode != wantMode {
-            return refuse(target == .downloadsFile ? "not a regular file: \(cur)" : "not an .xcarchive folder: \(cur)")
+            return refuse(target == .downloadsFile ? "not a regular file: \(shown)" : "not an .xcarchive folder: \(shown)")
         }
+    }
+    // Mirrors the core's `realpath(path) != path` refusal.
+    guard let real = realpathBytes(pathBytes), real == pathBytes else {
+        return refuse("resolves elsewhere: \(path)")
     }
     return .success(target)
 }
@@ -90,7 +114,7 @@ public func runTrashHelper(arguments: [String], realHome: String,
 
 private func moveIntoFixtureTrash(path: String, home: String) -> (code: Int32, message: String) {
     let trashDir = home + "/.Trash"
-    switch lstatMode(trashDir) {
+    switch lstatMode(b(trashDir)) {
     case nil:
         if mkdir(trashDir, 0o700) != 0 && errno != EEXIST {
             return (4, "cannot create \(trashDir): \(String(cString: strerror(errno)))")
@@ -98,7 +122,7 @@ private func moveIntoFixtureTrash(path: String, home: String) -> (code: Int32, m
         fallthrough
     case S_IFDIR?:
         // Re-check after creation: a racing symlink must not be followed.
-        if lstatMode(trashDir) != S_IFDIR { return (3, "REFUSED: \(trashDir) is not a plain folder") }
+        if lstatMode(b(trashDir)) != S_IFDIR { return (3, "REFUSED: \(trashDir) is not a plain folder") }
     default:
         return (3, "REFUSED: \(trashDir) is a symlink or not a folder")
     }

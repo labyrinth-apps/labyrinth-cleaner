@@ -257,4 +257,43 @@ final class TrashCheckTests: XCTestCase {
         XCTAssertTrue(fm.fileExists(atPath: f))
         XCTAssertFalse(fm.fileExists(atPath: p("elsewhere/x.dmg")))
     }
+
+    // MARK: byte-wise comparison (grapheme-cluster regressions)
+
+    func testPrependMarkBeforeSlashDotDotRefused() throws {
+        try mkdir("outside")
+        let out = try mkfile("outside/x")
+        try mkdir("Downloads")
+        try fm.createSymbolicLink(atPath: p("Downloads/a\u{0600}"), withDestinationPath: p("outside"))
+        let r = run(home + "/Downloads/a\u{0600}/../x")
+        assertRefused(r)
+        XCTAssertTrue(fm.fileExists(atPath: out))
+        XCTAssertFalse(fm.fileExists(atPath: p(".Trash/x")))
+    }
+
+    func testCombiningMarkAfterSlashSymlinkDeepRefused() throws {
+        try mkdir("outside/\u{0301}deep")
+        let out = try mkfile("outside/\u{0301}deep/y")
+        try mkdir("Downloads")
+        try fm.createSymbolicLink(atPath: p("Downloads/b"), withDestinationPath: p("outside"))
+        let r = run(home + "/Downloads/b/\u{0301}deep/y")
+        assertRefused(r)
+        XCTAssertTrue(fm.fileExists(atPath: out))
+        XCTAssertFalse(fm.fileExists(atPath: p(".Trash/y")))
+    }
+
+    func testHomeDifferingByNormalizationRefused() throws {
+        let nfc = "caf\u{00E9}", nfd = "cafe\u{0301}"
+        let base = home
+        try mkdir("\(nfc)/Downloads")
+        try mkfile("\(nfc)/Downloads/x.dmg")
+        let path = base + "/" + nfc + "/Downloads/x.dmg"
+        let homeNFD = base + "/" + nfd
+        XCTAssertEqual(Array(path.utf8).count, Array((homeNFD + "/Downloads/x.dmg").utf8).count - 1)
+        switch checkTrashable(path: path, home: homeNFD) {
+        case .success: XCTFail("home with different bytes must not match")
+        case .failure(let r): XCTAssertTrue(r.message.contains("inside"), r.message)
+        }
+        XCTAssertTrue(fm.fileExists(atPath: path))
+    }
 }
