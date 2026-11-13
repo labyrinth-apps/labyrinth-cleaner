@@ -22,7 +22,7 @@ devclean --min-size 0     # also list items under 20 MB (hidden by default)
 devclean --json           # scan result as JSON (for scripts / a future menu-bar app)
 ```
 
-In the interactive picker, type numbers or ranges to toggle them (`3 5-7`). `s` selects the safe items only, `a` selects everything, `n` clears the selection, Enter continues and `q` quits. The confirmation screen lists every `rm -rf` / `xcrun` command and the total size, and nothing is deleted until you type `yes`.
+In the interactive picker, type numbers or ranges to toggle them (`3 5-7`). `s` selects the preselected safe items (the developer targets), `a` selects everything, `n` clears the selection, Enter continues and `q` quits. The confirmation screen lists every `rm -rf` / `xcrun` command and the total size, and nothing is deleted until you type `yes`.
 
 Warnings print under their item, prefixed `! `. Items that move to the Trash are marked `(moves to Trash)` and are never printed as `rm` commands: the command line has no way to move files to the Trash, so it refuses them (`REFUSED: use the app to move these to the Trash`). Use the app or the page for those.
 
@@ -33,7 +33,7 @@ Without a terminal (for example in a pipe), `devclean` deletes only with `--yes`
 Labyrinth Cleaner looks for Flutter and web build folders (`build`, `.dart_tool`, `node_modules`, `.next`) in your project folders.
 
 - **Defaults**, when they exist under your home folder: `Developer`, `Projects`, `code`, `src`, `dev`, `workspace`, `git`, `repos`.
-- **Settings:** folders you add are saved in `~/Library/Application Support/Labyrinth Cleaner/settings.json` as `{"project_folders": ["/absolute/path", ...]}`. The page lists them and can add or remove one. Your home folder, `~/Library`, symlinks, files and system folders are rejected as project folders.
+- **Settings:** folders you add are saved in `~/Library/Application Support/Labyrinth Cleaner/settings.json` as `{"project_folders": ["/absolute/path", ...]}`. The page lists them and can add or remove one. A project folder must be an existing folder inside your home folder: your home folder itself, anything in `~/Library`, symlinks, files, and the protected folders (`~/Downloads`, `~/Desktop`, `~/Pictures`, `~/Movies`, `~/Music`, `~/.ssh`, `~/.Trash`, `~/.android/avd`, Xcode Archives), anything inside them or containing them, are rejected, in any letter case (`~/downloads` is `~/Downloads`). The defaults and `--projects` go through the same check; a folder that fails it is skipped. Saved entries that aren't absolute paths are ignored.
 - **`--projects DIR`:** scan this folder (repeatable), instead of the defaults plus the saved ones. For example `devclean --projects ~/Documents/Projects --projects ~/work`.
 
 A build folder is only offered when a `pubspec.yaml` or `package.json` sits next to it, and two folders that overlap list each project once.
@@ -46,7 +46,7 @@ devclean ui --no-open     # print the URL only
 ```
 
 **What the page shows:**
-- how much you can get back, and how much of that costs nothing
+- how much you can get back, and how much of that costs nothing (items marked `NO COST`). Items that move to the Trash aren't counted: they free space only when the Trash is emptied.
 - free space now, and after the clean, updated as you tick items
 - a map of the disk
 - every item grouped as *Safe*, *Costs you some time*, *Check first*, *Review: moves to Trash* or *Kept on purpose*, with what deleting it costs: `NO COST`, `~2 MIN`, or `9.9 GB DL` (a download to get it back)
@@ -56,7 +56,7 @@ Nothing is ticked when the page opens. Tick items, then press **Review & clean**
 
 **Safety:**
 - **Local only:** the server listens on `127.0.0.1` only. Every API call needs the random token from the printed URL, and the page refuses other hosts and origins.
-- **Same checks as the CLI:** the page sends item keys, never paths. Every delete goes through the same safety gate as the CLI, re-checked right before `rm`.
+- **Same checks as the CLI:** the page sends item keys, never paths. Every delete goes through the same safety gate as the CLI, re-checked right before every `rm` and every move to the Trash.
 - **Closing the server:** it stops after 60 minutes without use, or with Ctrl-C. Running `devclean ui` again while one is open reopens that page.
 - **Test mode:** `--home DIR` and `--simctl-fixture DIR` work here too, for demos. In that mode `xcrun` is never run, so a demo can't delete a real simulator runtime.
 
@@ -77,15 +77,15 @@ The menu bar shows Finder's "available" number, in decimal GB. That number inclu
 
 Building it needs `swiftc`, which comes with Xcode or the Command Line Tools.
 
-When "Clean up…" starts a scan, macOS may ask once whether **DevcleanBar** may access your Documents and Downloads folders. The scan reads `~/Documents/Projects` and measures `~/Downloads`. The question can come back after a reinstall. If you say no, the page warns that it couldn't read the projects folder, and project build folders are missing from the list. Running `devclean ui` from Terminal uses Terminal's own access instead.
+When "Clean up…" starts a scan, macOS may ask once whether **DevcleanBar** may access folders such as Documents or Downloads: the scan reads your project folders and measures `~/Downloads`. The question can come back after a reinstall. If you say no, the page warns that it couldn't read a project folder, and that folder's build folders are missing from the list. Running `devclean ui` from Terminal uses Terminal's own access instead.
 
 ## Tiers
 
 | tier | preselected | `--yes` | what |
 |---|---|---|---|
-| **safe** | CLI only, developer targets only | developer targets only | Flutter `build/` and `.dart_tool/` (a `pubspec.yaml` must be next to them), Xcode DerivedData (kept while Xcode runs), old `~/.gradle/caches/<version>` folders, Gradle `build-cache-1`, `~/.shorebird/bin/cache`, `~/.npm/_cacache`, CocoaPods / Homebrew / ms-playwright caches. Also safe, but never preselected: app caches and old logs. |
+| **safe** | CLI only, developer targets only | developer targets only | Flutter `build/` and `.dart_tool/` (a `pubspec.yaml` must be next to them), Xcode DerivedData (kept while Xcode runs), old `~/.gradle/caches/<version>` folders, Gradle `build-cache-1`, `~/.shorebird/bin/cache`, `~/.npm/_cacache`, CocoaPods / Homebrew / ms-playwright caches. Also safe, but never preselected: caches of apps it can name (a bundle-ID folder such as `com.spotify.client`, or a known browser) and old logs. |
 | **opt-in** | no | never | `node_modules` and `.next` in web projects (you run `npm install` again), the Docker build cache. |
-| **caution** | no | never | iOS DeviceSupport builds, Gradle versions, simulator runtimes, single simulators (`xcrun simctl delete <udid>`), Android system images, unavailable simulators, unused Docker images, emptying the Trash. |
+| **caution** | no | never | iOS DeviceSupport builds, the newest Gradle version (older ones are safe), simulator runtimes, single simulators (`xcrun simctl delete <udid>`), Android system images, unavailable simulators, unused Docker images, emptying the Trash, app caches whose app it can't name ("macOS or a background tool may use this cache."). |
 | **review** | no | never | Old installers and large untouched files in `~/Downloads`, and Xcode archives. These are only ever **moved to the Trash** (Put Back works), never deleted with `rm`. The app does this; the command line refuses. |
 | **keep** | - | - | Shown for information only and never offered, with the reason: for example an app's cache while the app is open, or iOS device backups (size only). |
 
@@ -93,8 +93,8 @@ When "Clean up…" starts a scan, macOS may ask once whether **DevcleanBar** may
 
 ## What it can clean
 
-- **Developer:** build folders and caches for Flutter, web, Xcode, Gradle, npm, CocoaPods, Homebrew, Playwright and Shorebird; simulator runtimes and single simulators; Android system images; DeviceSupport builds; Xcode archives (review tier). Xcode tools are only queried when Xcode's command-line tools are installed.
-- **App caches:** top-level folders in `~/Library/Caches`, except `com.apple.*` and this app's own. A cache is shown but not selectable while its app is running ("Quit *App* first").
+- **Developer:** build folders and caches for Flutter, web, Xcode, Gradle, npm, CocoaPods, Homebrew, Playwright and Shorebird; simulator runtimes and single simulators; Android system images; DeviceSupport builds; Xcode archives (review tier). `xcrun` runs only when Xcode or its command-line tools are installed, so a Mac without them never sees the "install developer tools" prompt.
+- **App caches:** top-level folders in `~/Library/Caches`, except macOS's own (`com.apple.*` and daemon caches such as `CloudKit`, `GeoServices` or `SiriTTS`) and this app's own. A cache is shown but not selectable while its app is running ("Quit *App* first"). A cache whose app can't be named is offered under *Check first* with a warning.
 - **Logs and crash reports:** entries in `~/Library/Logs` and `~/Library/Logs/DiagnosticReports` older than 7 days.
 - **Docker:** the build cache and unused images, only when Docker is installed and answers within 3 seconds. Containers and volumes are never pruned.
 - **Trash:** its size, and "Empty Trash" through Finder. When you clean, emptying the Trash runs first, so it can't remove Downloads files moved there in the same clean.
@@ -109,7 +109,7 @@ When "Clean up…" starts a scan, macOS may ask once whether **DevcleanBar** may
 - `~/Library/Developer/Xcode/Archives`, `~/Downloads`, `~/.Trash`, `~/Desktop`, `~/Pictures`, `~/Movies`, `~/Music`, `~/.ssh`, `~/.android/avd`, and any folder that *contains* one of these (for example `~/Library/Developer/Xcode`). Archives and Downloads files can only be moved to the Trash.
 - `$HOME`, `/`, symlinks, and anything outside `$HOME`.
 - Everything under `~/Documents`, except folders named `build`, `.dart_tool`, `node_modules` or `.next` that sit inside one of your project folders next to a `pubspec.yaml` (for `build` and `.dart_tool`) or a `package.json` (for `node_modules` and `.next`). A web project's `build/` is never touched.
-- Files moved to the Trash must be regular files (not folders or symlinks) directly in `~/Downloads` or one level down, and must still match their rule when re-checked just before the move.
+- Files moved to the Trash must be regular files (not folders or symlinks) directly in `~/Downloads` or one level down, must still match their rule when re-checked just before the move, and must be the same file the scan saw (same inode, size and modification time). A file written to since it was last opened counts as used then.
 
 **You choose; Labyrinth Cleaner warns.** Items that might break something are offered, never preselected, with a red warning that says what breaks:
 - an Android system image an emulator uses (the warning names the emulator); if the emulators' `config.ini` files can't be read, every image warns that it may be in use;
@@ -128,7 +128,7 @@ Still never offered: a runtime with a running simulator, a running simulator, De
 ## Layout
 
 - `devclean`: the CLI (table, picker, confirmation).
-- `devclean_general.py`: the general categories (app caches, logs, Downloads, Trash, backups, Docker).
+- `devclean_general.py`: the general categories (app caches, logs, Trash, backups, Docker). The Downloads review list and Xcode archives live in `devclean_core.py`.
 - `devclean_core.py`: scan, protection rules, the safety gate, and the cost tag and cost line for each item. It has no terminal I/O.
 - `devclean_report.py`: turns a scan into what the page shows: rows, groups, the disk map and the headline.
 - `devclean_ui.py` and `ui/index.html`: the local web server and the page. The page is a single HTML file with no build step.

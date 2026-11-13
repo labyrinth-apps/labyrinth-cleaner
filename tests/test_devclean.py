@@ -1160,6 +1160,19 @@ class CliTests(unittest.TestCase):
         self.assertIn("Refusing", out)
         self.assertEqual(before, self.snapshot())
 
+    def test_no_empty_commands_header_when_only_trash_items(self):
+        home = os.path.join(self.tmp, "trash-only-home")
+        dmg = os.path.join(home, "Downloads", "Setup.dmg")
+        write(dmg)
+        old = time.time() - 30 * 86400
+        os.utime(dmg, (old, old))
+        r = subprocess.run([sys.executable, CLI, "--home", home, "--min-size", "0", "--dry-run",
+                            "--select", "1"], capture_output=True, text=True,
+                           stdin=subprocess.DEVNULL, env={**os.environ, "NO_COLOR": "1"})
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("Moved to Trash (needs the app):", r.stdout)
+        self.assertNotIn("Commands:", r.stdout)
+
     def test_bad_selection(self):
         code, out = self.run_cli("--dry-run", "--select", "999")
         self.assertEqual(code, 2)

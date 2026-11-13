@@ -240,10 +240,11 @@ def main(argv=None):
     # Command lines carry nothing but the command: zsh has INTERACTIVE_COMMENTS
     # off by default, so a trailing "# note" would become extra rm arguments.
     # Trash items have no command: only the app can move them to the Trash.
-    print("\nCommands:")
-    for it in chosen:
-        if it.command and it.kind != "trash":
-            print(it.command)
+    commands = [it.command for it in chosen if it.command and it.kind != "trash"]
+    if commands:
+        print("\nCommands:")
+        for cmd in commands:
+            print(cmd)
     trashed = [i for i in chosen if i.kind == "trash"]
     if trashed:
         print("\nMoved to Trash (needs the app):")
