@@ -1,0 +1,282 @@
+#!/usr/bin/env python3
+"""devclean - find and delete regenerable developer build output and caches.
+
+    devclean                 scan, pick items, confirm, delete
+    devclean --dry-run       scan and print the commands, delete nothing
+    devclean --yes           delete the preselected safe items without asking
+    devclean --select 1,4-6  choose items by number (non-interactive)
+    devclean --json          print the scan as JSON
+
+See README.md for the tiers and protection rules.
+"""
+
+import argparse
+import json
+import os
+import sys
+import time
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+
+import devclean_core as core  # noqa: E402
+
+USE_COLOR = sys.stdout.isatty() and os.environ.get("NO_COLOR") is None
+
+
+def c(text, code):
+    return f"\033[{code}m{text}\033[0m" if USE_COLOR else text
+
+
+TIER_COLOR = {core.SAFE: "32", core.OPTIN: "36", core.CAUTION: "33", core.PROTECTED: "90"}
+
+
+human = core.human
+
+
+def age(ts):
+    if not ts:
+        return "-"
+    days = (time.time() - ts) / 86400
+    if days < 1:
+        return "today"
+    if days < 60:
+        return f"{int(days)}d ago"
+    return time.strftime("%Y-%m-%d", time.localtime(ts))
+
+
+def trunc(s, n):
+    return s if len(s) <= n else s[: n - 1] + "…"
+
+
+def print_table(res, numbered, selected):
+    print(f"{'#':>3}  {'':3} {'tier':8} {'item':46} {'size':>9}  {'modified':10}  note")
+    print("-" * 110)
+    for it in res.items:
+        num = numbered.get(it.key)
+        mark = ("[x]" if it.key in selected else "[ ]") if num else "   "
+        label = trunc(f"{it.category}: {it.label}", 46)
+        line = (f"{num if num else '':>3}  {mark} {it.tier:8} {label:46} "
+                f"{human(it.size):>9}  {age(it.mtime):10}  {it.note}")
+        print(c(line, TIER_COLOR.get(it.tier, "0")))
+
+
+def summarize(res, selected_items):
+    free = res.free_bytes
+    reclaim = res.reclaimable()
+    sel = sum(i.size or 0 for i in selected_items)
+    print()
+    print(f"Disk free now:        {human(free)} of {human(res.total_bytes)}")
+    print(f"Reclaimable (all offered items): {human(reclaim)}")
+    print(c(f"Selected: {len(selected_items)} item(s), {human(sel)}  ->  "
+            f"free after: ~{human(free + sel)}", "1"))
+
+
+def parse_selection(spec, numbered_items):
+    """'safe' | 'all' | 'none' | '1,3,5-7' -> set of keys."""
+    spec = spec.strip().lower()
+    if spec == "safe":
+        return {i.key for i in numbered_items if i.preselect}
+    if spec == "all":
+        return {i.key for i in numbered_items}
+    if spec in ("none", ""):
+        return set()
+    keys = set()
+    for part in spec.replace(" ", ",").split(","):
+        if not part:
+            continue
+        if "-" in part:
+            a, b = part.split("-", 1)
+            rng = range(int(a), int(b) + 1)
+        else:
+            rng = [int(part)]
+        for n in rng:
+            if not 1 <= n <= len(numbered_items):
+                raise ValueError(f"no item #{n}")
+            keys.add(numbered_items[n - 1].key)
+    return keys
+
+
+def toggle(spec, numbered_items, selected):
+    for part in spec.replace(",", " ").split():
+        if "-" in part:
+            a, b = part.split("-", 1)
+            rng = range(int(a), int(b) + 1)
+        else:
+            rng = [int(part)]
+        for n in rng:
+            if not 1 <= n <= len(numbered_items):
+                raise ValueError(f"no item #{n}")
+            k = numbered_items[n - 1].key
+            selected.symmetric_difference_update({k})
+
+
+def interactive_select(res, numbered, numbered_items, selected):
+    while True:
+        print_table(res, numbered, selected)
+        summarize(res, [i for i in numbered_items if i.key in selected])
+        print("\nToggle by number (e.g. `3 5-7`), s = safe only, a = all, n = none, "
+              "Enter = continue, q = quit")
+        try:
+            ans = input("> ").strip().lower()
+        except EOFError:
+            return None
+        if ans in ("", "c"):
+            return selected
+        if ans == "q":
+            return None
+        if ans in ("s", "a", "n"):
+            selected = parse_selection({"s": "safe", "a": "all", "n": "none"}[ans], numbered_items)
+            continue
+        try:
+            toggle(ans, numbered_items, selected)
+        except ValueError as e:
+            print(c(f"  {e}", "31"))
+        print()
+
+
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    if argv[:1] == ["ui"]:
+        import devclean_ui
+        return devclean_ui.main(argv[1:])
+    if argv[:1] == ["menubar"]:
+        import devclean_menubar
+        return devclean_menubar.main(argv[1:])
+    ap = argparse.ArgumentParser(prog="devclean", description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("-n", "--dry-run", action="store_true", help="print commands, delete nothing")
+    ap.add_argument("-y", "--yes", action="store_true",
+                    help="no prompt; only SAFE-tier items are ever deleted this way")
+    ap.add_argument("--select", metavar="SPEC",
+                    help="non-interactive selection: safe (default), all, none, or numbers like 1,3,5-7")
+    ap.add_argument("--min-size", type=float, default=20, metavar="MB",
+                    help="hide offered items smaller than this (default 20 MB; 0 shows all)")
+    ap.add_argument("--json", action="store_true", help="print scan result as JSON and exit")
+    ap.add_argument("--home", help="pretend this directory is $HOME (testing)")
+    ap.add_argument("--projects", help="projects root (default ~/Documents/Projects)")
+    ap.add_argument("--simctl-fixture", metavar="DIR",
+                    help="read simctl_list.json/runtime_list.json from DIR instead of xcrun (testing)")
+    ap.add_argument("--no-simulators", action="store_true", help="skip simulator runtimes")
+    args = ap.parse_args(argv)
+
+    cfg = core.Config(home=args.home or os.path.expanduser("~"), projects=args.projects)
+    if args.simctl_fixture:
+        sim = core.FixtureSimctl.from_dir(args.simctl_fixture)
+    elif args.no_simulators or args.home:
+        sim = core.NoSimctl()  # never mix real xcrun data into a fake $HOME
+    else:
+        sim = core.SimctlProvider()
+    # Fixture mode never runs xcrun: fixture data may carry real runtime UUIDs.
+    fixture = bool(args.home or args.simctl_fixture)
+    runner = core.fixture_runner if fixture else core.subprocess.run
+
+    if not args.json:
+        print(f"Scanning {cfg.home} (projects: {cfg.projects}) ...", file=sys.stderr)
+    res = core.scan(cfg, sim, xcode_check=(lambda: False) if args.home else core.xcode_running)
+
+    if args.json:
+        print(json.dumps({"free_bytes": res.free_bytes, "total_bytes": res.total_bytes,
+                          "reclaimable_bytes": res.reclaimable(), "warnings": res.warnings,
+                          "items": [i.to_dict() for i in res.items]}, indent=2))
+        return 0
+
+    floor = args.min_size * 1024 * 1024
+    small = [i for i in res.items if i.offerable and i.size is not None and i.size < floor]
+    if small:
+        res.items = [i for i in res.items if i not in small]
+        print(f"({len(small)} offered item(s) under {args.min_size:g} MB hidden, "
+              f"{human(sum(i.size for i in small))} total; --min-size 0 shows them)")
+    numbered_items = res.offerable
+    numbered = {it.key: n for n, it in enumerate(numbered_items, 1)}
+    for w in res.warnings:
+        print(c(f"warning: {w}", "31"))
+    if res.xcode_running:
+        print(c("note: Xcode is running; DerivedData is not preselected.", "33"))
+
+    interactive = sys.stdin.isatty() and not args.yes and args.select is None
+    try:
+        selected = parse_selection(args.select or "safe", numbered_items)
+    except ValueError as e:
+        print(f"devclean: --select: {e}", file=sys.stderr)
+        return 2
+
+    if interactive and numbered_items:
+        selected = interactive_select(res, numbered, numbered_items, selected)
+        if selected is None:
+            print("Nothing deleted.")
+            return 0
+    else:
+        print_table(res, numbered, selected)
+
+    chosen = [i for i in numbered_items if i.key in selected]
+    if args.yes:
+        dropped = [i for i in chosen if i.tier != core.SAFE or not i.preselect]
+        if dropped:
+            print(c(f"--yes only deletes preselected safe items; skipping {len(dropped)} other(s): "
+                    + ", ".join(i.label for i in dropped), "33"))
+        chosen = [i for i in chosen if i.tier == core.SAFE and i.preselect]
+    chosen = core.execution_order(chosen)
+    summarize(res, chosen)
+
+    if not chosen:
+        print("\nNothing selected.")
+        if args.dry_run:
+            print_unselected(numbered_items, selected)
+        return 0
+
+    total = sum(i.size or 0 for i in chosen)
+    print(c(f"\n{'Would run' if args.dry_run else 'Will delete'} ({human(total)}):", "1"))
+    for it in chosen:
+        print(f"  {human(it.size):>9}  [{it.tier}] {it.category}: {it.label}")
+    # Command lines carry nothing but the command: zsh has INTERACTIVE_COMMENTS
+    # off by default, so a trailing "# note" would become extra rm arguments.
+    print("\nCommands:")
+    for it in chosen:
+        print(it.command)
+
+    if args.dry_run:
+        print_unselected(numbered_items, selected)
+        print("\nDry run: nothing deleted.")
+        return 0
+
+    if not args.yes:
+        if not sys.stdin.isatty():
+            print("\nRefusing to delete without a terminal; use --yes (safe items only) or --dry-run.")
+            return 1
+        try:
+            ans = input(c(f"\nDelete these {len(chosen)} item(s), {human(total)}? Type 'yes': ", "1"))
+        except EOFError:
+            ans = ""
+        if ans.strip().lower() != "yes":
+            print("Aborted. Nothing deleted.")
+            return 1
+
+    before = core.shutil.disk_usage(cfg.home).free
+    failures = 0
+    for it in chosen:
+        print(f"  deleting {it.label} ({human(it.size)}) ...", end="", flush=True)
+        ok, msg = core.execute_item(it, cfg, sim, runner=runner)
+        print(c(" done", "32") if ok else c(f" {msg}", "31"))
+        failures += not ok
+    after = core.shutil.disk_usage(cfg.home).free
+    print(f"\nDisk free: {human(before)} -> {human(after)} (+{human(max(after - before, 0))})")
+    if after - before < total * 0.5:
+        print(c("Freed less than expected: APFS may release space lazily or a Time Machine "
+                "local snapshot holds it (`tmutil listlocalsnapshots /`).", "33"))
+    return 1 if failures else 0
+
+
+def print_unselected(numbered_items, selected):
+    rest = [i for i in numbered_items if i.key not in selected]
+    if rest:
+        print(c("\nNot selected (choose with --select or interactively):", "90"))
+        for it in rest:
+            print(c(f"  {human(it.size):>9}  [{it.tier}] {it.category}: {it.label}", "90"))
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        print("\nInterrupted.")
+        sys.exit(130)
