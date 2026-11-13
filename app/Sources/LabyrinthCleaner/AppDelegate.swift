@@ -9,16 +9,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var window: MainWindowController?
     private var launchedAsLoginItem = false
 
-    func applicationWillFinishLaunching(_ notification: Notification) {
-        launchedAsLoginItem = isLoginLaunch(NSAppleEventManager.shared().currentAppleEvent)
-    }
-
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         openWindow()
         return true
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // The launch Apple event is only available here (it is nil in applicationWillFinishLaunching).
+        launchedAsLoginItem = isLoginLaunch(NSAppleEventManager.shared().currentAppleEvent)
         #if DEBUG
         fixture = parseFixtureOptions(CommandLine.arguments)
         #endif
