@@ -29,6 +29,8 @@ import devclean_ui as ui  # noqa: E402
 from test_devclean import cfg_for, fixture_sim, make_home  # noqa: E402
 
 RUNTIME_26_5 = "runtime:91298CDE-FDEA-4F7C-8FF5-E27CFAC0C3B6"
+RUNTIME_27_2_BOOTED = "runtime:8CC38006-6DBA-4D63-9F9E-A0C3B02E5B16"
+BOOTED_SIM = "6EE39A1D-D323-4C36-BDCE-872C80781FA4"   # iPhone 18 Pro Max, Booted
 REAL_SUBPROCESS_RUN = subprocess.run
 
 
@@ -193,7 +195,10 @@ class ApiTests(ServerTestCase):
         rec = Recorder()
         self.start(runner=rec)
         p = self.scan()
-        for keys in (["archives"], ["nope"], ["homebrew-cache", "downloads"]):
+        # Task 2: the "archives" info row is gone (archives are review items now), so a
+        # kept key is the general iOS 27.2 runtime, kept because a simulator on it is booted.
+        for keys in ([RUNTIME_27_2_BOOTED], ["simdevice:" + BOOTED_SIM], ["archives"], ["nope"],
+                     ["homebrew-cache", "downloads"]):
             status, data = self.clean(p["scan_id"], keys)
             self.assertEqual(status, 400, keys)
             self.assertIn("unknown or protected", data["error"])
@@ -272,7 +277,8 @@ class ApiTests(ServerTestCase):
         job = self.wait_job(data["job_id"])
         by = {i["key"]: i for i in job["items"]}
         self.assertEqual(by["flutter:Documents/Projects/flutter_app/build"]["status"], "refused")
-        self.assertIn("does not exist", by["flutter:Documents/Projects/flutter_app/build"]["message"])
+        # Task 2: the gate re-scans first, so a vanished folder is reported as gone.
+        self.assertIn("is gone", by["flutter:Documents/Projects/flutter_app/build"]["message"])
         others = [i["status"] for k, i in by.items() if k != "flutter:Documents/Projects/flutter_app/build"]
         self.assertTrue(others)
         self.assertEqual(set(others), {"done"})

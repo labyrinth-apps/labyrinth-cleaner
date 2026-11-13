@@ -70,7 +70,8 @@ When "Clean up…" starts a scan, macOS may ask once whether **DevcleanBar** may
 |---|---|---|---|
 | **safe** | yes | yes | Flutter `build/` and `.dart_tool/` (a `pubspec.yaml` must be next to them), Xcode DerivedData (not preselected while Xcode runs), old `~/.gradle/caches/<version>` folders (the newest version is kept), Gradle `build-cache-1`, `~/.shorebird/bin/cache`, `~/.npm/_cacache`, CocoaPods / Homebrew / ms-playwright caches |
 | **opt-in** | no | never | `node_modules` and `.next` in web projects. You have to run `npm install` again afterwards. |
-| **caution** | no | never | older iOS DeviceSupport builds (the newest per device model is kept), simulator runtimes that pass the protection rule, Android system images that no AVD uses, `xcrun simctl delete unavailable` |
+| **caution** | no | never | iOS DeviceSupport builds, the newest Gradle version, simulator runtimes, single simulators (`xcrun simctl delete <udid>`), Android system images, `xcrun simctl delete unavailable`. Items that might break something carry a warning (see below). |
+| **review** | no | never | Xcode archives, one per `.xcarchive`. These are only ever moved to the Trash, never `rm`'d (the app does this; the CLI refuses). |
 | **keep** | - | - | Shown for information only and never offered. The reason is in the note column. |
 
 ## Protection rules
@@ -79,14 +80,19 @@ When "Clean up…" starts a scan, macOS may ask once whether **DevcleanBar** may
 - `~/Library/Developer/Xcode/Archives`, `~/Downloads`, `~/Desktop`, `~/Pictures`, `~/Movies`, `~/Music`, `~/.ssh`, `~/.android/avd`, and any folder that *contains* one of these (for example `~/Library/Developer/Xcode`).
 - `$HOME`, `/`, symlinks, and anything outside `$HOME`.
 - Everything under `~/Documents`, except folders named `build`, `.dart_tool`, `node_modules` or `.next` that sit next to a `pubspec.yaml` (for `build` and `.dart_tool`) or a `package.json` (for `node_modules` and `.next`). A web project's `build/` is never touched.
-- Android system images used by any AVD. Pixel_10_Pro and Television_4K are hard-coded: if their `config.ini` can't be read, no image is offered at all.
 
-**Simulator runtimes.** On 2026-11-02 the iOS 27.0 runtime was deleted because 27.1 looked like its replacement. But 27.1 only ran the iPhone Duo, so the iPhone 18 Pro simulator disappeared. Since then a runtime is kept if any of these is true:
-1. It is the newest runtime (or the only one) that supports the device type of an existing simulator. If several runtimes tie for newest, all of them are kept.
-2. A simulator on it is booted.
-3. It is the newest *general* runtime (one that supports more than one device type) for `iPhone-18-Pro`. This holds even when no 18 Pro simulator exists. `DEFAULT_PINNED_DEVICE_TYPES` in `devclean_core.py` sets this.
+**You choose; devclean warns.** Items that might break something are offered, never preselected, with a red warning that says what breaks:
+- an Android system image an emulator uses (the warning names the emulator); if an emulator's `config.ini` can't be read, every image warns that it may be in use;
+- the newest Gradle version, and the newest DeviceSupport build per device model;
+- Xcode archives (you need them to read crash reports for shipped versions).
 
-Runtimes are deleted with `xcrun simctl runtime delete <disk-image-id>`. A disk image that can't be matched to a runtime is never offered. Before each deletion the rule is checked again against fresh `simctl` output.
+**Simulator runtimes.** On 2026-11-02 the iOS 27.0 runtime was deleted because 27.1 looked like its replacement. But 27.1 only ran the iPhone Duo, so the iPhone 18 Pro simulator disappeared. Since then a runtime carries a warning if:
+1. It is the newest runtime (or the only one) that supports the device type of an existing simulator ("Your iPhone 18 Pro simulator stops working. No other installed runtime runs it."). Ties all warn.
+2. It is the newest *general* iOS runtime (one that supports more than one device type): "This is your newest iOS runtime. New simulators need it."
+
+Still never offered: a runtime with a running simulator, a running simulator, and a disk image that can't be matched to a runtime. Runtimes are deleted with `xcrun simctl runtime delete <disk-image-id>`.
+
+**The gate re-checks.** Right before each deletion the item is scanned again from fresh data (`simctl`, the AVD configs, the folders). It is refused if it is gone, now in use, its path or command changed, or its warning differs from the one you saw ("Situation changed: scan again").
 
 ## Layout
 

@@ -12,8 +12,9 @@ from concurrent.futures import ThreadPoolExecutor
 
 import devclean_core as core
 
-GROUP_OF = {core.SAFE: "safe", core.OPTIN: "time", core.CAUTION: "check", core.PROTECTED: "kept"}
-GROUP_ORDER = {"safe": 0, "time": 1, "check": 2, "kept": 3}
+GROUP_OF = {core.SAFE: "safe", core.OPTIN: "time", core.CAUTION: "check", core.REVIEW: "review",
+            core.PROTECTED: "kept"}
+GROUP_ORDER = {"safe": 0, "time": 1, "check": 2, "review": 3, "kept": 4}
 
 SEGMENTS = [
     ("sim", "Simulators"),
@@ -38,7 +39,7 @@ def segment_of(it: core.Item) -> str:
         return "sim"
     if it.category == "Android":
         return "android"
-    if it.key in ("derived-data", "archives") or it.category == "DeviceSupport":
+    if it.key == "derived-data" or it.key.startswith("archive:") or it.category == "DeviceSupport":
         return "xcode"
     if it.category == "Web":
         return "web"
@@ -131,7 +132,9 @@ def disk_map(res: core.ScanResult, extras: dict) -> list:
         seg = segment_of(it)
         if it.offerable:
             reclaim[seg] += it.size or 0
-        if seg in ("sim", "xcode", "web", "caches") and it.kind != "simctl-unavailable":
+        # Simulator data folders are measured whole in extras["sim_devices"].
+        if (seg in ("sim", "xcode", "web", "caches") and it.kind != "simctl-unavailable"
+                and not it.key.startswith("simdevice:")):
             size[seg] += it.size or 0
     size["sim"] += extras.get("sim_devices", 0)
     size["android"] = extras.get("android_sdk", 0) + extras.get("android_avd", 0)

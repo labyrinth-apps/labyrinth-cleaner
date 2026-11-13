@@ -28,9 +28,10 @@ from typing import Callable, Optional
 SAFE = "safe"          # regenerable; preselected; eligible for --yes
 OPTIN = "opt-in"       # regenerable but costs a reinstall (node_modules, .next)
 CAUTION = "caution"    # never preselected, never deleted by --yes
+REVIEW = "review"      # moved to the Trash (never rm); never preselected
 PROTECTED = "keep"     # shown for information only; never offered
 
-OFFERABLE_TIERS = (SAFE, OPTIN, CAUTION)
+OFFERABLE_TIERS = (SAFE, OPTIN, CAUTION, REVIEW)
 
 FLUTTER_ARTIFACTS = ("build", ".dart_tool")
 WEB_ARTIFACTS = ("node_modules", ".next")
@@ -43,10 +44,17 @@ GRADLE_VERSION_RE = re.compile(r"^\d+(?:\.\d+)+(?:-[\w.]+)?$")
 DEVICE_SUPPORT_RE = re.compile(
     r"^(?:(?P<model>[A-Za-z]+\d+,\d+) )?(?P<ver>\d+(?:\.\d+)*) \((?P<build>[^)]+)\)(?: (?P<arch>\S+))?$")
 
-# The user's daily simulator. The newest *general* runtime supporting it is
-# always kept (see the 2026-11-02 incident in README).
-DEFAULT_PINNED_DEVICE_TYPES = ("com.apple.CoreSimulator.SimDeviceType.iPhone-18-Pro",)
-DEFAULT_PROTECTED_AVDS = ("Pixel_10_Pro", "Television_4K")
+# Simulator UDIDs and runtime disk-image ids go into argv and a folder name.
+SIM_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]*$")
+
+# Warnings: an item that carries one is offered (never preselected) and the
+# gate refuses it if a fresh scan shows a different warning.
+NEWEST_IOS_WARNING = "This is your newest iOS runtime. New simulators need it."
+GRADLE_NEWEST_WARNING = "The version your projects probably use. It downloads again on the next build."
+DEVSUPPORT_NEWEST_WARNING = "Re-copied the next time you debug on that iPhone."
+ARCHIVE_WARNING = "Shipped builds. You need them to read crash reports for those versions."
+TRASH_RESTORE = "Moved to the Trash, so you can Put Back."
+SITUATION_CHANGED = "Situation changed: scan again"
 
 # Conventional places developers keep projects, under home. Only those that exist are scanned.
 DEFAULT_PROJECT_DIRS = ("Developer", "Projects", "code", "src", "dev", "workspace", "git", "repos")
@@ -228,12 +236,15 @@ class Item:
     size: Optional[int] = None           # bytes; None = unknown
     mtime: Optional[float] = None        # epoch seconds
     preselect: bool = False
-    kind: str = "path"                   # path | runtime | simctl-unavailable | info
+    kind: str = "path"                   # path | runtime | simdevice | simctl-unavailable | trash | info
     meta: dict = field(default_factory=dict)
     cost_tag: str = ""                   # NO COST, ~2 MIN, 9.9 GB DL ...
     cost: str = ""                       # plain-language cost of deleting it
     project: Optional[str] = None        # project folder relative to its project root
     stale_days: Optional[int] = None     # days since the project's own files changed
+    warning: str = ""                    # what breaks if you delete it ("" = nothing known)
+    deletes: str = ""                    # what gets removed: the path with ~, or the command
+    restore: str = ""                    # how to get it back
 
     @property
     def offerable(self) -> bool:
@@ -252,7 +263,8 @@ class Item:
                 "tier": self.tier, "note": self.note, "path": self.path,
                 "size": self.size, "mtime": self.mtime, "preselect": self.preselect,
                 "kind": self.kind, "command": self.command, "cost_tag": self.cost_tag,
-                "cost": self.cost, "project": self.project, "stale_days": self.stale_days}
+                "cost": self.cost, "project": self.project, "stale_days": self.stale_days,
+                "warning": self.warning, "deletes": self.deletes, "restore": self.restore}
 
 
 # ---------------------------------------------------------------- simctl provider
@@ -325,6 +337,33 @@ def mtime_of(path: str) -> Optional[float]:
         return None
 
 
+def iso_timestamp(s) -> Optional[float]:
+    """Epoch seconds from simctl's ISO-8601 dates ("2026-11-01T10:00:00Z"), else None."""
+    if not s:
+        return None
+    try:
+        return datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp()
+    except (ValueError, AttributeError):
+        return None
+
+
+def tilde(path, home: str) -> str:
+    """`path` with the home prefix shown as ~."""
+    if not path:
+        return ""
+    if path == home:
+        return "~"
+    if path.startswith(home.rstrip(os.sep) + os.sep):
+        return "~" + path[len(home.rstrip(os.sep)):]
+    return path
+
+
+def plural_names(names) -> tuple:
+    """(", ".join(names), True when more than one)."""
+    names = list(names)
+    return ", ".join(names), len(names) > 1
+
+
 def is_within(child: str, parent: str) -> bool:
     """True if child == parent or child is inside parent (both normalized)."""
     return child == parent or child.startswith(parent.rstrip(os.sep) + os.sep)
@@ -359,6 +398,19 @@ class Env:
     @classmethod
     def fake(cls, **overrides) -> "Env":
         return cls(**overrides)
+
+
+def default_env(cfg: Config) -> Env:
+    """Only the real home may query the real Mac; fixture homes never do."""
+    return Env.real() if cfg.home == os.path.realpath(os.path.expanduser("~")) else Env.fake()
+
+
+def resolve_providers(cfg: Config, sim: Optional["SimctlProvider"], env: Optional[Env]):
+    """(sim, env) with defaults filled in. An explicitly passed sim is always used."""
+    env = env if env is not None else default_env(cfg)
+    if sim is None:
+        sim = SimctlProvider() if env.dev_tools() else NoSimctl()
+    return sim, env
 
 
 # ---------------------------------------------------------------- projects
@@ -458,8 +510,8 @@ def scan_gradle_versions(cfg: Config) -> list:
         path = os.path.join(d, v)
         if v == newest:
             items.append(Item(key=f"gradle:{v}", category="Gradle", label=f"Gradle caches {v}",
-                              tier=PROTECTED, path=path, note="newest Gradle version, kept",
-                              kind="info"))
+                              tier=CAUTION, path=path, note="newest Gradle version",
+                              warning=GRADLE_NEWEST_WARNING))
         else:
             items.append(Item(key=f"gradle:{v}", category="Gradle", label=f"Gradle caches {v}",
                               tier=SAFE, path=path, note=f"older than {newest}", preselect=True))
@@ -500,8 +552,8 @@ def scan_device_support(cfg: Config) -> list:
         for name, path, m in entries:
             if name == newest[0]:
                 items.append(Item(key=f"devsupport:{name}", category="DeviceSupport", label=name,
-                                  tier=PROTECTED, path=path, kind="info",
-                                  note=f"newest for {model}, kept"))
+                                  tier=CAUTION, path=path, note=f"newest for {model}",
+                                  warning=DEVSUPPORT_NEWEST_WARNING))
             else:
                 items.append(Item(key=f"devsupport:{name}", category="DeviceSupport", label=name,
                                   tier=CAUTION, path=path,
@@ -522,55 +574,66 @@ def _read_ini(path: str) -> dict:
 
 
 def android_protection(cfg: Config):
-    """Return (protected image dirs, notes, unsafe flag).
+    """Return (used, unreadable).
 
-    unsafe=True means we could not read a hard-coded protected AVD, so no
-    system image may be offered at all.
+    used maps the realpath of each system image an emulator (AVD) uses to the
+    sorted names of those AVDs. unreadable lists, sorted, the AVDs whose
+    config.ini can't be read: any image might be theirs.
     """
-    protected, notes, unsafe = set(), [], False
     avd_root = cfg.avd_dir
     avd_dirs = {}
-    if os.path.isdir(avd_root):
-        for n in os.listdir(avd_root):
-            if n.endswith(".ini"):
-                name = n[:-4]
-                try:
-                    ini = _read_ini(os.path.join(avd_root, n))
-                except OSError:
-                    ini = {}
-                p = ini.get("path")
-                if not p or not os.path.isdir(p):
-                    p = os.path.join(avd_root, name + ".avd")
-                avd_dirs[name] = p
-            elif n.endswith(".avd"):
-                avd_dirs.setdefault(n[:-4], os.path.join(avd_root, n))
-    for name in DEFAULT_PROTECTED_AVDS:
-        if name in avd_dirs and not os.path.isfile(os.path.join(avd_dirs[name], "config.ini")):
-            unsafe = True
-            notes.append(f"protected AVD {name} has no readable config.ini")
-    for name, d in avd_dirs.items():
-        cfgfile = os.path.join(d, "config.ini")
-        if not os.path.isfile(cfgfile):
-            continue
+    try:
+        names = os.listdir(avd_root) if os.path.isdir(avd_root) else []
+    except OSError:
+        names = []
+    for n in names:
+        if n.endswith(".ini"):
+            name = n[:-4]
+            try:
+                ini = _read_ini(os.path.join(avd_root, n))
+            except OSError:
+                ini = {}
+            p = ini.get("path")
+            if not p or not os.path.isdir(p):
+                p = os.path.join(avd_root, name + ".avd")
+            avd_dirs[name] = p
+        elif n.endswith(".avd"):
+            avd_dirs.setdefault(n[:-4], os.path.join(avd_root, n))
+    used, unreadable = {}, []
+    for name in sorted(avd_dirs):
         try:
-            ini = _read_ini(cfgfile)
+            ini = _read_ini(os.path.join(avd_dirs[name], "config.ini"))
         except OSError:
-            if name in DEFAULT_PROTECTED_AVDS:
-                unsafe = True
+            unreadable.append(name)
             continue
         for k, v in ini.items():
             if k.startswith("image.sysdir."):
                 v = v.rstrip("/").rstrip(os.sep)
                 full = v if os.path.isabs(v) else os.path.join(cfg.android_sdk, v)
-                protected.add(os.path.realpath(full))
-    return protected, notes, unsafe
+                lst = used.setdefault(os.path.realpath(full), [])
+                if name not in lst:
+                    lst.append(name)
+    return used, unreadable
+
+
+def android_warning(avds, unreadable) -> str:
+    parts = []
+    if avds:
+        names, many = plural_names(avds)
+        parts.append(f"The {names} emulator{'s stop' if many else ' stops'} working until you "
+                     "download this image again (the SDK Manager does it).")
+    if unreadable:
+        names, many = plural_names(unreadable)
+        parts.append(f"Couldn't read the settings of emulator{'s' if many else ''} {names}; "
+                     f"{'they' if many else 'it'} may use this image.")
+    return " ".join(parts)
 
 
 def scan_android(cfg: Config) -> list:
     root = cfg.system_images_dir
     if not os.path.isdir(root):
         return []
-    protected, notes, unsafe = android_protection(cfg)
+    used, unreadable = android_protection(cfg)
     items = []
     for api in sorted(os.listdir(root)):
         api_d = os.path.join(root, api)
@@ -585,100 +648,89 @@ def scan_android(cfg: Config) -> list:
                 if not os.path.isdir(path) or os.path.islink(path):
                     continue
                 label = f"{api}/{tag}/{abi}"
-                if os.path.realpath(path) in protected:
-                    items.append(Item(key=f"android:{label}", category="Android", label=label,
-                                      tier=PROTECTED, path=path, kind="info",
-                                      note="used by an AVD, kept"))
-                elif unsafe:
-                    items.append(Item(key=f"android:{label}", category="Android", label=label,
-                                      tier=PROTECTED, path=path, kind="info",
-                                      note="not offered: " + "; ".join(notes)))
-                else:
-                    items.append(Item(key=f"android:{label}", category="Android", label=label,
-                                      tier=CAUTION, path=path, note="no AVD uses it"))
+                avds = used.get(os.path.realpath(path), [])
+                items.append(Item(key=f"android:{label}", category="Android", label=label,
+                                  tier=CAUTION, path=path,
+                                  note=("used by " + ", ".join(avds)) if avds else "no AVD uses it",
+                                  warning=android_warning(avds, unreadable)))
     return items
 
 
 # ---------------------------------------------------------------- simulator runtimes
 
-def runtime_protection(sim_list: dict, pinned_types=DEFAULT_PINNED_DEVICE_TYPES):
-    """Decide which simulator runtimes must be kept.
+def _is_running(dev: dict) -> bool:
+    """Anything but Shutdown (Booted, Booting, Shutting Down, ...) counts as in use."""
+    return dev.get("state") != "Shutdown"
 
-    Returns (reasons, warnings): reasons maps runtime identifier -> list of
-    (kind, device type name) with kind in pinned|booted|only|newest. A runtime absent from `reasons`
-    may be offered (caution tier).
 
-    Rules:
-      1. For every device type that has an existing simulator, the newest
-         runtime(s) supporting that type are kept (ties: all kept). This also
-         covers "the only runtime supporting it".
-      2. A runtime with a booted simulator is kept.
-      3. For each pinned device type (iPhone 18 Pro), the newest *general*
-         runtime (supports more than one device type) is kept, whether or not
-         a simulator exists yet.
+def _is_ios(r: dict) -> bool:
+    plat = r.get("platform")
+    return plat == "iOS" if plat else ".iOS-" in (r.get("identifier") or "")
+
+
+def runtime_protection(sim_list: dict):
+    """Decide which simulator runtimes are blocked and which carry a warning.
+
+    Returns (blocks, warns, warnings):
+      blocks   {runtime id: [reason]}: a simulator on it is running. Never offered.
+      warns    {runtime id: text}: offered (never preselected) with this warning.
+      warnings scan-level messages (none at present).
+
+    Warning rules (the 2026-11-02 incident: deleting iOS 27.0 left the iPhone 18
+    Pro simulator with nothing to run on, because 27.1 only ran the iPhone Duo):
+      1. A runtime warns for each available simulator on it when it is the
+         newest runtime (ties: all) supporting that simulator's device type,
+         so no newer runtime could run a replacement. This covers "the only
+         runtime supporting it". Only simulators that live on the runtime are
+         named: deleting a runtime never stops a simulator on another one.
+      2. The newest general iOS runtime(s) (supporting more than one device
+         type) warn, whether or not a simulator exists yet.
+    Text is built from sorted names, so the gate's exact comparison is stable.
     """
     runtimes = {r["identifier"]: r for r in sim_list.get("runtimes", []) if r.get("identifier")}
     supports = {}  # device type id -> [runtime ids]
-    type_names = {}
     for rid, r in runtimes.items():
         for t in r.get("supportedDeviceTypes", []) or []:
             tid = t.get("identifier")
             if tid:
                 supports.setdefault(tid, []).append(rid)
-                type_names[tid] = t.get("name", tid)
-    reasons, warnings = {}, []
 
-    def add(rid, kind, name):
-        lst = reasons.setdefault(rid, [])
-        if (kind, name) not in lst:
-            lst.append((kind, name))
-
-    def protect_newest(cands, kind, name):
+    def newest(cands):
         if not cands:
-            return
+            return []
         top = max(version_key(runtimes[c].get("version", "")) for c in cands)
-        for c in cands:
-            if version_key(runtimes[c].get("version", "")) == top:
-                add(c, kind, name)
+        return [c for c in cands if version_key(runtimes[c].get("version", "")) == top]
 
+    blocks, breaks = {}, {}
     for dev_rid, devs in (sim_list.get("devices") or {}).items():
         for dev in devs:
+            name = dev.get("name") or dev.get("udid") or "?"
+            if dev_rid in runtimes and _is_running(dev):
+                blocks.setdefault(dev_rid, set()).add(f"{name} is running")
             tid = dev.get("deviceTypeIdentifier")
-            if dev.get("state") == "Booted" and dev_rid in runtimes:
-                add(dev_rid, "booted", dev.get("name"))
-            if not tid:
-                continue
+            if dev_rid not in runtimes or dev.get("isAvailable") is False or not tid:
+                continue   # already can't run: deleting a runtime breaks nothing more
             cands = supports.get(tid, [])
-            name = type_names.get(tid, dev.get("name", tid))
-            protect_newest(cands, "only" if len(cands) == 1 else "newest", name)
+            if dev_rid not in cands:
+                cands = cands + [dev_rid]   # inconsistent simctl data: assume it needs dev_rid
+            if dev_rid in newest(cands):
+                breaks.setdefault(dev_rid, set()).add(name)
 
-    for tid in pinned_types:
-        cands = supports.get(tid, [])
-        name = type_names.get(tid, tid.rsplit(".", 1)[-1])
-        general = [c for c in cands if len(runtimes[c].get("supportedDeviceTypes") or []) > 1]
-        if general or cands:
-            protect_newest(general or cands, "pinned", name)
-        else:
-            warnings.append(f"no installed runtime supports pinned device type {name}")
-    return reasons, warnings
-
-
-def format_reasons(rs) -> str:
-    by = {}
-    for kind, name in rs:
-        by.setdefault(kind, []).append(name)
-    parts = []
-    if by.get("pinned"):
-        parts.append("pinned " + ", ".join(by["pinned"]))
-    if by.get("booted"):
-        parts.append("booted " + ", ".join(by["booted"]))
-    if by.get("only"):
-        parts.append("only runtime for " + ", ".join(by["only"]))
-    newest = by.get("newest", [])
-    if newest:
-        parts.append(("newest for " + ", ".join(newest)) if len(newest) <= 2
-                     else f"newest for {len(newest)} other sim types")
-    return "; ".join(parts)
+    general = newest([rid for rid, r in runtimes.items()
+                      if _is_ios(r) and len(r.get("supportedDeviceTypes") or []) > 1])
+    warns = {}
+    for rid in runtimes:
+        parts = []
+        if rid in breaks:
+            names, many = plural_names(sorted(breaks[rid]))
+            parts.append(f"Your {names} simulators stop working. No other installed runtime runs them."
+                         if many else
+                         f"Your {names} simulator stops working. No other installed runtime runs it.")
+        if rid in general:
+            parts.append(NEWEST_IOS_WARNING)
+        if parts:
+            warns[rid] = " ".join(parts)
+    return {rid: sorted(r) for rid, r in blocks.items()}, warns, []
 
 
 def scan_runtimes(cfg: Config, sim: SimctlProvider):
@@ -690,7 +742,7 @@ def scan_runtimes(cfg: Config, sim: SimctlProvider):
         images = sim.runtime_images()
     except Exception as e:  # xcrun missing, timeout, bad JSON
         return [], [f"simulator scan skipped: {e}"]
-    reasons, warnings = runtime_protection(sim_list, DEFAULT_PINNED_DEVICE_TYPES)
+    blocks, warns, warnings = runtime_protection(sim_list)
     runtimes = {r["identifier"]: r for r in sim_list.get("runtimes", []) if r.get("identifier")}
     devices = sim_list.get("devices") or {}
     items = []
@@ -700,32 +752,26 @@ def scan_runtimes(cfg: Config, sim: SimctlProvider):
         plat = (r or {}).get("platform") or (rid or "").rsplit(".", 1)[-1].split("-")[0]
         label = f"{plat} {img.get('version', '?')} ({img.get('build', '?')})"
         n_types = len((r or {}).get("supportedDeviceTypes") or [])
-        last = img.get("lastUsedAt")
-        mt = None
-        if last:
-            try:
-                mt = datetime.fromisoformat(last.replace("Z", "+00:00")).timestamp()
-            except ValueError:
-                pass
         base = dict(key=f"runtime:{uuid}", category="Simulator", label=label,
-                    size=img.get("sizeBytes"), mtime=mt,
+                    size=img.get("sizeBytes"), mtime=iso_timestamp(img.get("lastUsedAt")),
                     meta={"uuid": uuid, "runtime": rid, "types": n_types})
         if r is None:
             items.append(Item(tier=PROTECTED, kind="info",
                               note="disk image not matched to a runtime, not offered", **base))
-        elif rid in reasons:
-            items.append(Item(tier=PROTECTED, kind="info", note=format_reasons(reasons[rid]), **base))
-        elif not img.get("deletable", False):
+        elif rid in blocks:
+            items.append(Item(tier=PROTECTED, kind="info",
+                              note="; ".join(blocks[rid]) + ": shut it down first", **base))
+        elif not img.get("deletable", False) or not SIM_ID_RE.match(uuid):
             items.append(Item(tier=PROTECTED, kind="info", note="not deletable", **base))
         else:
-            sims = [d.get("name") for d in devices.get(rid, [])]
+            sims = sorted(d.get("name") or "?" for d in devices.get(rid, []))
             note = f"supports {n_types} device types; no sim depends on it"
             if sims:
                 note = (f"{len(sims)} sim(s) on it become unavailable "
-                        f"({', '.join(sims[:3])}{'...' if len(sims) > 3 else ''}); newer runtime covers them")
+                        f"({', '.join(sims[:3])}{'...' if len(sims) > 3 else ''})")
             items.append(Item(tier=CAUTION, kind="runtime",
                               argv=["xcrun", "simctl", "runtime", "delete", uuid],
-                              note=note, **base))
+                              note=note, warning=warns.get(rid, ""), **base))
     # Unavailable simulators
     unavailable = [d for devs in devices.values() for d in devs if d.get("isAvailable") is False]
     if unavailable:
@@ -737,20 +783,75 @@ def scan_runtimes(cfg: Config, sim: SimctlProvider):
     return items, warnings
 
 
-# ---------------------------------------------------------------- info rows
+def scan_simulators(cfg: Config, sim: SimctlProvider) -> list:
+    """One item per available simulator: `xcrun simctl delete <udid>`.
+
+    Unavailable simulators are left to the `simctl-unavailable` item. A running
+    simulator is listed but never offered.
+    """
+    if not sim.available:
+        return []
+    try:
+        sim_list = sim.list_all()
+    except Exception:  # scan_runtimes already reports it
+        return []
+    runtimes = {r["identifier"]: r for r in sim_list.get("runtimes", []) if r.get("identifier")}
+    items = []
+    for rid, devs in sorted((sim_list.get("devices") or {}).items()):
+        version = (runtimes.get(rid) or {}).get("version") or rid.rsplit(".", 1)[-1]
+        for dev in devs:
+            udid = dev.get("udid") or ""
+            if dev.get("isAvailable") is False or not SIM_ID_RE.match(udid):
+                continue
+            base = dict(key=f"simdevice:{udid}", category="Simulator",
+                        label=f"{dev.get('name') or udid} ({version})",
+                        path=os.path.join(cfg.sim_devices_dir, udid),
+                        mtime=iso_timestamp(dev.get("lastBootedAt")),
+                        meta={"udid": udid, "runtime": rid})
+            if _is_running(dev):
+                items.append(Item(tier=PROTECTED, kind="info", note="Running: shut it down first",
+                                  **base))
+            else:
+                items.append(Item(tier=CAUTION, kind="simdevice",
+                                  argv=["xcrun", "simctl", "delete", udid], **base))
+    return items
+
+
+# ---------------------------------------------------------------- Archives & info rows
+
+def scan_archives(cfg: Config) -> list:
+    """One REVIEW item per `Archives/<date>/<name>.xcarchive`. They move to the Trash, never rm."""
+    root = cfg.p("Library/Developer/Xcode/Archives")
+    items = []
+    try:
+        dates = sorted(os.listdir(root)) if os.path.isdir(root) and not os.path.islink(root) else []
+    except OSError:
+        return []
+    for date in dates:
+        dd = os.path.join(root, date)
+        if not os.path.isdir(dd) or os.path.islink(dd):
+            continue
+        try:
+            names = sorted(os.listdir(dd))
+        except OSError:
+            continue
+        for name in names:
+            path = os.path.join(dd, name)
+            if not name.endswith(".xcarchive") or not os.path.isdir(path) or os.path.islink(path):
+                continue
+            items.append(Item(key=f"archive:{date}/{name}", category="Xcode Archives",
+                              label=f"{name[:-len('.xcarchive')]} ({date})", tier=REVIEW,
+                              kind="trash", path=path, note="shipped build",
+                              warning=ARCHIVE_WARNING, restore=TRASH_RESTORE))
+    return items
+
 
 def scan_info(cfg: Config) -> list:
-    items = []
-    for key, label, rel, note in [
-        ("archives", "Xcode Archives", "Library/Developer/Xcode/Archives",
-         "shipped builds, needed for crash logs: never deleted"),
-        ("downloads", "~/Downloads", "Downloads", "personal files: size only, never offered"),
-    ]:
-        p = cfg.p(rel)
-        if os.path.isdir(p):
-            items.append(Item(key=key, category="Protected", label=label, tier=PROTECTED,
-                              path=p, note=note, kind="info"))
-    return items
+    p = cfg.p("Downloads")
+    if not os.path.isdir(p):
+        return []
+    return [Item(key="downloads", category="Protected", label="~/Downloads", tier=PROTECTED,
+                 path=p, note="personal files: size only, never offered", kind="info")]
 
 
 # ---------------------------------------------------------------- cost & staleness
@@ -810,10 +911,57 @@ def cost_for(it: Item, xcode_is_running: bool) -> tuple:
     if it.category == "DeviceSupport":
         return "~5 MIN", "Re-copied from the iPhone the next time you plug it in and debug."
     if it.category == "Android":
-        return f"{human(it.size)} DL", "No AVD uses it. Re-download from the SDK Manager if needed."
+        text = "Re-download from the SDK Manager if needed."
+        return f"{human(it.size)} DL", text if it.warning else "No AVD uses it. " + text
     if it.kind == "simctl-unavailable":
         return "NO COST", "These simulators already can't run."
+    if it.kind == "simdevice":
+        return "~1 MIN", "Deletes its installed apps and data. Xcode can create a fresh one."
+    if it.kind == "trash":
+        return "TRASH", "Moved to the Trash. You can Put Back."
     return "?", it.note
+
+
+RESTORE_FIXED = {
+    "derived-data": "Rebuilt automatically by the next Xcode build.",
+    "gradle-build-cache": "Rebuilt automatically by the next Gradle build.",
+}
+
+
+def explain_for(it: Item, home: Optional[str] = None) -> tuple:
+    """(deletes, restore): what gets removed and how to get it back. Empty for kept items.
+
+    `home` shortens paths to ~ (defaults to the user's home).
+    """
+    if not it.offerable:
+        return "", ""
+    home = home or os.path.realpath(os.path.expanduser("~"))
+    deletes = tilde(it.path, home) if it.kind in ("path", "trash") else (it.command or "")
+    if it.kind == "trash":
+        restore = TRASH_RESTORE
+    elif it.kind == "runtime":
+        restore = "Re-download the runtime in Xcode › Settings › Components."
+    elif it.kind == "simdevice":
+        restore = "Create a new simulator in Xcode › Window › Devices and Simulators."
+    elif it.kind == "simctl-unavailable":
+        restore = "Nothing to get back: they can't run any more."
+    elif it.key in RESTORE_FIXED:
+        restore = RESTORE_FIXED[it.key]
+    elif it.category == "Cache":          # the fixed download caches
+        restore = "Downloaded again on demand."
+    elif it.category == "Flutter" or it.key.endswith("/.next"):
+        restore = "Rebuilt automatically by the next build."
+    elif it.key.endswith("/node_modules"):
+        restore = "Run `npm install` to get it back."
+    elif it.key.startswith("gradle:"):
+        restore = "Downloaded again by the next build that needs it."
+    elif it.category == "DeviceSupport":
+        restore = "Re-copied from the iPhone the next time you debug on it."
+    elif it.category == "Android":
+        restore = "Download it again in Android Studio › SDK Manager."
+    else:
+        restore = ""
+    return deletes, restore
 
 
 def execution_order(items: list) -> list:
@@ -869,18 +1017,14 @@ class ScanResult:
         return sum(i.size or 0 for i in self.offerable)
 
 
-TIER_ORDER = {SAFE: 0, OPTIN: 1, CAUTION: 2, PROTECTED: 3}
+TIER_ORDER = {SAFE: 0, OPTIN: 1, CAUTION: 2, REVIEW: 3, PROTECTED: 4}
 
 
 def scan(cfg: Config, sim: Optional[SimctlProvider] = None,
          xcode_check: Callable[[], bool] = xcode_running,
          measure: bool = True, now: Optional[float] = None,
          env: Optional[Env] = None) -> ScanResult:
-    if env is None:
-        # Only the real home may query the real Mac; fixture homes never do.
-        env = Env.real() if cfg.home == os.path.realpath(os.path.expanduser("~")) else Env.fake()
-    if sim is None:
-        sim = SimctlProvider() if env.dev_tools() else NoSimctl()
+    sim, env = resolve_providers(cfg, sim, env)
     xr = xcode_check()
     items, project_warnings = [], []
     items += scan_projects(cfg, project_warnings)
@@ -891,11 +1035,14 @@ def scan(cfg: Config, sim: Optional[SimctlProvider] = None,
     rt_items, warnings = scan_runtimes(cfg, sim)
     warnings = project_warnings + warnings
     items += rt_items
+    items += scan_simulators(cfg, sim)
+    items += scan_archives(cfg)
     items += scan_info(cfg)
 
     if measure:
         def size_of(it: Item):
-            if it.kind in ("path", "info") and it.path and it.size is None:
+            if (it.kind in ("path", "info", "simdevice", "trash") and it.path and it.size is None
+                    and os.path.isdir(it.path)):
                 it.size = du_bytes(it.path)
                 if it.mtime is None:
                     it.mtime = mtime_of(it.path)
@@ -916,6 +1063,7 @@ def scan(cfg: Config, sim: Optional[SimctlProvider] = None,
 
     for it in items:
         it.cost_tag, it.cost = cost_for(it, xr)
+        it.deletes, it.restore = explain_for(it, cfg.home)
     now = time.time() if now is None else now
     changed = {}
     for it in items:
@@ -935,10 +1083,9 @@ def scan(cfg: Config, sim: Optional[SimctlProvider] = None,
 # ---------------------------------------------------------------- safety gate
 
 def deny_paths(cfg: Config) -> list:
-    out = [os.path.realpath(p) for p in cfg.static_deny()]
-    protected_images, _, _ = android_protection(cfg)
-    out += sorted(protected_images)
-    return out
+    """Never rm'd, nor any folder containing them. Android images used by an emulator
+    are no longer here: they are offered with a warning that validate_item re-checks."""
+    return [os.path.realpath(p) for p in cfg.static_deny()]
 
 
 def validate_path(path: str, cfg: Config) -> str:
@@ -995,35 +1142,117 @@ def validate_path(path: str, cfg: Config) -> str:
     raise UnsafeTarget(f"not on the allow-list: {real}")
 
 
-def validate_item(it: Item, cfg: Config, sim: Optional[SimctlProvider] = None) -> None:
-    """Re-check an item right before it is deleted. Raises UnsafeTarget."""
+# ---------------------------------------------------------------- re-scan one item
+
+def _rescan_projects(key: str, cfg: Config, sim, env) -> list:
+    """Re-check one project artifact without walking every project root."""
+    rel = key.split(":", 1)[1]
+    d = os.path.dirname(os.path.join(cfg.home, rel))
+    if os.path.normpath(d) != d:
+        return []
+    for root in cfg.project_roots:
+        if not is_within(d, root):
+            continue
+        parts = [] if d == root else os.path.relpath(d, root).split(os.sep)
+        # Same limits as find_projects: no pruned or symlinked folders, bounded depth.
+        if len(parts) > MAX_PROJECT_DEPTH or any(p in PRUNE_DIRS for p in parts):
+            return []
+        if any(os.path.islink(os.path.join(root, *parts[:i + 1])) for i in range(len(parts))):
+            return []
+        pub = os.path.isfile(os.path.join(d, "pubspec.yaml"))
+        pkg = os.path.isfile(os.path.join(d, "package.json"))
+        return _project_items(cfg, root, d, pub, pkg)
+    return []
+
+
+def _rescan_fixed(key: str, cfg: Config, sim, env) -> list:
+    return scan_fixed(cfg, xcode_is_running=False)   # Xcode running only changes the note
+
+
+# Key prefix -> scanner(key, cfg, sim, env) returning the items that scanner produces.
+# Later tasks add their prefixes here. A key with no entry falls back to a full
+# scan(measure=False): correct, but it walks every project root, so it is slow.
+RESCANNERS = {
+    "runtime:": lambda key, cfg, sim, env: scan_runtimes(cfg, sim)[0],
+    "simctl-unavailable": lambda key, cfg, sim, env: scan_runtimes(cfg, sim)[0],
+    "simdevice:": lambda key, cfg, sim, env: scan_simulators(cfg, sim),
+    "gradle:": lambda key, cfg, sim, env: scan_gradle_versions(cfg),
+    "devsupport:": lambda key, cfg, sim, env: scan_device_support(cfg),
+    "android:": lambda key, cfg, sim, env: scan_android(cfg),
+    "archive:": lambda key, cfg, sim, env: scan_archives(cfg),
+    "flutter:": _rescan_projects,
+    "web:": _rescan_projects,
+    "derived-data": _rescan_fixed,
+    "shorebird-cache": _rescan_fixed,
+    "gradle-build-cache": _rescan_fixed,
+    "npm-cache": _rescan_fixed,
+    "cocoapods-cache": _rescan_fixed,
+    "homebrew-cache": _rescan_fixed,
+    "playwright-cache": _rescan_fixed,
+}
+
+
+def rescan_item(it: Item, cfg: Config, sim: Optional[SimctlProvider] = None,
+                env: Optional[Env] = None) -> Optional[Item]:
+    """Re-run the scanner that produced `it.key`; the fresh item with that key, or None."""
+    sim, env = resolve_providers(cfg, sim, env)
+    scanner = next((f for prefix, f in RESCANNERS.items() if it.key.startswith(prefix)), None)
+    if scanner is not None:
+        fresh = scanner(it.key, cfg, sim, env)
+    else:
+        fresh = scan(cfg, sim, xcode_check=lambda: False, measure=False, env=env).items
+    return next((f for f in fresh if f.key == it.key), None)
+
+
+# ---------------------------------------------------------------- gate
+
+def validate_item(it: Item, cfg: Config, sim: Optional[SimctlProvider] = None,
+                  env: Optional[Env] = None) -> None:
+    """Re-check an item right before it is deleted. Raises UnsafeTarget.
+
+    The item is scanned again from fresh data: it must still exist, still be
+    offered, and carry exactly the warning the user saw. Its kind, path and
+    command must match the fresh item, so a forged item can't borrow another
+    item's clean status.
+    """
     if not it.offerable:
         raise UnsafeTarget(f"{it.label} is not offerable ({it.tier})")
+    fresh = rescan_item(it, cfg, sim, env)
+    if fresh is None:
+        raise UnsafeTarget(f"{it.label} is gone")
+    if not fresh.offerable:
+        raise UnsafeTarget(f"{it.label}: {fresh.note or 'not offered now'}")
+    if fresh.warning != it.warning:
+        raise UnsafeTarget(SITUATION_CHANGED)
+    if (fresh.kind, fresh.path, fresh.argv) != (it.kind, it.path, it.argv):
+        raise UnsafeTarget(SITUATION_CHANGED)
     if it.kind == "path":
         validate_path(it.path, cfg)
         return
     if it.kind == "runtime":
-        sim = sim or SimctlProvider()
-        uuid = it.meta.get("uuid")
-        fresh, _ = scan_runtimes(cfg, sim)
-        ok = {i.meta.get("uuid") for i in fresh if i.kind == "runtime" and i.offerable}
-        if uuid not in ok:
-            raise UnsafeTarget(f"runtime {it.label} is protected now (re-checked)")
+        uuid = it.key.split(":", 1)[1]
         if it.argv != ["xcrun", "simctl", "runtime", "delete", uuid]:
             raise UnsafeTarget("unexpected runtime command")
+        return
+    if it.kind == "simdevice":
+        udid = it.key.split(":", 1)[1]
+        if not SIM_ID_RE.match(udid) or it.argv != ["xcrun", "simctl", "delete", udid]:
+            raise UnsafeTarget("unexpected simulator command")
         return
     if it.kind == "simctl-unavailable":
         if it.argv != ["xcrun", "simctl", "delete", "unavailable"]:
             raise UnsafeTarget("unexpected simctl command")
         return
+    if it.kind == "trash":
+        raise UnsafeTarget("moving to the Trash is not available yet")
     raise UnsafeTarget(f"unknown item kind {it.kind}")
 
 
 def execute_item(it: Item, cfg: Config, sim: Optional[SimctlProvider] = None,
-                 runner: Callable = subprocess.run):
+                 runner: Callable = subprocess.run, env: Optional[Env] = None):
     """Delete one item after re-validating it. Returns (ok, message)."""
     try:
-        validate_item(it, cfg, sim)
+        validate_item(it, cfg, sim, env)
     except UnsafeTarget as e:
         return False, f"REFUSED: {e}"
     argv = ["rm", "-rf", "--", it.path] if it.kind == "path" else it.argv

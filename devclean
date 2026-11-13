@@ -27,7 +27,8 @@ def c(text, code):
     return f"\033[{code}m{text}\033[0m" if USE_COLOR else text
 
 
-TIER_COLOR = {core.SAFE: "32", core.OPTIN: "36", core.CAUTION: "33", core.PROTECTED: "90"}
+TIER_COLOR = {core.SAFE: "32", core.OPTIN: "36", core.CAUTION: "33", core.REVIEW: "35",
+              core.PROTECTED: "90"}
 
 
 human = core.human
@@ -58,6 +59,8 @@ def print_table(res, numbered, selected):
         line = (f"{num if num else '':>3}  {mark} {it.tier:8} {label:46} "
                 f"{human(it.size):>9}  {age(it.mtime):10}  {it.note}")
         print(c(line, TIER_COLOR.get(it.tier, "0")))
+        if it.warning:
+            print(c(f"{'':8} warning: {it.warning}", "31"))
 
 
 def summarize(res, selected_items):
@@ -230,11 +233,15 @@ def main(argv=None):
     print(c(f"\n{'Would run' if args.dry_run else 'Will delete'} ({human(total)}):", "1"))
     for it in chosen:
         print(f"  {human(it.size):>9}  [{it.tier}] {it.category}: {it.label}")
+        if it.warning:
+            print(c(f"             warning: {it.warning}", "31"))
     # Command lines carry nothing but the command: zsh has INTERACTIVE_COMMENTS
     # off by default, so a trailing "# note" would become extra rm arguments.
+    # Trash items have no command: only the app can move them to the Trash.
     print("\nCommands:")
     for it in chosen:
-        print(it.command)
+        if it.command:
+            print(it.command)
 
     if args.dry_run:
         print_unselected(numbered_items, selected)

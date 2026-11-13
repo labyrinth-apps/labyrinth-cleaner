@@ -76,7 +76,7 @@ class ReportTests(unittest.TestCase):
             self.assertFalse(r["preselect"])
 
     def test_rows_ordered_by_group_then_size(self):
-        order = {"safe": 0, "time": 1, "check": 2, "kept": 3}
+        order = {"safe": 0, "time": 1, "check": 2, "review": 3, "kept": 4}
         keys = [(order[r["group"]], -(r["size"] or 0))
                 for r in rep.build_rows(self.res.items, self.home)]
         self.assertEqual(keys, sorted(keys))
@@ -96,7 +96,10 @@ class ReportTests(unittest.TestCase):
     def test_segment_of(self):
         by = {i.key: i for i in self.res.items}
         self.assertEqual(rep.segment_of(by["derived-data"]), "xcode")
-        self.assertEqual(rep.segment_of(by["archives"]), "xcode")
+        # Task 2: the single "archives" info row became one archive: item per archive.
+        arch = by["archive:2026-11-01/App.xcarchive"]
+        self.assertEqual(rep.segment_of(arch), "xcode")
+        self.assertEqual(rep.GROUP_OF[arch.tier], "review")
         self.assertEqual(rep.segment_of(by["downloads"]), "other")
         self.assertEqual(rep.segment_of(by["gradle:8.14"]), "caches")
         rt = [i for i in self.res.items if i.category == "Simulator"][0]
@@ -130,9 +133,18 @@ class ReportTests(unittest.TestCase):
 
     def test_simulator_segment_counts_runtimes_and_devices(self):
         segs = {s["id"]: s for s in rep.disk_map(self.res, dict(ZERO, sim_devices=123))}
+        # Simulator data folders are in extras["sim_devices"]; their items must not count twice.
         runtimes = sum(i.size or 0 for i in self.res.items
-                       if rep.segment_of(i) == "sim" and i.kind != "simctl-unavailable")
+                       if rep.segment_of(i) == "sim" and i.kind != "simctl-unavailable"
+                       and not i.key.startswith("simdevice:"))
         self.assertEqual(segs["sim"]["bytes"], runtimes + 123)
+
+    def test_simulator_device_sizes_not_counted_twice(self):
+        sim = next(i for i in self.res.items if i.key.startswith("simdevice:"))
+        before = {s["id"]: s for s in rep.disk_map(self.res, ZERO)}["sim"]["bytes"]
+        sim.size = 10 ** 9
+        after = {s["id"]: s for s in rep.disk_map(self.res, ZERO)}["sim"]["bytes"]
+        self.assertEqual(before, after)
 
     def test_headline_and_payload(self):
         p = rep.scan_payload(self.res, cfg_for(self.home), "id1", 1.5, ZERO)

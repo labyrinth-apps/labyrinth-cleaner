@@ -196,20 +196,23 @@ class DenyListTests(unittest.TestCase):
             self.assertEqual(core.validate_path(self.p(rel), self.cfg), os.path.realpath(self.p(rel)))
 
     def test_scan_never_offers_protected_or_source(self):
+        """Archives are offered only as REVIEW items that move to the Trash (never rm),
+        and the newest Gradle version is offered with a warning (Task 2: user choice)."""
         res = scan(self.home)
-        offered = offered_paths(res)
-        for path in offered:
+        rm_offered = {i.path for i in res.items if i.offerable and i.kind == "path"}
+        for path in rm_offered:
             self.assertNotIn("Archives", path)
             self.assertNotIn("Downloads", path)
             self.assertIn(os.path.basename(path),
                           {"build", ".dart_tool", "node_modules", ".next", "DerivedData", "cache",
                            "_cacache", "CocoaPods", "Homebrew", "ms-playwright", "build-cache-1",
-                           "8.14", "9.8.0"}, path)
-        self.assertNotIn(self.p("Documents/Projects/web_app/build"), offered)
-        self.assertNotIn(self.p("Documents/Projects/web_app/.next/node_modules"), offered)
-        # Archives and Downloads appear only as info rows
+                           "8.14", "9.8.0", "9.10.0"}, path)
+        self.assertNotIn(self.p("Documents/Projects/web_app/build"), rm_offered)
+        self.assertNotIn(self.p("Documents/Projects/web_app/.next/node_modules"), rm_offered)
         info = {i.key: i for i in res.items}
-        self.assertEqual(info["archives"].tier, core.PROTECTED)
+        self.assertNotIn("archives", info)
+        arch = info["archive:2026-11-01/App.xcarchive"]
+        self.assertEqual((arch.tier, arch.kind), (core.REVIEW, "trash"))
         self.assertEqual(info["downloads"].tier, core.PROTECTED)
         self.assertGreater(info["downloads"].size, 0)
 
@@ -247,7 +250,9 @@ class GradleTests(unittest.TestCase):
         try:
             home = make_home(tmp)
             items = {i.label: i for i in core.scan_gradle_versions(cfg_for(home))}
-            self.assertEqual(items["Gradle caches 9.10.0"].tier, core.PROTECTED)
+            # Task 2: the newest version is offered with a warning instead of kept.
+            self.assertEqual(items["Gradle caches 9.10.0"].tier, core.CAUTION)
+            self.assertTrue(items["Gradle caches 9.10.0"].warning)
             self.assertEqual(items["Gradle caches 9.8.0"].tier, core.SAFE)
             self.assertEqual(items["Gradle caches 8.14"].tier, core.SAFE)
             self.assertNotIn("Gradle caches modules-2", items)
@@ -273,12 +278,14 @@ class DeviceSupportTests(unittest.TestCase):
                 mkdir(os.path.join(ds, n))
             cfg = cfg_for(home)
             items = {i.label: i for i in core.scan_device_support(cfg)}
-            self.assertEqual(items["iPhone16,1 27.2 (24B119)"].tier, core.PROTECTED)
-            self.assertEqual(items["iPhone16,1 27.2 (24B5100b)"].tier, core.CAUTION)
-            self.assertEqual(items["iPhone16,1 27.1 (24A5070a)"].tier, core.CAUTION)
+            # Task 2: the newest per model is offered with a warning instead of kept.
+            newest = core.DEVSUPPORT_NEWEST_WARNING
+            self.assertEqual(items["iPhone16,1 27.2 (24B119)"].warning, newest)
+            self.assertEqual(items["iPhone16,1 27.2 (24B5100b)"].warning, "")
+            self.assertEqual(items["iPhone16,1 27.1 (24A5070a)"].warning, "")
             self.assertEqual(items["garbage folder"].tier, core.PROTECTED)
-            kept17 = [n for n in names if n.startswith("iPhone17,3") and items[n].tier == core.PROTECTED]
-            self.assertEqual(len(kept17), 1)
+            warned17 = [n for n in names if n.startswith("iPhone17,3") and items[n].warning]
+            self.assertEqual(len(warned17), 1)
             # caution items are never preselected and pass the gate (spaces/parens ok)
             for it in items.values():
                 if it.tier == core.CAUTION:
@@ -291,25 +298,36 @@ class DeviceSupportTests(unittest.TestCase):
 
 # ============================================================ Android
 
+def make_android(tmp, home):
+    """Three images used by emulators (one AVD stored outside ~/.android/avd) and one unused.
+
+    Returns {"Pixel": path, "TV": path, "Other": path, "unused": path}.
+    """
+    sdk = os.path.join(home, "Library/Android/sdk/system-images")
+    paths = {"Pixel": mkdir(f"{sdk}/android-37.1/google_apis_playstore_ps16k/arm64-v8a"),
+             "TV": mkdir(f"{sdk}/android-34/google-tv/arm64-v8a"),
+             "Other": mkdir(f"{sdk}/android-35/google_apis/arm64-v8a"),
+             "unused": mkdir(f"{sdk}/android-33/google_apis/arm64-v8a")}
+    avd = os.path.join(home, ".android/avd")
+    write(f"{avd}/Pixel.avd/config.ini",
+          "hw.lcd.density=420\nimage.sysdir.1=system-images/android-37.1/google_apis_playstore_ps16k/arm64-v8a/\n")
+    write(f"{avd}/Pixel.ini", f"path={avd}/Pixel.avd\n")
+    write(f"{avd}/TV.avd/config.ini",
+          "image.sysdir.1=system-images/android-34/google-tv/arm64-v8a/\n")
+    # An AVD stored outside ~/.android/avd, found via its .ini path=
+    elsewhere = os.path.join(tmp, "elsewhere", "Other.avd")
+    write(f"{elsewhere}/config.ini", "image.sysdir.1=system-images/android-35/google_apis/arm64-v8a/\n")
+    write(f"{avd}/Other.ini", f"path={elsewhere}\n")
+    return paths
+
+
 class AndroidTests(unittest.TestCase):
     def setUp(self):
         self.tmp = os.path.realpath(tempfile.mkdtemp(prefix="devclean-test-"))
         self.home = os.path.join(self.tmp, "home")
-        sdk = os.path.join(self.home, "Library/Android/sdk/system-images")
-        self.used_pixel = mkdir(f"{sdk}/android-37.1/google_apis_playstore_ps16k/arm64-v8a")
-        self.used_tv = mkdir(f"{sdk}/android-34/google-tv/arm64-v8a")
-        self.used_other = mkdir(f"{sdk}/android-35/google_apis/arm64-v8a")
-        self.unused = mkdir(f"{sdk}/android-33/google_apis/arm64-v8a")
-        avd = os.path.join(self.home, ".android/avd")
-        write(f"{avd}/Pixel_10_Pro.avd/config.ini",
-              "hw.lcd.density=420\nimage.sysdir.1=system-images/android-37.1/google_apis_playstore_ps16k/arm64-v8a/\n")
-        write(f"{avd}/Pixel_10_Pro.ini", f"path={avd}/Pixel_10_Pro.avd\n")
-        write(f"{avd}/Television_4K.avd/config.ini",
-              "image.sysdir.1=system-images/android-34/google-tv/arm64-v8a/\n")
-        # An AVD stored outside ~/.android/avd, found via its .ini path=
-        elsewhere = os.path.join(self.tmp, "elsewhere", "Other.avd")
-        write(f"{elsewhere}/config.ini", "image.sysdir.1=system-images/android-35/google_apis/arm64-v8a/\n")
-        write(f"{avd}/Other.ini", f"path={elsewhere}\n")
+        imgs = make_android(self.tmp, self.home)
+        self.used_pixel, self.used_tv = imgs["Pixel"], imgs["TV"]
+        self.used_other, self.unused = imgs["Other"], imgs["unused"]
         self.cfg = cfg_for(self.home)
 
     def tearDown(self):
@@ -318,19 +336,16 @@ class AndroidTests(unittest.TestCase):
     def tiers(self):
         return {i.path: i.tier for i in core.scan_android(self.cfg)}
 
-    def test_only_unused_image_offered(self):
-        t = self.tiers()
-        self.assertEqual(t[self.unused], core.CAUTION)
-        for used in (self.used_pixel, self.used_tv, self.used_other):
-            self.assertEqual(t[used], core.PROTECTED, used)
-            with self.assertRaises(core.UnsafeTarget):
-                core.validate_path(used, self.cfg)
+    def test_used_images_offered_with_warning(self):
+        """Task 2: images used by an emulator are offered with a warning (was: kept and
+        refused by validate_path). The warning, re-checked by validate_item, is the guard."""
+        by = {i.path: i for i in core.scan_android(self.cfg)}
+        self.assertEqual((by[self.unused].tier, by[self.unused].warning), (core.CAUTION, ""))
+        for used, name in ((self.used_pixel, "Pixel"), (self.used_tv, "TV"), (self.used_other, "Other")):
+            self.assertEqual(by[used].tier, core.CAUTION, used)
+            self.assertIn(f"The {name} emulator stops working", by[used].warning)
+            core.validate_path(used, self.cfg)
         core.validate_path(self.unused, self.cfg)
-
-    def test_unreadable_protected_avd_blocks_all(self):
-        os.remove(os.path.join(self.home, ".android/avd/Television_4K.avd/config.ini"))
-        t = self.tiers()
-        self.assertTrue(all(v == core.PROTECTED for v in t.values()), t)
 
     def test_partial_system_image_paths_refused(self):
         sdk = os.path.join(self.home, "Library/Android/sdk/system-images")
@@ -350,20 +365,16 @@ class RuntimeProtectionTests(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmp)
 
-    def test_incident_2026_11_02_never_offers_27_0(self):
-        for with_sim in (True, False):  # pinned rule protects it even with no 18 Pro sim
-            items, _ = core.scan_runtimes(self.cfg, incident_sim(with_sim))
-            self.assertNotIn("UUID-270", offered_runtime_uuids(items), with_sim)
-            self.assertNotIn("UUID-271", offered_runtime_uuids(items))  # only runtime for Duo sim
-            kept = next(i for i in items if i.meta.get("uuid") == "UUID-270")
-            self.assertIn("iPhone 18 Pro", kept.note)
-
     def test_duo_only_runtime_does_not_count_as_general(self):
-        # No sims at all: the Duo runtime is newer but not general, so 27.0 is kept
+        """No sims at all: the Duo runtime is newer but not general, so 27.0 carries the
+        newest-iOS warning (Task 2: was kept) and 27.1 carries none."""
         sim = incident_sim(False)
         sim._list["devices"] = {}
         items, _ = core.scan_runtimes(self.cfg, sim)
-        self.assertEqual(offered_runtime_uuids(items), {"UUID-271"})
+        self.assertEqual(offered_runtime_uuids(items), {"UUID-270", "UUID-271"})
+        by = {i.meta.get("uuid"): i for i in items}
+        self.assertEqual(by["UUID-270"].warning, core.NEWEST_IOS_WARNING)
+        self.assertEqual(by["UUID-271"].warning, "")
 
     def test_older_general_runtime_offered_when_newer_covers_it(self):
         lst = {"runtimes": [runtime("iOS-26-5", "26.5", "23F77", GENERAL),
@@ -379,21 +390,32 @@ class RuntimeProtectionTests(unittest.TestCase):
         self.assertEqual(it.argv, ["xcrun", "simctl", "runtime", "delete", "U265"])
         self.assertIn("iPad (A16)", it.note)
 
-    def test_only_runtime_for_old_device_type_kept(self):
+    def test_only_runtime_for_old_device_type_warns(self):
+        """Task 2: was kept; now offered with a warning naming the simulator."""
         lst = {"runtimes": [runtime("iOS-26-5", "26.5", "23F77", GENERAL + ["iPhone 15"]),
                             runtime("iOS-27-2", "27.2", "24B8117", GENERAL)],
                "devices": {R + "iOS-26-5": [device("iPhone 15", "A")]}}
         imgs = {"U265": image("iOS-26-5", "26.5", "23F77"), "U272": image("iOS-27-2", "27.2", "24B8117")}
         items, _ = core.scan_runtimes(self.cfg, core.FixtureSimctl(lst, imgs))
-        self.assertEqual(offered_runtime_uuids(items), set())
+        by = {i.meta.get("uuid"): i for i in items}
+        self.assertEqual(by["U265"].warning,
+                         "Your iPhone 15 simulator stops working. No other installed runtime runs it.")
+        self.assertEqual(by["U272"].warning, core.NEWEST_IOS_WARNING)
+        self.assertTrue(all(not i.preselect for i in items))
 
-    def test_same_version_tie_protects_both(self):
+    def test_same_version_tie_warns_both(self):
+        """Task 2: was kept; both tied runtimes are now offered, each with a warning."""
         lst = {"runtimes": [runtime("iOS-27-2", "27.2", "24B8117", GENERAL),
                             runtime("iOS-27-2-b", "27.2", "24B9000", GENERAL)],
                "devices": {R + "iOS-27-2": [device("iPhone 17", "A")]}}
         imgs = {"A": image("iOS-27-2", "27.2", "24B8117"), "B": image("iOS-27-2-b", "27.2", "24B9000")}
         items, _ = core.scan_runtimes(self.cfg, core.FixtureSimctl(lst, imgs))
-        self.assertEqual(offered_runtime_uuids(items), set())
+        self.assertEqual(offered_runtime_uuids(items), {"A", "B"})
+        by = {i.meta.get("uuid"): i for i in items}
+        # The iPhone 17 simulator lives on A; deleting B never stops it.
+        self.assertEqual(by["A"].warning, "Your iPhone 17 simulator stops working. No other "
+                                          "installed runtime runs it. " + core.NEWEST_IOS_WARNING)
+        self.assertEqual(by["B"].warning, core.NEWEST_IOS_WARNING)
 
     def test_unmatched_image_not_offered(self):
         lst = {"runtimes": [], "devices": {}}
@@ -402,29 +424,289 @@ class RuntimeProtectionTests(unittest.TestCase):
         self.assertEqual(offered_runtime_uuids(items), set())
 
     def test_real_machine_fixture(self):
-        """simctl output captured on 2026-11-11: only iOS 26.5 may be offered."""
+        """simctl output captured on 2026-11-11.
+
+        Task 2 (user choice): iOS 26.5 is offered with no warning; the general 27.2 runtime
+        stays kept only because a booted simulator runs on it; the Duo-only 27.2 and the
+        watchOS runtime are offered with a warning naming their simulators (were kept)."""
         items, warnings = core.scan_runtimes(self.cfg, fixture_sim())
         self.assertEqual(warnings, [])
-        self.assertEqual(offered_runtime_uuids(items), {"91298CDE-FDEA-4F7C-8FF5-E27CFAC0C3B6"})
         by_uuid = {i.meta.get("uuid"): i for i in items}
+        ios265 = by_uuid["91298CDE-FDEA-4F7C-8FF5-E27CFAC0C3B6"]
+        self.assertEqual((ios265.tier, ios265.warning), (core.CAUTION, ""))
         general = by_uuid["8CC38006-6DBA-4D63-9F9E-A0C3B02E5B16"]  # iOS 27.2 24B8117
         self.assertEqual(general.tier, core.PROTECTED)
-        self.assertIn("pinned iPhone 18 Pro", general.note)
+        self.assertIn("iPhone 18 Pro Max", general.note)
         duo = by_uuid["6FCD9931-A1D9-47D9-9C2F-BF4C3355AEDE"]
-        self.assertEqual(duo.tier, core.PROTECTED)
-        self.assertIn("iPhone Duo", duo.note)
-        self.assertEqual(by_uuid["0D0A92AB-83AF-4E8B-BCCD-21DABFA6AECC"].tier, core.PROTECTED)
+        self.assertEqual(duo.tier, core.CAUTION)
+        self.assertFalse(duo.preselect)
+        self.assertEqual(duo.warning,
+                         "Your iPhone Duo simulator stops working. No other installed runtime runs it.")
+        watch = by_uuid["0D0A92AB-83AF-4E8B-BCCD-21DABFA6AECC"]
+        self.assertEqual(watch.tier, core.CAUTION)
+        self.assertIn("Apple Watch Series 12 (46mm)", watch.warning)
+        self.assertIn("simulators stop working", watch.warning)
 
     def test_execute_rechecks_runtime_protection(self):
+        """A forged item without the warning the fresh scan shows is refused (Task 2)."""
         sim = incident_sim()
-        forged = core.Item(key="r", category="Simulator", label="iOS 27.0", tier=core.CAUTION,
-                           kind="runtime", argv=["xcrun", "simctl", "runtime", "delete", "UUID-270"],
+        forged = core.Item(key="runtime:UUID-270", category="Simulator", label="iOS 27.0",
+                           tier=core.CAUTION, kind="runtime",
+                           argv=["xcrun", "simctl", "runtime", "delete", "UUID-270"],
                            meta={"uuid": "UUID-270"})
         calls = []
         ok, msg = core.execute_item(forged, self.cfg, sim, runner=lambda *a, **k: calls.append(a))
         self.assertFalse(ok)
         self.assertIn("REFUSED", msg)
+        self.assertIn("Situation changed: scan again", msg)
         self.assertEqual(calls, [])
+
+    def test_forged_argv_on_clean_key_refused(self):
+        """An item keyed as the clean 27.1 runtime but whose argv deletes 27.0 is refused."""
+        sim = incident_sim(False)
+        sim._list["devices"] = {}
+        items, _ = core.scan_runtimes(self.cfg, sim)
+        it = next(i for i in items if i.key == "runtime:UUID-271")
+        it.argv = ["xcrun", "simctl", "runtime", "delete", "UUID-270"]
+        it.meta["uuid"] = "UUID-270"
+        with self.assertRaises(core.UnsafeTarget):
+            core.validate_item(it, self.cfg, sim)
+
+
+# ============================================================ choice, warnings, simulators
+
+def booted(sim, udid):
+    for devs in sim._list["devices"].values():
+        for d in devs:
+            if d["udid"] == udid:
+                d["state"] = "Booted"
+    return sim
+
+
+class ChoiceAndSimulatorTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = os.path.realpath(tempfile.mkdtemp(prefix="devclean-test-"))
+        self.home = make_home(self.tmp)
+        self.cfg = cfg_for(self.home)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp)
+
+    def by_key(self, sim=None):
+        res = core.scan(self.cfg, sim or core.NoSimctl(), xcode_check=lambda: False,
+                        env=core.Env.fake())
+        return {i.key: i for i in res.items}
+
+    def test_incident_fixture_offers_27_0_with_warning(self):
+        """Was test_incident_2026_11_02_never_offers_27_0: the runtime the 2026-11-02
+        incident deleted is now offered, but never preselected and with a clear warning."""
+        it = self.by_key(incident_sim())["runtime:UUID-270"]
+        self.assertTrue(it.offerable)
+        self.assertEqual(it.tier, core.CAUTION)
+        self.assertFalse(it.preselect)
+        self.assertTrue(it.warning.startswith(
+            "Your iPhone 18 Pro simulator stops working. No other installed runtime runs it."),
+            it.warning)
+        # 27.0 is also the newest general iOS runtime: both texts, joined by a space.
+        self.assertEqual(it.warning, "Your iPhone 18 Pro simulator stops working. No other installed "
+                                     "runtime runs it. This is your newest iOS runtime. New simulators need it.")
+        self.assertEqual(it.to_dict()["warning"], it.warning)
+
+    def test_newest_ios_runtime_warning(self):
+        by = self.by_key(incident_sim(with_18pro_sim=False))
+        self.assertEqual(by["runtime:UUID-270"].warning,
+                         "This is your newest iOS runtime. New simulators need it.")
+        self.assertEqual(by["runtime:UUID-271"].warning,
+                         "Your iPhone Duo simulator stops working. No other installed runtime runs it.")
+
+    def test_booted_runtime_still_kept(self):
+        it = self.by_key(booted(incident_sim(), "P1"))["runtime:UUID-270"]
+        self.assertEqual(it.tier, core.PROTECTED)
+        self.assertFalse(it.offerable)
+        self.assertIn("iPhone 18 Pro", it.note)
+
+    def test_simulator_devices_listed(self):
+        by = self.by_key(incident_sim())
+        p1 = by["simdevice:P1"]
+        self.assertEqual((p1.tier, p1.kind, p1.category), (core.CAUTION, "simdevice", "Simulator"))
+        self.assertEqual(p1.argv, ["xcrun", "simctl", "delete", "P1"])
+        self.assertEqual(p1.label, "iPhone 18 Pro (27.0)")
+        self.assertFalse(p1.preselect)
+        self.assertEqual(p1.cost, "Deletes its installed apps and data. Xcode can create a fresh one.")
+        self.assertIn("simdevice:D1", by)
+        b = self.by_key(booted(incident_sim(), "P1"))["simdevice:P1"]
+        self.assertEqual((b.tier, b.kind), (core.PROTECTED, "info"))
+        self.assertEqual(b.note, "Running: shut it down first")
+
+    def test_simulator_mtime_and_size(self):
+        sim = incident_sim()
+        sim._list["devices"][R + "iOS-27-0"][0]["lastBootedAt"] = "2026-11-01T10:00:00Z"
+        mkdir(os.path.join(self.cfg.sim_devices_dir, "P1"))
+        p1 = self.by_key(sim)["simdevice:P1"]
+        self.assertEqual(p1.mtime, 1793527200.0)
+        self.assertGreater(p1.size, 0)
+
+    def test_unavailable_sims_not_listed_twice(self):
+        by = self.by_key(orphan_sim())
+        self.assertIn("simctl-unavailable", by)
+        self.assertNotIn("simdevice:GONE", by)
+
+    def test_unavailable_sim_not_named_in_runtime_warning(self):
+        """A simulator whose runtime is already gone can't 'stop working'."""
+        by = self.by_key(orphan_sim())
+        self.assertNotIn("iPhone 17", by["runtime:UUID-272"].warning)
+        self.assertIn("iPhone 18 Pro", by["runtime:UUID-272"].warning)
+
+    def test_runtime_warning_names_only_its_own_simulators(self):
+        """The iPad (A16) simulator lives on 26.5: deleting 27.2 doesn't stop it."""
+        by = self.by_key(orphan_sim())
+        self.assertNotIn("iPad (A16)", by["runtime:UUID-272"].warning)
+        self.assertEqual(by["runtime:UUID-265"].warning, "")
+
+    def test_newest_gradle_offered_with_warning(self):
+        it = self.by_key()["gradle:9.10.0"]
+        self.assertEqual(it.tier, core.CAUTION)
+        self.assertFalse(it.preselect)
+        self.assertEqual(it.warning,
+                         "The version your projects probably use. It downloads again on the next build.")
+        self.assertEqual(self.by_key()["gradle:9.8.0"].warning, "")
+
+    def test_newest_devicesupport_offered_with_warning(self):
+        ds = self.cfg.device_support_dir
+        mkdir(os.path.join(ds, "iPhone16,1 27.1 (24A5070a)"))
+        mkdir(os.path.join(ds, "iPhone16,1 27.2 (24B119)"))
+        by = self.by_key()
+        new = by["devsupport:iPhone16,1 27.2 (24B119)"]
+        self.assertEqual((new.tier, new.preselect), (core.CAUTION, False))
+        self.assertEqual(new.warning, "Re-copied the next time you debug on that iPhone.")
+        self.assertEqual(by["devsupport:iPhone16,1 27.1 (24A5070a)"].warning, "")
+
+    def test_android_used_image_offered_with_avd_name(self):
+        imgs = make_android(self.tmp, self.home)
+        by = {i.path: i for i in self.by_key().values() if i.category == "Android"}
+        used = by[imgs["Pixel"]]
+        self.assertEqual((used.tier, used.preselect, used.kind), (core.CAUTION, False, "path"))
+        self.assertEqual(used.warning, "The Pixel emulator stops working until you download this "
+                                       "image again (the SDK Manager does it).")
+        unused = by[imgs["unused"]]
+        self.assertEqual((unused.tier, unused.warning), (core.CAUTION, ""))
+
+    def test_unreadable_avd_config_warns_every_image(self):
+        """Was test_unreadable_protected_avd_blocks_all: an unreadable AVD config now warns on
+        every image instead of hiding them all (no AVD names are hard-coded any more)."""
+        imgs = make_android(self.tmp, self.home)
+        os.remove(os.path.join(self.home, ".android/avd/TV.avd/config.ini"))
+        items = core.scan_android(self.cfg)
+        self.assertEqual(len(items), 4)
+        text = "Couldn't read the settings of emulator TV; it may use this image."
+        for it in items:
+            self.assertEqual(it.tier, core.CAUTION, it.path)
+            self.assertIn(text, it.warning, it.path)
+        by = {i.path: i for i in items}
+        self.assertEqual(by[imgs["unused"]].warning, text)
+
+    def test_archives_are_review_trash_items(self):
+        mkdir(os.path.join(self.home, "Library/Developer/Xcode/Archives/2026-11-01/notes"))
+        by = self.by_key()
+        it = by["archive:2026-11-01/App.xcarchive"]
+        self.assertEqual((it.tier, it.kind, it.preselect), (core.REVIEW, "trash", False))
+        self.assertTrue(it.offerable)
+        self.assertEqual(it.warning, "Shipped builds. You need them to read crash reports for those versions.")
+        self.assertEqual(it.restore, "Moved to the Trash, so you can Put Back.")
+        self.assertNotIn("archives", by)
+        self.assertNotIn("archive:2026-11-01/notes", by)
+        self.assertIsNone(it.command)               # never an rm
+        with self.assertRaises(core.UnsafeTarget):  # Archives stay on the rm deny list
+            core.validate_path(it.path, self.cfg)
+        ok, msg = core.execute_item(it, self.cfg, core.NoSimctl(), runner=lambda *a, **k: 1 / 0)
+        self.assertFalse(ok)
+        self.assertTrue(os.path.isdir(it.path))
+
+    def test_review_tier_order(self):
+        self.assertEqual(core.REVIEW, "review")
+        self.assertEqual(core.OFFERABLE_TIERS, (core.SAFE, core.OPTIN, core.CAUTION, core.REVIEW))
+        self.assertEqual(core.TIER_ORDER, {core.SAFE: 0, core.OPTIN: 1, core.CAUTION: 2,
+                                           core.REVIEW: 3, core.PROTECTED: 4})
+
+    def test_no_personal_constants(self):
+        with open(core.__file__) as f:
+            src = f.read()
+        for name in ("iPhone-18-Pro", "Pixel_10_Pro", "Television_4K"):
+            self.assertNotIn(name, src)
+
+    def test_gate_refuses_when_warning_changed(self):
+        it = self.by_key(incident_sim(with_18pro_sim=False))["runtime:UUID-270"]
+        self.assertNotIn("stops working", it.warning)
+        with self.assertRaises(core.UnsafeTarget) as cm:
+            core.validate_item(it, self.cfg, incident_sim(True))
+        self.assertEqual(str(cm.exception), "Situation changed: scan again")
+        core.validate_item(it, self.cfg, incident_sim(False))   # unchanged → accepted
+
+    def test_gate_refuses_in_use(self):
+        it = self.by_key(incident_sim())["simdevice:P1"]
+        core.validate_item(it, self.cfg, incident_sim())
+        calls = []
+        ok, msg = core.execute_item(it, self.cfg, booted(incident_sim(), "P1"),
+                                    runner=lambda *a, **k: calls.append(a))
+        self.assertFalse(ok)
+        self.assertIn("Running: shut it down first", msg)
+        self.assertEqual(calls, [])
+
+    def test_gate_refuses_vanished_simulator_and_forged_udid(self):
+        it = self.by_key(incident_sim())["simdevice:P1"]
+        sim = incident_sim()
+        sim._list["devices"][R + "iOS-27-0"] = []
+        with self.assertRaises(core.UnsafeTarget):
+            core.validate_item(it, self.cfg, sim)
+        it.argv = ["xcrun", "simctl", "delete", "D1"]
+        with self.assertRaises(core.UnsafeTarget):
+            core.validate_item(it, self.cfg, incident_sim())
+
+    def test_gate_accepts_warned_items(self):
+        imgs = make_android(self.tmp, self.home)
+        by = self.by_key(incident_sim())
+        for key in ("runtime:UUID-270", "gradle:9.10.0", "simdevice:P1"):
+            core.validate_item(by[key], self.cfg, incident_sim())
+        used = next(i for i in by.values() if i.path == imgs["Pixel"])
+        core.validate_item(used, self.cfg, incident_sim())
+
+    def test_gate_refuses_android_image_whose_warning_appeared(self):
+        imgs = make_android(self.tmp, self.home)
+        it = next(i for i in self.by_key().values() if i.path == imgs["unused"])
+        self.assertEqual(it.warning, "")
+        write(os.path.join(self.home, ".android/avd/New.avd/config.ini"),
+              "image.sysdir.1=system-images/android-33/google_apis/arm64-v8a/\n")
+        with self.assertRaises(core.UnsafeTarget) as cm:
+            core.validate_item(it, self.cfg, core.NoSimctl())
+        self.assertEqual(str(cm.exception), "Situation changed: scan again")
+
+    def test_rescan_item_unknown_prefix_falls_back_to_full_scan(self):
+        by = self.by_key()
+        fresh = core.rescan_item(by["homebrew-cache"], self.cfg, core.NoSimctl(), core.Env.fake())
+        self.assertEqual(fresh.path, by["homebrew-cache"].path)
+        forged = core.Item(key="nope:x", category="x", label="x", tier=core.SAFE, path=self.home)
+        self.assertIsNone(core.rescan_item(forged, self.cfg, core.NoSimctl(), core.Env.fake()))
+
+    def test_every_offerable_item_explains_itself(self):
+        make_android(self.tmp, self.home)
+        mkdir(os.path.join(self.cfg.device_support_dir, "iPhone16,1 27.2 (24B119)"))
+        by = self.by_key(orphan_sim())
+        by.update(self.by_key(incident_sim()))
+        kinds = {i.kind for i in by.values() if i.offerable}
+        self.assertTrue({"path", "runtime", "simdevice", "simctl-unavailable", "trash"} <= kinds, kinds)
+        for it in by.values():
+            if not it.offerable:
+                continue
+            self.assertTrue(it.cost, it.key)
+            self.assertTrue(it.cost_tag and it.cost_tag != "?", it.key)
+            self.assertTrue(it.deletes, it.key)
+            self.assertTrue(it.restore, it.key)
+            d = it.to_dict()
+            self.assertEqual((d["deletes"], d["restore"]), (it.deletes, it.restore))
+        self.assertEqual(by["homebrew-cache"].deletes, "~/Library/Caches/Homebrew")
+        self.assertEqual(by["simdevice:P1"].deletes, "xcrun simctl delete P1")
+        self.assertEqual(by["runtime:UUID-270"].restore,
+                         "Re-download the runtime in Xcode › Settings › Components.")
 
 
 # ============================================================ CLI end-to-end
@@ -459,9 +741,10 @@ class CostAndStaleTests(unittest.TestCase):
         self.assertEqual(by["web:Documents/Projects/web_app/.next"].cost_tag, "~1 MIN")
 
     def test_kept_items_cost_is_reason(self):
+        """Uses the downloads row: the archives info row no longer exists (Task 2)."""
         by = {i.key: i for i in scan(self.home).items}
-        self.assertEqual(by["archives"].cost_tag, "")
-        self.assertEqual(by["archives"].cost, by["archives"].note)
+        self.assertEqual(by["downloads"].cost_tag, "")
+        self.assertEqual(by["downloads"].cost, by["downloads"].note)
 
     def test_runtime_tag_is_download_size(self):
         res = core.scan(cfg_for(self.home), fixture_sim(), xcode_check=lambda: False)
@@ -657,8 +940,10 @@ class CliTests(unittest.TestCase):
                 json.dump(data, f)
         code, out = self.run_cli("--dry-run", "--select", "all", "--simctl-fixture", fx)
         self.assertEqual(code, 0, out)
-        self.assertNotIn("runtime delete UUID-270", out)
-        self.assertNotIn("runtime delete UUID-271", out)
+        # Task 2: the incident runtime is offered, so the CLI must show its warning.
+        self.assertIn("runtime delete UUID-270", out)
+        self.assertIn("Your iPhone 18 Pro simulator stops working", out)
+        self.assertNotIn("None", out.split("Commands:")[1])
 
     def test_yes_deletes_only_safe_items(self):
         P = os.path.join(self.home, "Documents/Projects")
