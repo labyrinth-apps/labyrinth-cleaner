@@ -155,6 +155,9 @@ class Config:
             self.p("Music"),
             self.p(".ssh"),
             self.avd_dir,
+            # Emptied only through Finder (the empty-trash item), never rm'd, and never
+            # a project root whose build folders could be offered.
+            self.p(".Trash"),
         ]
 
 

@@ -427,6 +427,12 @@ class ApiTests(ServerTestCase):
         for body in ({}, [], "x", 0, {"add": 1}, {"remove": None}, {"foo": "/x"},
                      {"add": self.home, "remove": self.home}):
             self.assertEqual(self.settings_post(body)[0], 400, body)
+        trash = os.path.join(self.home, ".Trash")
+        os.makedirs(os.path.join(trash, "oldapp"))
+        for bad in (trash, os.path.join(trash, "oldapp")):
+            status, data = self.settings_post({"add": bad})
+            self.assertEqual(status, 400, bad)
+            self.assertIn(".Trash", data["error"])
         self.assertEqual(core.load_settings(self.home), {})
         self.assertEqual(rec.calls, [])
 
@@ -678,6 +684,59 @@ class LifecycleTests(ServerTestCase):
         self.assertIn("--no-open", r.stdout)
 
 
+# A minimal DOM for running the page script in node: every element is a stub that
+# records what the script sets; fetch records each POST body and answers 503.
+PAGE_HARNESS = r"""
+class Node {
+  constructor(tag) { this.tag = tag; this.kids = []; this.style = {}; this.dataset = {}; this.attrs = {};
+    this.hidden = false; this.disabled = false; this.checked = false; this.inert = false; this.textContent = "";
+    const cls = new Set(); this.classList = { add: c => cls.add(c), remove: c => cls.delete(c),
+      toggle: (c, on) => on ? cls.add(c) : cls.delete(c), contains: c => cls.has(c) }; this.children = []; }
+  get firstChild() { return this.kids[0] || null; }
+  removeChild(k) { this.kids.splice(this.kids.indexOf(k), 1); }
+  append(...k) { this.kids.push(...k); }
+  setAttribute(k, v) { this.attrs[k] = v; } getAttribute(k) { return this.attrs[k]; }
+  addEventListener() {} focus() {} closest() { return null; }
+  querySelector() { return new Node("x"); } querySelectorAll() { return []; }
+}
+const byId = {};
+global.Node = Node;
+global.document = { getElementById: id => byId[id] || (byId[id] = new Node(id)),
+  createElement: t => new Node(t), createTextNode: t => ({ text: t }),
+  querySelectorAll: () => [], addEventListener: () => {}, activeElement: null };
+global.window = { scrollTo() {} };
+global.location = { search: "", pathname: "/" };
+global.history = { replaceState() {} };
+global.sessionStorage = { getItem: () => "t", setItem() {} };
+const posts = [];
+global.fetch = async (path, opt) => { if (opt.method === "POST") posts.push(JSON.parse(opt.body).keys);
+  return { status: 503, json: async () => ({ error: "test" }) }; };
+/*PAGE*/
+;(async () => {
+  const row = (id, extra) => Object.assign({ id, group: "safe", kind: "path", keys: [id], size: 1, warning: "",
+    members: [{ key: id, label: id, size: 1, deletes: "" }], label: id, cost: "", restore: "", deletes: "" }, extra);
+  S.data = { scan_id: "s1", trash_helper: true, disk: { free: 10, total: 100 }, small_bytes: 0, segments: [],
+    rows: [row("a"), row("b", { group: "check", warning: "W" }), row("c", { group: "review", kind: "trash" })] };
+  const res = {};
+  const take = () => posts.splice(0);
+  S.sel = new Set(["a"]); openModal();
+  res.inert_open = [$("app").inert, $("action").inert];
+  S.sel.add("b"); S.sel.add("c");                 // changed behind the dialog
+  await doDelete(); res.sent_after_selection_change = take();
+  closeModal(); res.inert_closed = [$("app").inert, $("action").inert];
+  S.sel = new Set(["b"]); openModal(); $("mDelete").disabled = false;   // forced
+  await doDelete(); res.sent_unacknowledged = take();
+  closeModal();
+  S.data.trash_helper = false; S.sel = new Set(["c"]); openModal(); $("mDelete").disabled = false;
+  await doDelete(); res.sent_trash_without_app = take();
+  closeModal();
+  S.sel = new Set(["b"]); openModal(); $("mAck").checked = true; refreshDelete();
+  await doDelete(); res.sent_acknowledged = take();
+  console.log(JSON.stringify(res));
+})().catch(e => { console.error(e && e.stack || e); process.exit(1); });
+"""
+
+
 class PageTests(unittest.TestCase):
     def html(self):
         with open(os.path.join(ROOT, "ui", "index.html")) as f:
@@ -718,6 +777,30 @@ class PageTests(unittest.TestCase):
         for sink in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval(",
                      "new Function"):
             self.assertNotIn(sink, html)
+
+    @unittest.skipUnless(shutil.which("node"), "needs node")
+    def test_modal_sends_the_confirmed_keys_only(self):
+        """Runs the page script in node against a tiny DOM stub. Changing the selection
+        after the dialog opened must not change what Delete sends, and Delete must refuse
+        unacknowledged warnings and Trash moves without the app."""
+        script = re.search(r"<script>(.*)</script>", self.html(), re.S).group(1)
+        js = PAGE_HARNESS.replace("/*PAGE*/", script)
+        out = subprocess.run(["node", "-e", js], capture_output=True, text=True, timeout=30)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        r = json.loads(out.stdout.strip().splitlines()[-1])
+        self.assertEqual(r["sent_after_selection_change"], [["a"]])
+        self.assertEqual(r["inert_open"], [True, True])
+        self.assertEqual(r["inert_closed"], [False, False])
+        self.assertEqual(r["sent_unacknowledged"], [])
+        self.assertEqual(r["sent_trash_without_app"], [])
+        self.assertEqual(r["sent_acknowledged"], [["b"]])
+
+    def test_modal_snapshot_hooks(self):
+        html = self.html()
+        self.assertIn("const keys = S.modalKeys;", html)
+        self.assertNotIn("selectedRows().flatMap(r => r.keys)", html)
+        self.assertIn('$("app").inert = true;', html)
+        self.assertIn('$("action").inert = true;', html)
 
     @unittest.skipUnless(shutil.which("node"), "needs node")
     def test_js_human_matches_python(self):

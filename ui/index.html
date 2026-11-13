@@ -704,30 +704,64 @@ function openModal() {
   $("mCancel").hidden = false;
   $("mCancel").textContent = "Cancel";
   $("mDelete").hidden = false;
-  S.blocked = { warned, noHelper };
+  // What the user confirms is exactly what is sent: later selection changes don't count.
+  S.modal = { rows, scan_id: S.data.scan_id, warned, noHelper };
+  S.modalKeys = rows.flatMap(r => r.keys);
   refreshDelete();
-  $("scrim").classList.add("on");
+  showModal();
   $("mCancel").focus();
+}
+
+// The page behind the dialog can't be reached (mouse or keyboard) while it is open.
+function showModal() {
+  $("scrim").classList.add("on");
+  $("app").inert = true;
+  $("action").inert = true;
+}
+
+function hideModal() {
+  $("scrim").classList.remove("on");
+  $("app").inert = false;
+  $("action").inert = false;
+}
+
+// Why Delete can't go ahead for the confirmed rows, or "" when it can.
+function blockedReason(m) {
+  if (!m) return "nothing to delete";
+  if (m.rows.some(r => r.kind === "trash") && !S.data.trash_helper) return "needs the app";
+  if (m.rows.some(r => r.warning) && !$("mAck").checked) return "warnings not acknowledged";
+  return "";
 }
 
 // Delete waits for the warnings to be acknowledged, and for the app when anything moves to the Trash.
 function refreshDelete() {
-  const b = S.blocked || {};
-  $("mDelete").disabled = !!b.noHelper || (!!b.warned && !$("mAck").checked);
+  $("mDelete").disabled = blockedReason(S.modal) !== "";
 }
 
 function closeModal() {
   if (S.job) return;   // can't dismiss while deleting
-  $("scrim").classList.remove("on");
+  hideModal();
+}
+
+// Keep Tab inside the dialog while it is open.
+function trapTab(e) {
+  if (e.key !== "Tab" || !$("scrim").classList.contains("on")) return;
+  const items = [...document.querySelectorAll(".modal button, .modal input")].filter(x => !x.disabled && !x.hidden && !x.closest("[hidden]"));
+  if (!items.length) { e.preventDefault(); return; }
+  const first = items[0], last = items[items.length - 1], at = items.indexOf(document.activeElement);
+  if (e.shiftKey && (at <= 0)) { e.preventDefault(); last.focus(); }
+  else if (!e.shiftKey && (at === -1 || at === items.length - 1)) { e.preventDefault(); first.focus(); }
 }
 
 async function doDelete() {
+  // Defence in depth: never send rows whose warnings weren't acknowledged, or Trash moves without the app.
+  if (blockedReason(S.modal) !== "") { refreshDelete(); return; }
   $("mDelete").disabled = true;
   $("mAck").disabled = true;      // so toggling it can't re-enable Delete while the request is out
-  const keys = selectedRows().flatMap(r => r.keys);
+  const keys = S.modalKeys;
   let res;
   try {
-    res = await api("POST", "/api/clean", { scan_id: S.data.scan_id, keys });
+    res = await api("POST", "/api/clean", { scan_id: S.modal.scan_id, keys });
   } catch (e) {
     return showModalError("Could not reach devclean: " + e.message + ". Is it still running? Start it again with devclean ui.");
   }
@@ -735,7 +769,7 @@ async function doDelete() {
     $("mwarn").textContent = "The scan is out of date. Scanning again…";
     $("mwarn").hidden = false;
     await new Promise(r => setTimeout(r, 900));
-    $("scrim").classList.remove("on");
+    hideModal();
     await scan();
     return;
   }
@@ -802,7 +836,7 @@ async function finishJob(job) {
   const expected = job.items.filter(i => i.status === "done").reduce((a, i) => a + (i.size || 0), 0);
   await new Promise(r => setTimeout(r, 600));
   S.job = null;
-  $("scrim").classList.remove("on");
+  hideModal();
   const data = await scan();
   const now = data ? data.disk.free : job.free_now;
   const freed = Math.max(0, now - job.free_before);
@@ -881,7 +915,7 @@ $("review").addEventListener("click", openModal);
 $("mCancel").addEventListener("click", closeModal);
 $("mDelete").addEventListener("click", doDelete);
 $("scrim").addEventListener("click", e => { if (e.target === $("scrim")) closeModal(); });
-document.addEventListener("keydown", e => { if (e.key === "Escape") closeModal(); });
+document.addEventListener("keydown", e => { if (e.key === "Escape") closeModal(); else trapTab(e); });
 for (const c of $("filters").querySelectorAll(".chip[data-f]")) c.addEventListener("click", () => setFilter(c.dataset.f));
 for (const t of $("tiers").children) t.addEventListener("click", () => setFilter(t.dataset.g));
 $("segchip").addEventListener("click", () => { S.seg = null; renderMap(); renderFilters(); renderGroups(); });

@@ -176,6 +176,27 @@ class DenyListTests(unittest.TestCase):
         self.assertRefused("/")
         self.assertRefused(os.path.dirname(self.cfg.home))  # outside home
 
+    def test_trash_is_never_rm_target_even_as_project_root(self):
+        """~/.Trash is only ever emptied through Finder: nothing under it may be rm'd,
+        even when it is passed as a project root."""
+        write(self.p(".Trash/oldapp/pubspec.yaml"), "name: old")
+        mkdir(self.p(".Trash/oldapp/build"))
+        cfg = core.Config(home=self.home, project_roots=(self.p(".Trash"),))
+        for rel in (".Trash", ".Trash/oldapp", ".Trash/oldapp/build"):
+            with self.assertRaises(core.UnsafeTarget, msg=rel):
+                core.validate_path(self.p(rel), cfg)
+        res = core.scan(cfg, core.NoSimctl(), xcode_check=lambda: False, env=core.Env.fake())
+        under = [i for i in res.items if i.path and core.is_within(i.path, self.p(".Trash"))]
+        self.assertTrue(under)                         # found, but only as kept rows
+        for it in under:
+            self.assertFalse(it.offerable, it.key)
+            self.assertIn("refused by safety gate", it.note)
+            ok, msg = core.execute_item(core.Item(key=it.key, category="Flutter", label="x",
+                                                  tier=core.SAFE, path=it.path), cfg, core.NoSimctl())
+            self.assertFalse(ok)
+            self.assertIn("REFUSED", msg)
+        self.assertTrue(os.path.isdir(self.p(".Trash/oldapp/build")))
+
     def test_symlinked_target_refused(self):
         os.symlink(self.p("Documents"), self.p("Documents/Projects/flutter_app/build2"))
         os.rename(self.p("Documents/Projects/flutter_app/build"), self.p("Documents/Projects/flutter_app/old"))
@@ -1123,6 +1144,14 @@ class ProjectRootTests(unittest.TestCase):
                     os.path.join(self.home, "nope")):
             with self.assertRaises(ValueError, msg=bad):
                 core.add_project_folder(self.home, bad)
+
+    def test_add_project_folder_rejects_trash(self):
+        os.makedirs(os.path.join(self.home, ".Trash", "oldapp"))
+        for bad in (os.path.join(self.home, ".Trash"), os.path.join(self.home, ".Trash", "oldapp")):
+            with self.assertRaises(ValueError, msg=bad) as cm:
+                core.add_project_folder(self.home, bad)
+            self.assertIn(".Trash", str(cm.exception))
+        self.assertEqual(core.load_settings(self.home), {})
 
     def test_add_project_folder_rejects_folder_containing_deny_path(self):
         os.makedirs(os.path.join(self.home, ".ssh"), exist_ok=True)
