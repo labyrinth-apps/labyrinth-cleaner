@@ -275,10 +275,6 @@ class DownloadsTests(DownloadsBase):
             self.assertIsNone(core.Env.real().last_used("/x"))
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 # ------------------------------------------------------------ Task 4: general categories
 
 import json  # noqa: E402
@@ -722,3 +718,7 @@ class NewCategoriesTests(GeneralBase):
         self.assertGreaterEqual(len(new), 5)
         self.assertFalse(any(i.preselect for i in new))
         self.assertFalse(any(i.to_dict()["preselect"] for i in new))
+
+
+if __name__ == "__main__":
+    unittest.main()
