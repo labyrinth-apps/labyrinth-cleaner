@@ -55,7 +55,7 @@ class UIServer:
         self.cfg, self.sim, self.fixture = cfg, sim, fixture
         self.xcode_check, self.measure = xcode_check, measure
         # The gate re-checks "Xcode is running" with the same check the scan used.
-        self.env = dataclasses.replace(core.default_env(cfg), xcode_running=xcode_check)
+        self.env = core.fixture_env(cfg, xcode_check, fixture)
         # Fixture data can carry real runtime UUIDs: never run xcrun in fixture mode.
         self.runner = runner or (core.fixture_runner if fixture else subprocess.run)
         self.idle_timeout = idle_timeout

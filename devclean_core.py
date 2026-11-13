@@ -10,6 +10,7 @@ instead of calling the real `xcrun`.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import re
@@ -438,6 +439,13 @@ class Env:
     @classmethod
     def fake(cls, **overrides) -> "Env":
         return cls(**overrides)
+
+
+def fixture_env(cfg: Config, xcode_running: Callable[[], bool], fixture: bool) -> Env:
+    """The env a CLI/UI run uses. Fixture mode never gets a docker runner, even when the
+    config points at the real home (--simctl-fixture without --home)."""
+    env = dataclasses.replace(default_env(cfg), xcode_running=xcode_running)
+    return dataclasses.replace(env, docker=None) if fixture else env
 
 
 def default_env(cfg: Config) -> Env:
@@ -1570,6 +1578,8 @@ def execute_item(it: Item, cfg: Config, sim: Optional[SimctlProvider] = None,
         if not helper or not os.path.isfile(helper) or not os.access(helper, os.X_OK):
             return False, TRASH_REFUSAL
     env = env if env is not None else default_env(cfg)
+    if runner is fixture_runner and it.kind in ("docker", "empty-trash"):
+        return False, f"REFUSED: fixture mode never runs {it.argv[0] if it.argv else it.kind}"
     if it.kind == "docker" and env.docker is None:
         return False, "REFUSED: docker is not available"
     try:

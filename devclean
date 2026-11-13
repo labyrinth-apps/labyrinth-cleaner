@@ -179,7 +179,7 @@ def main(argv=None):
         roots = ", ".join(cfg.project_roots) or "none found"
         print(f"Scanning {cfg.home} (projects: {roots}) ...", file=sys.stderr)
     xcode_check = (lambda: False) if args.home else core.xcode_running
-    env = dataclasses.replace(core.default_env(cfg), xcode_running=xcode_check)
+    env = core.fixture_env(cfg, xcode_check, fixture)
     res = core.scan(cfg, sim, xcode_check=xcode_check, env=env)
 
     if args.json:

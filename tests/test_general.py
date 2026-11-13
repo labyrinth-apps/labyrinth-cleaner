@@ -277,6 +277,23 @@ class AppCacheTests(GeneralBase):
         d = self.by_key(self.scan(running_apps=lambda: [("com.x.y", "google")]))
         self.assertEqual(d["appcache:Google"].tier, core.PROTECTED)
 
+    def test_helper_suffix_and_publisher_aliases_blocked(self):
+        for n in ("com.anthropic.claudefordesktop.ShipIt", "BraveSoftware"):
+            os.makedirs(os.path.join(self.caches, n))
+        apps = [("com.anthropic.claudefordesktop", "Claude"), ("com.brave.Browser", "Brave Browser")]
+        d = self.by_key(self.scan(running_apps=lambda: apps))
+        s = d["appcache:com.anthropic.claudefordesktop.ShipIt"]
+        self.assertEqual((s.tier, s.note), (core.PROTECTED, "Quit Claude first"))
+        b = d["appcache:BraveSoftware"]
+        self.assertEqual((b.tier, b.note), (core.PROTECTED, "Quit Brave Browser first"))
+
+    def test_owner_priority_alias_beats_publisher(self):
+        apps = [("com.google.antigravity", "Antigravity"), ("com.google.Chrome", "Google Chrome")]
+        self.assertEqual(general._owner("Google", apps), ("com.google.Chrome", "Google Chrome"))
+        self.assertEqual(general._owner("Google", apps[:1]), apps[0])      # publisher fallback
+        self.assertEqual(general._owner("com.google.Chrome", apps)[1], "Google Chrome")
+        self.assertIsNone(general._owner("Other", apps))
+
     def test_cache_gate_rechecks_running_app(self):
         it = self.by_key(self.scan())["appcache:Google"]
         env = self.env(running_apps=lambda: [("com.google.Chrome", "Google Chrome")])
@@ -498,6 +515,28 @@ class DockerTests(GeneralBase):
         it = self.by_key(self.scan(docker=self.docker()))["docker:builder"]
         ok, msg = core.execute_item(it, self.cfg, env=self.env(), now=self.now)
         self.assertFalse(ok)
+
+    def test_fixture_mode_refuses_docker_and_trash_even_with_live_env(self):
+        rec = []
+        env = self.env(docker=self.docker(record=rec))
+        write(f"{self.home}/.Trash/x")
+        res = core.scan(self.cfg, core.NoSimctl(), env=env, now=self.now)
+        d = self.by_key(res)
+        rec.clear()
+        for k in ("docker:builder", "empty-trash"):
+            ok, msg = core.execute_item(d[k], self.cfg, runner=core.fixture_runner, env=env,
+                                        now=self.now)
+            self.assertFalse(ok)
+            self.assertIn("fixture mode", msg)
+        self.assertEqual(rec, [])
+
+    def test_fixture_env_has_no_docker_even_for_real_home(self):
+        real = core.Config(home=os.path.expanduser("~"), project_roots=())
+        with mock.patch.object(core.shutil, "which", return_value="/usr/bin/docker"):
+            self.assertIsNotNone(core.default_env(real).docker)
+            env = core.fixture_env(real, lambda: False, fixture=True)
+            self.assertIsNone(env.docker)
+            self.assertIsNotNone(core.fixture_env(real, lambda: False, fixture=False).docker)
 
     def test_fixture_runner_refuses_osascript_and_docker(self):
         for argv in (["osascript", "-e", "x"], ["docker", "ps"], ["xcrun", "simctl"]):

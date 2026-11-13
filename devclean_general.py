@@ -77,13 +77,35 @@ def running_apps() -> list:
 
 # ---------------------------------------------------------------- app caches
 
+# Cache folders named after a publisher, not a bundle ID: folder (lowercase) -> bundle ID.
+PUBLISHER_ALIASES = {
+    "bravesoftware": "com.brave.browser",
+    "google": "com.google.chrome",
+    "mozilla": "org.mozilla.firefox",
+    "microsoft edge": "com.microsoft.edgemac",
+}
+
+
 def _owner(name: str, apps: list):
-    """The running (bundle_id, app name) that owns cache folder `name`, or None."""
+    """The running (bundle_id, app name) that owns cache folder `name`, or None.
+
+    Most specific rule wins: exact bundle ID; dotted prefix either way (`...ShipIt`
+    helpers); app name; publisher alias; second bundle component (`Google` for any
+    com.google.*). Ties go to the bundle ID that sorts first."""
     n = name.lower()
-    for bundle, app in apps:
-        parts = bundle.lower().split(".")
-        if n in (bundle.lower(), app.lower()) or (len(parts) > 2 and n == parts[1]):
-            return bundle, app
+    alias = PUBLISHER_ALIASES.get(n)
+    rules = (
+        lambda b, a: n == b,
+        lambda b, a: b.startswith(n + ".") or n.startswith(b + "."),
+        lambda b, a: n == a,
+        lambda b, a: alias is not None and b == alias,
+        lambda b, a: len(b.split(".")) > 2 and n == b.split(".")[1],
+    )
+    cands = sorted(apps, key=lambda x: x[0].lower())
+    for rule in rules:
+        for bundle, app in cands:
+            if rule(bundle.lower(), app.lower()):
+                return bundle, app
     return None
 
 
