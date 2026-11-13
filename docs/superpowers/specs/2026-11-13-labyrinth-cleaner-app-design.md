@@ -193,7 +193,7 @@ These rules apply to every item and supersede the earlier spec's preselection.
 **Nothing personal ships in the app.**
 - `DEFAULT_PINNED_DEVICE_TYPES` (iPhone-18-Pro) and `DEFAULT_PROTECTED_AVDS` (Pixel_10_Pro, Television_4K) are removed.
 - The general rules replace them:
-  - an Android image used by **any** emulator is never offered
+  - an Android image used by **any** emulator is offered only with a warning naming that emulator (see the warnings table)
   - the protection below covers simulators
 
 **Simulators: the user chooses, and the app warns.** This is the builder's reading of "let the user choose what to clean"; the user should confirm it.
