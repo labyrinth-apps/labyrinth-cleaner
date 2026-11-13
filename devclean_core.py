@@ -87,8 +87,7 @@ class Config:
         self.home = os.path.realpath(os.path.expanduser(self.home))
         if self.project_roots is None:
             candidates = [self.p(d) for d in DEFAULT_PROJECT_DIRS]
-            candidates += [f for f in load_settings(self.home).get("project_folders", [])
-                           if isinstance(f, str)]
+            candidates += saved_project_folders(load_settings(self.home))
         else:
             candidates = [os.path.expanduser(c) if isinstance(c, str) else c
                           for c in self.project_roots]
@@ -258,6 +257,14 @@ def load_settings(home: str) -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def saved_project_folders(data: dict) -> list:
+    """The saved project folders: only a list's absolute-path strings; anything else is ignored."""
+    folders = data.get("project_folders") if isinstance(data, dict) else None
+    if not isinstance(folders, list):
+        return []
+    return [f for f in folders if isinstance(f, str) and os.path.isabs(f)]
+
+
 def save_settings(home: str, data: dict) -> None:
     """Write settings atomically (temp file + os.replace), mode 0600."""
     path = settings_path(home)
@@ -282,7 +289,7 @@ def add_project_folder(home: str, path: str) -> str:
     home = os.path.realpath(os.path.expanduser(home))
     real = check_project_root(home, path)
     data = load_settings(home)
-    folders = [f for f in data.get("project_folders", []) if isinstance(f, str)]
+    folders = saved_project_folders(data)
     if real.casefold() not in {f.casefold() for f in folders}:
         folders.append(real)
     data["project_folders"] = folders
@@ -294,8 +301,7 @@ def remove_project_folder(home: str, path: str) -> None:
     home = os.path.realpath(os.path.expanduser(home))
     data = load_settings(home)
     drop = {path.casefold(), os.path.realpath(path).casefold()}
-    data["project_folders"] = [f for f in data.get("project_folders", [])
-                               if isinstance(f, str) and f.casefold() not in drop]
+    data["project_folders"] = [f for f in saved_project_folders(data) if f.casefold() not in drop]
     save_settings(home, data)
 
 

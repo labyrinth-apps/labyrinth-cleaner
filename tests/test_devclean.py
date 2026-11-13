@@ -1352,6 +1352,27 @@ class ProjectRootTests(unittest.TestCase):
             f.write("{nope")
         self.assertEqual(core.load_settings(self.home), {})
 
+    # ---- I4: wrongly typed settings
+
+    def test_wrongly_typed_settings_are_ignored(self):
+        dev = os.path.join(self.home, "Developer")
+        os.makedirs(dev)
+        work = os.path.join(self.home, "Work")
+        os.makedirs(work)
+        cwd = os.getcwd()
+        os.chdir(self.home)          # a relative entry must not resolve against the CWD
+        self.addCleanup(os.chdir, cwd)
+        for bad in (5, None, "x", work, {"a": work}, True):
+            core.save_settings(self.home, {"project_folders": bad})
+            self.assertEqual(core.Config(home=self.home).project_roots, (dev,), bad)
+            core.remove_project_folder(self.home, work)        # no TypeError
+            core.save_settings(self.home, {"project_folders": bad})
+            self.assertEqual(core.add_project_folder(self.home, work), work)
+            self.assertEqual(core.load_settings(self.home)["project_folders"], [work], bad)
+        core.save_settings(self.home, {"project_folders": ["Work", 3, None, ["x"], work]})
+        self.assertEqual(core.Config(home=self.home).project_roots, (dev, work))
+        self.assertEqual(core.saved_project_folders(core.load_settings(self.home)), [work])
+
     def test_overlapping_roots_list_each_project_once(self):
         P = os.path.join(self.home, "Documents", "Projects")
         cfg = core.Config(home=self.home, project_roots=(P, os.path.join(P, "labryinth-iptv")))

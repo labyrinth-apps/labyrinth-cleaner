@@ -193,8 +193,8 @@ class UIServer:
                     core.add_project_folder(self.cfg.home, path)
                 else:
                     core.remove_project_folder(self.cfg.home, path)
-            except ValueError as e:
-                return 400, {"error": str(e)}
+            except Exception as e:   # any settings error (bad value, bad file, disk full)
+                return 400, {"error": str(e) or type(e).__name__}
             self.cfg = core.Config(home=self.cfg.home, android_sdk=self.cfg.android_sdk)
             self._settings_gen += 1
             self._latest = None          # the next clean needs a scan of the new folders

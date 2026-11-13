@@ -436,6 +436,21 @@ class ApiTests(ServerTestCase):
         self.assertEqual(core.load_settings(self.home), {})
         self.assertEqual(rec.calls, [])
 
+    def test_settings_errors_are_400_not_500(self):
+        self.start(cfg=core.Config(home=self.home))
+        work = os.path.join(self.home, "Work")
+        os.makedirs(work)
+        core.save_settings(self.home, {"project_folders": 5})
+        status, data = self.settings_post({"add": work})
+        self.assertEqual(status, 200, data)
+        self.assertEqual(data["project_folders"], [work])
+        for exc in (TypeError("bad type"), OSError("disk full")):
+            with mock.patch.object(core, "add_project_folder", side_effect=exc):
+                status, data = self.settings_post({"add": work})
+            self.assertEqual(status, 400, exc)
+            self.assertTrue(data["error"])
+        self.assertEqual(self.req("GET", "/api/settings")[0], 200)   # server still fine
+
     def test_settings_change_invalidates_scan_id(self):
         self.start(cfg=core.Config(home=self.home))
         p = self.scan()
