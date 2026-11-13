@@ -797,7 +797,10 @@ async function finishJob(job) {
   const data = await scan();
   const now = data ? data.disk.free : job.free_now;
   const freed = Math.max(0, now - job.free_before);
-  $("bTitle").textContent = "Freed " + human(freed) + (trashed ? " · Moved to Trash: " + trashed : "");
+  // A clean that only moved things to the Trash freed nothing: say what it did instead.
+  const deleted = job.items.some(i => i.status === "done");
+  $("bTitle").textContent = [deleted || !trashed ? "Freed " + human(freed) : null,
+    trashed ? "Moved to Trash: " + trashed : null].filter(Boolean).join(" · ");
   let sub = human(job.free_before) + " → " + human(now) + " free";
   if (expected && freed < expected * 0.5) sub += " · macOS can release space lazily, or a Time Machine local snapshot may still hold it (tmutil listlocalsnapshots /).";
   $("bSub").textContent = sub;
