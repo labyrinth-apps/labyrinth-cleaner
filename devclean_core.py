@@ -1039,9 +1039,8 @@ def _download_item(cfg: Config, env: Env, now: float, path: str) -> Optional[Ite
     maybe_installer = ext in INSTALLER_EXTS or (ext == ".zip" and st.st_size > ZIP_INSTALLER_MIN_SIZE)
     if not maybe_installer and st.st_size <= LARGE_MIN_SIZE:
         return None
-    used = env.last_used(path)
-    if used is None:
-        used = st.st_mtime
+    # A file written to since it was last opened counts as used then too.
+    used = max(env.last_used(path) or 0, st.st_mtime)
     idle_days = (now - used) / 86400
     if maybe_installer and idle_days > INSTALLER_MIN_AGE_DAYS:
         rule = "installer"
@@ -1053,7 +1052,8 @@ def _download_item(cfg: Config, env: Env, now: float, path: str) -> Optional[Ite
     return Item(key=f"download:{rel}", category="Downloads", label=rel, tier=REVIEW,
                 kind="trash", path=path, size=st.st_size, mtime=used,
                 note="old installer" if rule == "installer" else "large, not opened for months",
-                meta={"rule": rule}, restore=DOWNLOAD_RESTORE)
+                meta={"rule": rule, "st_ino": st.st_ino, "st_size": st.st_size,
+                      "st_mtime": st.st_mtime}, restore=DOWNLOAD_RESTORE)
 
 
 def scan_downloads(cfg: Config, env: Env, now: float) -> list:
@@ -1548,7 +1548,8 @@ def rescan_item(it: Item, cfg: Config, sim: Optional[SimctlProvider] = None,
 def validate_trash(it: Item, cfg: Config, env: Env, now: float) -> None:
     """Gate for items that move to the Trash. Raises UnsafeTarget.
 
-    Downloads: a regular file (no symlink) inside ~/Downloads, at most two levels deep.
+    Downloads: a regular file (no symlink) inside ~/Downloads, at most two levels deep,
+    with the inode, size and mtime the scan saw.
     Archives: a `.xcarchive` folder exactly at Archives/<date>/<name>.xcarchive.
     The rule itself was already re-applied by rescan_item with the fresh clock.
     """
@@ -1565,8 +1566,16 @@ def validate_trash(it: Item, cfg: Config, env: Env, now: float) -> None:
             raise UnsafeTarget(f"not inside ~/Downloads: {path}")
         if len(os.path.relpath(path, root).split(os.sep)) > 2:
             raise UnsafeTarget(f"too deep inside ~/Downloads: {path}")
-        if not os.path.isfile(path):
+        try:
+            st = os.lstat(path)
+        except OSError:
+            raise UnsafeTarget(f"{path} is gone")
+        if not stat.S_ISREG(st.st_mode):
             raise UnsafeTarget(f"not a regular file: {path}")
+        # The same file the user saw: not replaced, grown or written to since the scan.
+        seen = tuple(it.meta.get(k) for k in ("st_ino", "st_size", "st_mtime"))
+        if None in seen or seen != (st.st_ino, st.st_size, st.st_mtime):
+            raise UnsafeTarget(SITUATION_CHANGED)
         return
     if it.key.startswith("archive:"):
         root = cfg.p("Library/Developer/Xcode/Archives")

@@ -44,7 +44,7 @@ class DownloadsBase(unittest.TestCase):
         sparse(f"{self.dl}/new.pkg", 1 * MB, 2)
         sparse(f"{self.dl}/big.zip", 60 * MB, 20)
         sparse(f"{self.dl}/small.zip", 1 * MB, 20)
-        sparse(f"{self.dl}/movie.mkv", 600 * MB, 0)
+        sparse(f"{self.dl}/movie.mkv", 600 * MB, 200)
         self.last_used[f"{self.dl}/movie.mkv"] = self.now - 120 * DAY
         sparse(f"{self.dl}/recent.mov", 600 * MB, 0)
         self.last_used[f"{self.dl}/recent.mov"] = self.now - 10 * DAY
@@ -183,6 +183,74 @@ class DownloadsTests(DownloadsBase):
             core.validate_item(forged, self.cfg, core.NoSimctl(), self.env(), now=self.now)
         with self.assertRaises(core.UnsafeTarget):
             core.validate_trash(forged, self.cfg, self.env(), self.now)
+
+    # ---- I1: the file must be the one that was scanned
+
+    def trash_it(self, it):
+        helper, trash = self.make_helper()
+        with mock.patch.dict(os.environ, {core.TRASH_HELPER_ENV: helper}):
+            res = core.execute_item(it, self.cfg, core.NoSimctl(), runner=core.fixture_runner,
+                                    env=self.env(), now=self.now)
+        return res, trash
+
+    def test_modified_after_scan_counts_as_used(self):
+        self.last_used[f"{self.dl}/Setup.dmg"] = self.now - 20 * DAY
+        it = self.downloads()["download:Setup.dmg"]
+        os.utime(it.path, (self.now, self.now))          # written to, never opened
+        self.assertIsNone(core._download_item(self.cfg, self.env(), self.now, it.path))
+        (ok, msg), trash = self.trash_it(it)
+        self.assertFalse(ok)
+        self.assertTrue(msg.startswith("REFUSED"), msg)
+        self.assertTrue(os.path.isfile(it.path))
+        self.assertFalse(os.path.exists(trash))
+
+    def test_replaced_same_name_file_refused(self):
+        it = self.downloads()["download:Setup.dmg"]
+        st = os.lstat(it.path)
+        os.remove(it.path)
+        sparse(it.path, st.st_size)
+        os.utime(it.path, (st.st_atime, st.st_mtime))   # same size and mtime: only the inode differs
+        self.assertNotEqual(os.lstat(it.path).st_ino, st.st_ino)
+        (ok, msg), trash = self.trash_it(it)
+        self.assertEqual((ok, msg), (False, "REFUSED: " + core.SITUATION_CHANGED))
+        self.assertTrue(os.path.isfile(it.path))
+
+    def test_grown_file_refused(self):
+        it = self.downloads()["download:big.zip"]
+        st = os.lstat(it.path)
+        os.truncate(it.path, st.st_size + 1)
+        os.utime(it.path, (st.st_atime, st.st_mtime))
+        (ok, msg), trash = self.trash_it(it)
+        self.assertEqual((ok, msg), (False, "REFUSED: " + core.SITUATION_CHANGED))
+
+    def test_item_without_scan_metadata_refused(self):
+        it = self.downloads()["download:Setup.dmg"]
+        forged = core.Item(key=it.key, category=it.category, label=it.label, tier=it.tier,
+                           kind=it.kind, path=it.path)
+        with self.assertRaises(core.UnsafeTarget):
+            core.validate_item(forged, self.cfg, core.NoSimctl(), self.env(), now=self.now)
+        core.validate_item(it, self.cfg, core.NoSimctl(), self.env(), now=self.now)
+
+    def test_file_swapped_for_folder_refused(self):
+        it = self.downloads()["download:Setup.dmg"]
+        os.remove(it.path)
+        os.makedirs(it.path)
+        (ok, msg), trash = self.trash_it(it)
+        self.assertFalse(ok)
+        self.assertTrue(msg.startswith("REFUSED"), msg)
+        self.assertTrue(os.path.isdir(it.path))
+
+    def test_parent_swapped_for_symlink_refused(self):
+        sparse(f"{self.dl}/sub/old.pkg", 1 * MB, 30)
+        it = self.downloads()["download:sub/old.pkg"]
+        elsewhere = os.path.join(self.home, "Documents", "sub")
+        os.rename(f"{self.dl}/sub", elsewhere)
+        os.symlink(elsewhere, f"{self.dl}/sub")
+        (ok, msg), trash = self.trash_it(it)
+        self.assertFalse(ok)
+        self.assertTrue(msg.startswith("REFUSED"), msg)
+        self.assertTrue(os.path.isfile(os.path.join(elsewhere, "old.pkg")))
+        self.assertFalse(os.path.exists(trash))
 
     def test_real_env_last_used_parses_mdls(self):
         out = mock.Mock(returncode=0, stdout="2026-11-01 10:00:00 +0000\n")
