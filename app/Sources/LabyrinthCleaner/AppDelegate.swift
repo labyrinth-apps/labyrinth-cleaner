@@ -17,7 +17,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusMenu.onQuit = { NSApp.terminate(nil) }
         statusMenu.onReading = { [weak self] free, text in self?.notifier.check(freeBytes: free, freeText: text) }
         statusMenu.install()
-        warnAboutLegacyBarOnce()
+        if fixture == nil { warnAboutLegacyBarOnce() }   // fixture runs must not touch real defaults
     }
 
     private func warnAboutLegacyBarOnce() {

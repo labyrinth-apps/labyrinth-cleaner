@@ -145,4 +145,16 @@ final class ServerProcessTests: XCTestCase {
         case .failure(let f): XCTFail("unexpected \(f)")
         }
     }
+
+    func testSpawnFailureIsReportedAndNeverCrashes() {
+        for _ in 0..<50 {
+            let launch = ServerLaunch(python: "/nonexistent/python3", script: "x", arguments: ["x"])
+            let s = ServerProcess(launch: launch, environment: [:], handshakeTimeout: 5)
+            switch startSync(s) {
+            case .success: XCTFail("should fail")
+            case .failure(.noHandshake(let tail)): XCTAssertTrue(tail.contains("Could not start"), tail)
+            case .failure(let f): XCTFail("unexpected \(f)")
+            }
+        }
+    }
 }

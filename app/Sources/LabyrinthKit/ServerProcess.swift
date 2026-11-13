@@ -96,7 +96,29 @@ public final class ServerProcess {
         stopping = false
 
         let readers = DispatchGroup()
-        readers.enter()
+        readers.enter(); readers.enter()   // entered before run() so a fast exit still waits for both readers
+        p.terminationHandler = { [weak self] proc in
+            _ = readers.wait(timeout: .now() + 2)
+            let status = proc.terminationStatus
+            self?.q.async { self?.childExited(status: status, generation: gen) }
+        }
+
+        do {
+            try p.run()
+        } catch {
+            readers.leave(); readers.leave()
+            // No reader threads exist yet; the pipes are released with their Pipe objects.
+            try? inPipe.fileHandleForWriting.close()
+            try? outPipe.fileHandleForWriting.close()
+            try? errPipe.fileHandleForWriting.close()
+            let msg = "Could not start \(launch.python): \(error.localizedDescription)"
+            DispatchQueue.main.async { completion(.failure(.noHandshake(stderrTail: msg))) }
+            return
+        }
+        // The parent's copies of the child's ends must be closed or EOF never arrives.
+        try? outPipe.fileHandleForWriting.close()
+        try? errPipe.fileHandleForWriting.close()
+        try? inPipe.fileHandleForReading.close()
         Thread.detachNewThread {
             let h = errPipe.fileHandleForReading
             while true {
@@ -106,7 +128,6 @@ public final class ServerProcess {
             }
             readers.leave()
         }
-        readers.enter()
         Thread.detachNewThread { [weak self] in
             let h = outPipe.fileHandleForReading
             var buf = Data()
@@ -126,29 +147,6 @@ public final class ServerProcess {
             readers.leave()
         }
 
-        p.terminationHandler = { [weak self] proc in
-            _ = readers.wait(timeout: .now() + 2)
-            let status = proc.terminationStatus
-            self?.q.async { self?.childExited(status: status, generation: gen) }
-        }
-
-        do {
-            try p.run()
-        } catch {
-            try? inPipe.fileHandleForWriting.close()
-            try? outPipe.fileHandleForWriting.close()
-            try? errPipe.fileHandleForWriting.close()
-            // Closing the read ends unblocks the reader threads.
-            try? outPipe.fileHandleForReading.close()
-            try? errPipe.fileHandleForReading.close()
-            let msg = "Could not start \(launch.python): \(error.localizedDescription)"
-            DispatchQueue.main.async { completion(.failure(.noHandshake(stderrTail: msg))) }
-            return
-        }
-        // The parent's copies of the child's ends must be closed or EOF never arrives.
-        try? outPipe.fileHandleForWriting.close()
-        try? errPipe.fileHandleForWriting.close()
-        try? inPipe.fileHandleForReading.close()
         process = p
         stdinHandle = inPipe.fileHandleForWriting
         state = .starting(waiters: [completion])
@@ -203,7 +201,9 @@ public final class ServerProcess {
         if !waiters.isEmpty { DispatchQueue.main.async { for w in waiters { w() } } }
     }
 
-    /// Closes stdin, sends SIGTERM, waits up to `grace` s, then SIGKILL. Calls completion on main.
+    /// Closes stdin (the server then finishes its current delete and exits by itself), and
+    /// SIGKILLs it only if it is still alive after `grace` s. No SIGTERM from here: a second
+    /// SIGTERM could cut a running delete short. Calls completion on main.
     public func stop(grace: TimeInterval = 30, completion: @escaping () -> Void) {
         q.async {
             guard let p = self.process else {
@@ -219,7 +219,6 @@ public final class ServerProcess {
             self.stopping = true
             let gen = self.generation
             try? self.stdinHandle?.close()   // EOF: the server finishes its current delete, then exits
-            if p.isRunning { kill(p.processIdentifier, SIGTERM) }
             self.q.asyncAfter(deadline: .now() + grace) { [weak self] in
                 guard let self, self.generation == gen, let p = self.process, p.isRunning else { return }
                 kill(p.processIdentifier, SIGKILL)

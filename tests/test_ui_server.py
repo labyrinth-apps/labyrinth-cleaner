@@ -873,6 +873,16 @@ class AppModeTests(ServerTestCase):
     def url_file(self):
         return os.path.join(self.home, ".cache", "devclean", "ui.url")
 
+    def test_begin_shutdown_ignores_further_sigterm(self):
+        import signal
+        old = signal.getsignal(signal.SIGTERM)
+        try:
+            signal.signal(signal.SIGTERM, ui._raise_interrupt)
+            ui._begin_shutdown()
+            self.assertEqual(signal.getsignal(signal.SIGTERM), signal.SIG_IGN)
+        finally:
+            signal.signal(signal.SIGTERM, old)
+
     def test_app_mode_handshake_and_stdin_eof_exit(self):
         p, hs = self.start_app_server()
         self.assertEqual(set(hs), {"labyrinth_server", "url"})

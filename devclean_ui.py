@@ -442,6 +442,13 @@ def _raise_interrupt(signum, frame):
     raise KeyboardInterrupt
 
 
+def _begin_shutdown():
+    """Once shutdown has begun, further SIGTERMs must not interrupt the finish of a running
+    delete (stdin EOF makes the watcher send a SIGTERM of its own). Ctrl-C still works."""
+    if threading.current_thread() is threading.main_thread():
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+
+
 def _watch_stdin():
     """The Mac app owns this server: when its pipe closes (even if it crashed), stop."""
     try:
@@ -467,6 +474,7 @@ def _run_app(cfg, sim, fixture, args, options, docker) -> int:
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
+        _begin_shutdown()
         if srv._job_running:
             try:
                 srv.finish_jobs()
@@ -550,6 +558,7 @@ def main(argv=None) -> int:
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
+        _begin_shutdown()
         if srv._job_running:
             print("\nFinishing the current deletion, then stopping "
                   "(Ctrl-C again to quit now)...", flush=True)
