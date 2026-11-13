@@ -66,7 +66,7 @@ class DownloadsBase(unittest.TestCase):
         trash = os.path.join(self.home, ".Trash")
         helper = os.path.join(self.base, "fake-trash-helper")
         with open(helper, "w") as f:
-            f.write(f'#!/bin/sh\nmkdir -p "{trash}" && mv "$1" "{trash}/"\n')
+            f.write(f'#!/bin/sh\nshift 2; mkdir -p "{trash}" && mv "$1" "{trash}/"\n')
         os.chmod(helper, 0o755)
         return helper, trash
 
@@ -150,6 +150,20 @@ class DownloadsTests(DownloadsBase):
         self.assertEqual(res, (True, "ok"))
         self.assertTrue(os.path.exists(f"{trash}/Setup.dmg"))
         self.assertFalse(os.path.exists(it.path))
+
+    def test_trash_item_calls_helper_with_home(self):
+        it = self.downloads()["download:Setup.dmg"]
+        rec = os.path.join(self.base, "argv.txt")
+        helper = os.path.join(self.base, "recording-helper")
+        with open(helper, "w") as f:
+            f.write(f'#!/bin/sh\nprintf "%s\\n" "$@" > "{rec}"\n')
+        os.chmod(helper, 0o755)
+        with mock.patch.dict(os.environ, {core.TRASH_HELPER_ENV: helper}):
+            ok, msg = core.execute_item(it, self.cfg, core.NoSimctl(), runner=subprocess.run,
+                                        env=self.env(), now=self.now)
+        self.assertTrue(ok, msg)
+        with open(rec) as f:
+            self.assertEqual(f.read().splitlines(), ["--home", self.cfg.home, it.path])
 
     def test_trash_item_refused_when_rule_no_longer_matches(self):
         it = self.downloads()["download:movie.mkv"]
@@ -470,6 +484,19 @@ class AppCacheTests(GeneralBase):
                 general.running_apps()
 
 
+class WarnedTagTests(GeneralBase):
+    def test_warned_no_cost_row_shows_see_warning(self):
+        write(os.path.join(self.caches, "segment", "f.bin"), "x" * 3000)
+        it = self.by_key(self.scan())["appcache:segment"]
+        self.assertEqual(it.warning, general.UNKNOWN_CACHE_WARNING)
+        self.assertEqual(it.cost_tag, "SEE WARNING")
+
+    def test_unwarned_no_cost_row_keeps_no_cost(self):
+        it = core.Item(key="homebrew-cache", category="x", label="x", tier=core.CAUTION,
+                       kind="path", path="/x")
+        self.assertEqual(core.cost_for(it)[0], "NO COST")
+
+
 class LogTests(GeneralBase):
     def test_logs_older_than_7_days_only(self):
         logs = os.path.join(self.home, "Library/Logs")
@@ -506,7 +533,7 @@ class TrashBackupTests(GeneralBase):
         write(f"{self.home}/.Trash/junk.bin", "x" * 5000)
         it = self.by_key(self.scan())["empty-trash"]
         self.assertEqual((it.tier, it.kind, it.preselect), (core.CAUTION, "empty-trash", False))
-        self.assertEqual(it.argv, ["osascript", "-e", 'tell application "Finder" to empty trash'])
+        self.assertEqual(it.argv, general.TRASH_ARGV)
         self.assertEqual(it.cost, "Gone for good. You can't Put Back afterwards.")
         self.assertGreater(it.size, 0)
         ran = []
@@ -522,6 +549,32 @@ class TrashBackupTests(GeneralBase):
         ok, msg = core.execute_item(forged, self.cfg, runner=runner, env=self.env(), now=self.now)
         self.assertFalse(ok)
         self.assertEqual(len(ran), 1)
+
+    def test_empty_trash_argv_has_long_timeout(self):
+        self.assertEqual(general.TRASH_ARGV[2], "with timeout of 3600 seconds")
+        self.assertEqual(general.TRASH_ARGV[-1], "end timeout")
+
+    def failing_empty_trash(self, stderr):
+        write(f"{self.home}/.Trash/junk.bin", "x" * 5000)
+        it = self.by_key(self.scan())["empty-trash"]
+
+        def runner(argv, **kw):
+            return subprocess.CompletedProcess(argv, 1, "", stderr)
+        return core.execute_item(it, self.cfg, runner=runner, env=self.env(), now=self.now)
+
+    def test_empty_trash_automation_denied_message(self):
+        ok, msg = self.failing_empty_trash("execution error: Not authorized (-1743)")
+        self.assertFalse(ok)
+        self.assertIn("Privacy & Security \u2192 Automation", msg)
+
+    def test_empty_trash_timeout_message(self):
+        ok, msg = self.failing_empty_trash("execution error: AppleEvent timed out. (-1712)")
+        self.assertFalse(ok)
+        self.assertIn("still emptying", msg)
+
+    def test_empty_trash_other_error_passes_through(self):
+        ok, msg = self.failing_empty_trash("boom")
+        self.assertEqual((ok, msg), (False, "boom"))
 
     def test_empty_trash_not_offered_when_empty_or_missing(self):
         self.assertNotIn("empty-trash", self.by_key(self.scan()))

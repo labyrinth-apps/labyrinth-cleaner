@@ -488,7 +488,7 @@ class ApiTests(ServerTestCase):
             f.write("x" * 3000)
         helper = os.path.join(self.tmp, "fake-trash-helper")
         with open(helper, "w") as f:
-            f.write(f'#!/bin/sh\nmkdir -p "{trash}" && mv "$1" "{trash}/"\n')
+            f.write(f'#!/bin/sh\nshift 2; mkdir -p "{trash}" && mv "$1" "{trash}/"\n')
         os.chmod(helper, 0o755)
         return dmg, trash, helper
 
@@ -504,8 +504,8 @@ class ApiTests(ServerTestCase):
             job = self.wait_job(data["job_id"])
         self.assertEqual([i["key"] for i in job["items"]], ["empty-trash", "download:Setup.dmg"])
         self.assertEqual([i["status"] for i in job["items"]], ["done", "trashed"])
-        self.assertEqual(rec.calls[0], ["osascript", "-e", 'tell application "Finder" to empty trash'])
-        self.assertEqual(rec.calls[1], [helper, dmg])
+        self.assertEqual(rec.calls[0], core._general().TRASH_ARGV)
+        self.assertEqual(rec.calls[1], [helper, "--home", self.home, dmg])
         self.assertTrue(os.path.isfile(dmg))            # the recorder moves nothing
 
     def test_trash_job_status_trashed(self):

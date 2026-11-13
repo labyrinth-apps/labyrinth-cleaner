@@ -49,7 +49,8 @@ DOCKER_DOWN_NOTE = "Start Docker to see what can be cleaned."
 DOCKER_BUILDER_COST = "The next image build starts from scratch."
 DOCKER_IMAGES_COST = "Images are downloaded again the next time a container needs them."
 
-TRASH_ARGV = ["osascript", "-e", 'tell application "Finder" to empty trash']
+TRASH_ARGV = ["osascript", "-e", "with timeout of 3600 seconds",
+              "-e", 'tell application "Finder" to empty trash', "-e", "end timeout"]
 DOCKER_ARGV = {
     "docker:builder": ["docker", "builder", "prune", "-f"],
     "docker:images": ["docker", "image", "prune", "-a", "-f"],

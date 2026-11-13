@@ -176,6 +176,17 @@ class DenyListTests(unittest.TestCase):
         self.assertRefused("/")
         self.assertRefused(os.path.dirname(self.cfg.home))  # outside home
 
+    def test_root_check_refuses_folder_holding_resolved_protected_path(self):
+        os.makedirs(self.p("Elsewhere/Pics"))
+        shutil.rmtree(self.p("Pictures"), ignore_errors=True)
+        if os.path.lexists(self.p("Pictures")):
+            os.remove(self.p("Pictures"))
+        os.symlink(self.p("Elsewhere/Pics"), self.p("Pictures"))
+        with self.assertRaisesRegex(ValueError, "protected path"):
+            core.check_project_root(self.home, self.p("Elsewhere"))
+        with self.assertRaisesRegex(ValueError, "protected path"):
+            core.check_project_root(self.home, self.p("Elsewhere/Pics"))
+
     def test_trash_is_never_rm_target_even_as_project_root(self):
         """~/.Trash is only ever emptied through Finder: nothing under it may be rm'd,
         even when it is passed as a project root."""

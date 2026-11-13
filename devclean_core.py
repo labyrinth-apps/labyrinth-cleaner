@@ -238,6 +238,10 @@ def check_project_root(home: str, path) -> str:
     problem = root_problem(home, real)
     if problem:
         raise ValueError(problem)
+    for d in protected_paths(home):
+        rd = os.path.realpath(d)
+        if within_ci(real, rd) or within_ci(rd, real):
+            raise ValueError(f"folder is or contains a protected path: {tilde(d, home)}")
     return real
 
 
@@ -1390,6 +1394,8 @@ def scan(cfg: Config, sim: Optional[SimctlProvider] = None,
 
     for it in items:
         it.cost_tag, it.cost = cost_for(it)
+        if it.warning and it.cost_tag == "NO COST":
+            it.cost_tag = "SEE WARNING"
         it.deletes, it.restore = explain_for(it, cfg.home)
     changed = {}
     for it in items:
@@ -1661,6 +1667,12 @@ def validate_item(it: Item, cfg: Config, sim: Optional[SimctlProvider] = None,
     raise UnsafeTarget(f"unknown item kind {it.kind}")
 
 
+EMPTY_TRASH_DENIED = ("macOS didn't let Labyrinth Cleaner ask Finder to empty the Trash. "
+                      "Allow it in System Settings \u2192 Privacy & Security \u2192 Automation, "
+                      "then try again.")
+EMPTY_TRASH_BUSY = "Finder is still emptying the Trash. Scan again when it's done."
+
+
 def trash_helper() -> Optional[str]:
     """The helper named by LABYRINTH_TRASH_HELPER when it is an absolute path to an
     executable file, else None (then nothing can be moved to the Trash)."""
@@ -1694,7 +1706,7 @@ def execute_item(it: Item, cfg: Config, sim: Optional[SimctlProvider] = None,
     except UnsafeTarget as e:
         return False, f"REFUSED: {e}"
     if it.kind == "trash":
-        argv = [helper, it.path]
+        argv = [helper, "--home", cfg.home, it.path]
     else:
         argv = ["rm", "-rf", "--", it.path] if it.kind == "path" else it.argv
     if it.kind == "docker":
@@ -1706,5 +1718,11 @@ def execute_item(it: Item, cfg: Config, sim: Optional[SimctlProvider] = None,
     else:
         r = runner(argv, capture_output=True, text=True)
     if r.returncode != 0:
-        return False, (r.stderr or "").strip() or f"exit {r.returncode}"
+        err = (r.stderr or "").strip()
+        if it.kind == "empty-trash":
+            if "-1743" in err:
+                return False, EMPTY_TRASH_DENIED
+            if "-1712" in err:
+                return False, EMPTY_TRASH_BUSY
+        return False, err or f"exit {r.returncode}"
     return True, "ok"
