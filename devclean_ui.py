@@ -445,7 +445,8 @@ def main(argv=None) -> int:
         except OSError as e:
             ap.error(f"--fake-docker: {e}")
 
-    cfg = core.Config(home=args.home or os.path.expanduser("~"), project_roots=tuple(args.projects) if args.projects else None)
+    cfg = core.Config(home=args.home or os.path.expanduser("~"), project_roots=tuple(
+        os.path.abspath(os.path.expanduser(d)) for d in args.projects) if args.projects else None)
     if args.simctl_fixture:
         sim = core.FixtureSimctl.from_dir(args.simctl_fixture)
     elif args.no_simulators or args.home:

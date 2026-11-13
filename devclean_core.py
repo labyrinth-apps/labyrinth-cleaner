@@ -11,6 +11,7 @@ instead of calling the real `xcrun`.
 from __future__ import annotations
 
 import dataclasses
+import fcntl
 import json
 import os
 import re
@@ -89,11 +90,18 @@ class Config:
             candidates += [f for f in load_settings(self.home).get("project_folders", [])
                            if isinstance(f, str)]
         else:
-            candidates = list(self.project_roots)
-        roots = []
+            candidates = [os.path.expanduser(c) if isinstance(c, str) else c
+                          for c in self.project_roots]
+        # Defaults, saved folders and --projects all pass the same check; a failing
+        # entry is dropped silently. Case variants of one folder are one root.
+        roots, seen = [], set()
         for c in candidates:
-            r = os.path.realpath(os.path.expanduser(c))
-            if os.path.isdir(r) and r not in roots:
+            try:
+                r = check_project_root(self.home, c)
+            except ValueError:
+                continue
+            if r.casefold() not in seen:
+                seen.add(r.casefold())
                 roots.append(r)
         self.project_roots = tuple(roots)
         self.android_sdk = os.path.realpath(self.android_sdk or self.p("Library/Android/sdk"))
@@ -146,19 +154,92 @@ class Config:
 
     def static_deny(self) -> list:
         """Paths that may never be deleted, nor any folder that contains them."""
-        return [
-            self.p("Library/Developer/Xcode/Archives"),
-            self.p("Downloads"),
-            self.p("Desktop"),
-            self.p("Pictures"),
-            self.p("Movies"),
-            self.p("Music"),
-            self.p(".ssh"),
-            self.avd_dir,
-            # Emptied only through Finder (the empty-trash item), never rm'd, and never
-            # a project root whose build folders could be offered.
-            self.p(".Trash"),
-        ]
+        return protected_paths(self.home)
+
+
+def protected_paths(home: str) -> list:
+    """Never rm'd, nor any folder containing them; never a project root either."""
+    return [os.path.join(home, rel) for rel in (
+        "Library/Developer/Xcode/Archives",
+        "Downloads",
+        "Desktop",
+        "Pictures",
+        "Movies",
+        "Music",
+        ".ssh",
+        ".android/avd",
+        # Emptied only through Finder (the empty-trash item), never rm'd, and never
+        # a project root whose build folders could be offered.
+        ".Trash",
+    )]
+
+
+# ---------------------------------------------------------------- project roots
+#
+# The data volume is case-insensitive, and realpath() keeps whatever case it was
+# given: ~/downloads is ~/Downloads. Every safety comparison here is therefore
+# made casefolded (within_ci), which needs no I/O and so can't fail open. On top
+# of that, canonical_path() asks macOS for the case the disk stores (F_GETPATH)
+# so that saved and displayed roots read right and case variants dedupe; when it
+# can't (the folder can't be opened), the realpath is used and the casefolded
+# checks still hold.
+
+def within_ci(child: str, parent: str) -> bool:
+    """is_within, ignoring case."""
+    return is_within(child.casefold(), parent.casefold())
+
+
+def canonical_path(path: str) -> str:
+    """realpath(path), spelled with the case the filesystem stores when macOS can tell."""
+    real = os.path.realpath(path)
+    getpath = getattr(fcntl, "F_GETPATH", None)
+    if getpath is None:
+        return real
+    try:
+        fd = os.open(real, os.O_RDONLY)
+    except OSError:
+        return real
+    try:
+        out = fcntl.fcntl(fd, getpath, bytes(1024))
+    except OSError:
+        return real
+    finally:
+        os.close(fd)
+    canon = os.fsdecode(out.split(b"\0", 1)[0])
+    # Trust it only when it names the same path, differing at most in case.
+    return canon if os.path.isabs(canon) and canon.casefold() == real.casefold() else real
+
+
+def root_problem(home: str, real: str) -> Optional[str]:
+    """Why `real` (a resolved absolute path) can't be a project root, or None. No I/O."""
+    if real.casefold() == home.casefold() or not within_ci(real, home):
+        return "must be a folder inside your home folder"
+    if within_ci(real, os.path.join(home, "Library")):
+        return "~/Library is not a projects folder"
+    for d in protected_paths(home):
+        if within_ci(real, d) or within_ci(d, real):
+            return f"folder is or contains a protected path: {tilde(d, home)}"
+    return None
+
+
+def check_project_root(home: str, path) -> str:
+    """The canonical path of a usable project root, or ValueError with the reason.
+
+    Absolute, an existing folder, not a symlink, inside home and not home, not in
+    ~/Library, and not equal to, inside or containing a protected path (Downloads too).
+    """
+    home = os.path.realpath(os.path.expanduser(home))
+    if not isinstance(path, str) or not os.path.isabs(path):
+        raise ValueError(f"not an absolute path: {path!r}")
+    if os.path.islink(path.rstrip(os.sep) or os.sep):
+        raise ValueError(f"is a symlink: {path}")
+    if not os.path.isdir(path):
+        raise ValueError(f"not an existing folder: {path}")
+    real = canonical_path(path)
+    problem = root_problem(home, real)
+    if problem:
+        raise ValueError(problem)
+    return real
 
 
 # ---------------------------------------------------------------- settings
@@ -197,29 +278,12 @@ def save_settings(home: str, data: dict) -> None:
 
 
 def add_project_folder(home: str, path: str) -> str:
-    """Remember a folder to scan for projects. Returns the stored realpath or raises ValueError."""
+    """Remember a folder to scan for projects. Returns the stored path or raises ValueError."""
     home = os.path.realpath(os.path.expanduser(home))
-    if not isinstance(path, str) or not os.path.isabs(path):
-        raise ValueError(f"not an absolute path: {path!r}")
-    if os.path.islink(path.rstrip(os.sep) or os.sep):
-        raise ValueError(f"is a symlink: {path}")
-    if not os.path.isdir(path):
-        raise ValueError(f"not an existing folder: {path}")
-    real = os.path.realpath(path)
-    if real == home or not is_within(real, home):
-        raise ValueError("must be a folder inside your home folder")
-    if is_within(real, os.path.join(home, "Library")):
-        raise ValueError("~/Library is not a projects folder")
-    downloads = os.path.join(home, "Downloads")
-    for d in Config(home=home, project_roots=()).static_deny():
-        d = os.path.realpath(d)
-        if d == downloads:
-            continue   # allowed when the user picks it; the gate still never rm's there
-        if is_within(real, d) or is_within(d, real):
-            raise ValueError(f"folder is or contains a protected path: {d}")
+    real = check_project_root(home, path)
     data = load_settings(home)
     folders = [f for f in data.get("project_folders", []) if isinstance(f, str)]
-    if real not in folders:
+    if real.casefold() not in {f.casefold() for f in folders}:
         folders.append(real)
     data["project_folders"] = folders
     save_settings(home, data)
@@ -229,9 +293,9 @@ def add_project_folder(home: str, path: str) -> str:
 def remove_project_folder(home: str, path: str) -> None:
     home = os.path.realpath(os.path.expanduser(home))
     data = load_settings(home)
-    drop = {path, os.path.realpath(path)}
+    drop = {path.casefold(), os.path.realpath(path).casefold()}
     data["project_folders"] = [f for f in data.get("project_folders", [])
-                               if isinstance(f, str) and f not in drop]
+                               if isinstance(f, str) and f.casefold() not in drop]
     save_settings(home, data)
 
 
@@ -1348,24 +1412,26 @@ def validate_path(path: str, cfg: Config) -> str:
     if real != norm:
         raise UnsafeTarget(f"path resolves elsewhere ({real}): {norm}")
     home = cfg.home
-    if real in ("/", home) or not is_within(real, home):
+    if real.casefold() in ("/", home.casefold()) or not is_within(real, home):
         raise UnsafeTarget(f"outside home or is home itself: {real}")
+    # Case-insensitive: on the data volume ~/downloads is ~/Downloads.
     for d in deny_paths(cfg):
-        if is_within(real, d):
+        if within_ci(real, d):
             raise UnsafeTarget(f"inside protected path {d}")
-        if is_within(d, real):
+        if within_ci(d, real):
             raise UnsafeTarget(f"contains protected path {d}")
 
     parent, base = os.path.dirname(real), os.path.basename(real)
 
-    # 1. Project build artifacts
-    if parent not in cfg.project_roots and any(is_within(parent, r) for r in cfg.project_roots):
+    # 1. Project build artifacts, only under roots that pass the project-root rules
+    roots = [r for r in cfg.project_roots if root_problem(home, r) is None]
+    if parent not in roots and any(is_within(parent, r) for r in roots):
         if base in FLUTTER_ARTIFACTS and os.path.isfile(os.path.join(parent, "pubspec.yaml")):
             return real
         if base in WEB_ARTIFACTS and os.path.isfile(os.path.join(parent, "package.json")):
             return real
         raise UnsafeTarget(f"not a recognised build artifact folder: {real}")
-    if is_within(real, cfg.p("Documents")):
+    if within_ci(real, cfg.p("Documents")):
         raise UnsafeTarget(f"personal files under ~/Documents: {real}")
 
     # 2. Fixed cache folders
@@ -1379,7 +1445,8 @@ def validate_path(path: str, cfg: Config) -> str:
         return real
     # 4b. App caches: a direct child of ~/Library/Caches, not Apple's and not this app's own
     if (parent == os.path.realpath(cfg.p("Library/Caches"))
-            and not base.lower().startswith("com.apple.") and base != _general().OWN_CACHE):
+            and not base.lower().startswith("com.apple.")
+            and base.casefold() != _general().OWN_CACHE.casefold()):
         return real
     # 4c. Logs: a direct child of ~/Library/Logs or its DiagnosticReports folder
     logs = os.path.realpath(cfg.p("Library/Logs"))

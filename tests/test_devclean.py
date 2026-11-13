@@ -182,6 +182,8 @@ class DenyListTests(unittest.TestCase):
         write(self.p(".Trash/oldapp/pubspec.yaml"), "name: old")
         mkdir(self.p(".Trash/oldapp/build"))
         cfg = core.Config(home=self.home, project_roots=(self.p(".Trash"),))
+        self.assertEqual(cfg.project_roots, ())        # Config drops it as a root
+        cfg.project_roots = (self.p(".Trash"),)        # the gate refuses even when forced
         for rel in (".Trash", ".Trash/oldapp", ".Trash/oldapp/build"):
             with self.assertRaises(core.UnsafeTarget, msg=rel):
                 core.validate_path(self.p(rel), cfg)
@@ -1210,10 +1212,123 @@ class ProjectRootTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             core.add_project_folder(self.home, os.path.join(self.home, ".ssh"))
 
-    def test_downloads_allowed_when_picked(self):
+    def test_downloads_rejected_as_project_root(self):
         d = os.path.join(self.home, "Downloads")
-        os.makedirs(d, exist_ok=True)
-        self.assertEqual(core.add_project_folder(self.home, d), d)
+        os.makedirs(os.path.join(d, "proj"), exist_ok=True)
+        for bad in (d, os.path.join(d, "proj")):
+            with self.assertRaises(ValueError, msg=bad):
+                core.add_project_folder(self.home, bad)
+        self.assertEqual(core.load_settings(self.home), {})
+
+    # ---- C1: case variants and unchecked roots
+
+    def case_insensitive(self):
+        if not os.path.exists(self.home.upper()):
+            self.skipTest("temp dir filesystem is case-sensitive")
+
+    def test_case_variant_adds_rejected(self):
+        self.case_insensitive()
+        for d in ("Desktop", ".Trash", "Downloads"):
+            os.makedirs(os.path.join(self.home, d), exist_ok=True)
+        for rel in ("downloads", "DOWNLOADS", "library", "LIBRARY/caches", ".trash",
+                    "desktop", "downloads/../Library"):
+            with self.assertRaises(ValueError, msg=rel):
+                core.add_project_folder(self.home, os.path.join(self.home, rel))
+        self.assertEqual(core.load_settings(self.home), {})
+
+    def test_check_project_root_returns_canonical_case(self):
+        self.case_insensitive()
+        P = os.path.join(self.home, "Documents", "Projects")
+        self.assertEqual(core.check_project_root(self.home, os.path.join(self.home, "documents", "PROJECTS")), P)
+        self.assertEqual(core.check_project_root(self.home, P), P)
+        with self.assertRaises(ValueError):
+            core.check_project_root(self.home, self.home.upper())
+
+    def test_unchecked_roots_dropped_by_config(self):
+        lib_nm = os.path.join(self.home, "Library/Application Support/App/extensions/ext")
+        write(os.path.join(lib_nm, "package.json"), "{}")
+        mkdir(os.path.join(lib_nm, "node_modules"))
+        vs = os.path.join(self.home, ".vscode/extensions/ext")
+        write(os.path.join(vs, "package.json"), "{}")
+        mkdir(os.path.join(vs, "node_modules"))
+        os.makedirs(os.path.join(self.home, "Desktop"), exist_ok=True)
+        os.makedirs(os.path.join(self.tmp, "outside"), exist_ok=True)
+        for roots in ((self.home,), (os.path.join(self.home, "Library"),),
+                      (os.path.join(self.home, "Library/Application Support"),),
+                      (os.path.join(self.home, "Downloads"),), (os.path.join(self.home, "Desktop"),),
+                      (os.path.join(self.tmp, "outside"),), ("relative",), ("/",)):
+            cfg = core.Config(home=self.home, project_roots=roots)
+            self.assertEqual(cfg.project_roots, (), roots)
+        cfg = core.Config(home=self.home, project_roots=(os.path.join(self.home, "Library"),))
+        with self.assertRaises(core.UnsafeTarget):
+            core.validate_path(os.path.join(lib_nm, "node_modules"), cfg)
+
+    def test_cli_projects_home_offers_nothing_under_dot_dirs(self):
+        vs = os.path.join(self.home, ".vscode/extensions/ext")
+        write(os.path.join(vs, "package.json"), "{}")
+        mkdir(os.path.join(vs, "node_modules"))
+        r = subprocess.run([sys.executable, CLI, "--home", self.home, "--json",
+                            "--projects", self.home], capture_output=True, text=True,
+                           stdin=subprocess.DEVNULL)
+        keys = {i["key"] for i in json.loads(r.stdout)["items"]}
+        self.assertFalse([k for k in keys if k.startswith(("web:", "flutter:"))], keys)
+
+    def test_cli_relative_projects_resolve_against_cwd(self):
+        r = subprocess.run([sys.executable, CLI, "--home", self.home, "--json", "--projects", "Projects"],
+                           capture_output=True, text=True, stdin=subprocess.DEVNULL,
+                           cwd=os.path.join(self.home, "Documents"))
+        keys = {i["key"] for i in json.loads(r.stdout)["items"]}
+        self.assertIn("flutter:Documents/Projects/flutter_app/build", keys)
+
+    def test_validate_path_refuses_case_variant_of_deny_path(self):
+        self.case_insensitive()
+        proj = os.path.join(self.home, "Downloads", "x")
+        write(os.path.join(proj, "package.json"), "{}")
+        mkdir(os.path.join(proj, "node_modules"))
+        cfg = core.Config(home=self.home, project_roots=())
+        cfg.project_roots = (os.path.join(self.home, "downloads"),)   # bypass Config's check
+        with self.assertRaises(core.UnsafeTarget):
+            core.validate_path(os.path.join(self.home, "downloads", "x", "node_modules"), cfg)
+        res = core.scan(cfg, core.NoSimctl(), xcode_check=lambda: False, env=core.Env.fake())
+        self.assertFalse([i for i in res.offerable if i.category == "Web"])
+
+    def test_case_variant_roots_dont_duplicate_projects(self):
+        self.case_insensitive()
+        P = os.path.join(self.home, "Documents", "Projects")
+        one = self.scan(core.Config(home=self.home, project_roots=(P,)))
+        cfg = core.Config(home=self.home, project_roots=(P, os.path.join(self.home, "documents", "projects"),
+                                                         os.path.join(self.home, "DOCUMENTS", "Projects", "web_app")))
+        self.assertEqual(cfg.project_roots, (P, os.path.join(P, "web_app")))
+        keys = [i.key for i in self.scan(cfg).items if i.category in ("Flutter", "Web")]
+        self.assertEqual(len(keys), len(set(keys)))
+        self.assertEqual(sorted(keys), sorted(i.key for i in one.items if i.category in ("Flutter", "Web")))
+
+    def test_default_dir_and_saved_case_variant_are_one_root(self):
+        self.case_insensitive()
+        code = os.path.join(self.home, "Code")
+        write(os.path.join(code, "app", "package.json"), "{}")
+        mkdir(os.path.join(code, "app", "node_modules"))
+        core.save_settings(self.home, {"project_folders": [code, os.path.join(self.home, "CODE")]})
+        cfg = core.Config(home=self.home)
+        self.assertEqual(cfg.project_roots, (code,))
+        # Already saved under another case: no new entry.
+        self.assertEqual(core.add_project_folder(self.home, os.path.join(self.home, "code")), code)
+        self.assertEqual(len(core.load_settings(self.home)["project_folders"]), 2)
+        core.remove_project_folder(self.home, os.path.join(self.home, "cOdE"))
+        self.assertEqual(core.load_settings(self.home)["project_folders"], [])
+        import devclean_report
+        self.assertEqual(devclean_report.auto_project_folders(cfg), [code])   # same spelling as the root
+        os.symlink(code, os.path.join(self.home, "Developer"))
+        self.assertEqual(devclean_report.auto_project_folders(core.Config(home=self.home)), [code])
+
+    def test_own_cache_name_is_case_insensitive(self):
+        c = os.path.join(self.home, "Library/Caches/COM.Labyrinth-Apps.Cleaner")
+        mkdir(c)
+        cfg = cfg_for(self.home)
+        res = core.scan(cfg, core.NoSimctl(), xcode_check=lambda: False, env=core.Env.fake())
+        self.assertFalse([i for i in res.items if i.path == c])
+        with self.assertRaises(core.UnsafeTarget):
+            core.validate_path(c, cfg)
 
     def test_settings_path_and_content_pinned(self):
         P = os.path.join(self.home, "Documents", "Projects")

@@ -129,7 +129,7 @@ def scan_app_caches(cfg: core.Config, env: core.Env, warnings: Optional[list] = 
     items = []
     for name in names:
         path = os.path.join(root, name)
-        if (name.lower().startswith("com.apple.") or name == OWN_CACHE
+        if (name.lower().startswith("com.apple.") or name.casefold() == OWN_CACHE.casefold()
                 or os.path.realpath(path) in fixed or os.path.islink(path)
                 or not os.path.isdir(path)):
             continue

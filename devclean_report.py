@@ -171,11 +171,15 @@ def disk_map(res: core.ScanResult, extras: dict) -> list:
 
 
 def auto_project_folders(cfg: core.Config) -> list:
-    """The default project folders (~/Developer, ~/Projects, ...) that exist, as realpaths."""
+    """The default project folders (~/Developer, ~/Projects, ...) that pass the project-root
+    check, spelled as Config stores them."""
     found = []
     for d in core.DEFAULT_PROJECT_DIRS:
-        r = os.path.realpath(cfg.p(d))
-        if os.path.isdir(r) and r not in found:
+        try:
+            r = core.check_project_root(cfg.home, cfg.p(d))
+        except ValueError:
+            continue
+        if r.casefold() not in {f.casefold() for f in found}:
             found.append(r)
     return found
 
