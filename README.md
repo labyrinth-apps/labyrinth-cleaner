@@ -106,3 +106,7 @@ Testing flags: `--home DIR` treats DIR as `$HOME` and turns off real simulator s
 ## If less space is freed than expected
 
 APFS can release space lazily, and Time Machine local snapshots can hold on to deleted data. Check with `tmutil listlocalsnapshots /`.
+
+## License
+
+MIT. See [LICENSE](LICENSE). devclean deletes folders permanently, and it comes with no warranty. Use `--dry-run` or the review screen first.
