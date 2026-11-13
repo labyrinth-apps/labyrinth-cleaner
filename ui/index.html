@@ -38,6 +38,10 @@
   .banner .bsub{color:var(--muted);font-size:12.5px;margin-top:2px}
   .banner .bfail{color:var(--check);font-size:12.5px;margin-top:6px}
   .banner .x{margin-left:auto;cursor:pointer;color:var(--muted);background:none;border:0;font-size:16px}
+  .welcome{padding:28px 26px;max-width:640px}
+  .welcome h2{margin:0 0 12px;font-size:20px}
+  .welcome p{color:var(--muted);font-size:14px;line-height:1.55;margin:0 0 12px}
+  .welcome .primary{margin-top:8px}
   .loading{display:flex;align-items:center;gap:14px;padding:26px 22px}
   .spinner{width:22px;height:22px;border-radius:50%;border:3px solid rgba(255,255,255,.12);border-top-color:var(--safe);animation:spin 0.9s linear infinite;flex:none}
   @keyframes spin{to{transform:rotate(360deg)}}
@@ -228,7 +232,16 @@
     <button class="x" id="bClose" aria-label="Dismiss">✕</button>
   </div>
 
-  <div class="card loading" id="loading">
+  <div class="card welcome" id="welcome" hidden>
+    <h2>Welcome to Labyrinth Cleaner</h2>
+    <p>It finds space you can get back: caches, old logs, developer build folders and old installers in Downloads. Nothing is deleted until you pick it and confirm.</p>
+    <p>macOS may ask once whether Labyrinth Cleaner can open your Downloads and Documents folders. It reads them to measure what's there. If you say no, those folders are skipped.</p>
+    <p>If you choose Empty Trash, macOS asks once whether it may control Finder. That's how the Trash gets emptied.</p>
+    <p>It never asks for Full Disk Access or your password.</p>
+    <button class="primary" id="welcomeGo" style="margin-left:0">Scan my Mac</button>
+  </div>
+
+  <div class="card loading" id="loading" hidden>
     <div class="spinner"></div>
     <div><b>Scanning… (about 15 s)</b><span>Measuring caches, build folders, simulators and Android images.</span></div>
   </div>
@@ -920,7 +933,28 @@ for (const c of $("filters").querySelectorAll(".chip[data-f]")) c.addEventListen
 for (const t of $("tiers").children) t.addEventListener("click", () => setFilter(t.dataset.g));
 $("segchip").addEventListener("click", () => { S.seg = null; renderMap(); renderFilters(); renderGroups(); });
 
-scan();
+// The first run in the Mac app shows a welcome card instead of scanning.
+async function start() {
+  let welcome = false;
+  try {
+    const res = await api("GET", "/api/settings");
+    welcome = res.status === 200 && !!(res.data && res.data.welcome);
+  } catch (e) { /* no settings: just scan */ }
+  if (!welcome) return scan();
+  $("sub").textContent = "Welcome";
+  $("rescan").hidden = true;
+  $("welcome").hidden = false;
+  $("welcomeGo").focus();
+}
+$("welcomeGo").addEventListener("click", async () => {
+  $("welcomeGo").disabled = true;
+  try { await api("POST", "/api/settings/welcome-done", {}); } catch (e) { /* shown again next time */ }
+  $("welcome").hidden = true;
+  $("rescan").hidden = false;
+  scan();
+});
+
+start();
 </script>
 </body>
 </html>

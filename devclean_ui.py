@@ -52,9 +52,9 @@ def url_file(cfg: core.Config) -> str:
 
 class UIServer:
     def __init__(self, cfg: core.Config, sim: "core.SimctlProvider | None", *, fixture: bool,
-                 xcode_check=core.xcode_running, runner=None, idle_timeout: float = 3600,
+                 xcode_check=core.xcode_running, runner=None, idle_timeout: "float | None" = 3600,
                  port: int = 0, measure=core.du_bytes, options: dict = None,
-                 fixed_roots: bool = False, docker=None):
+                 fixed_roots: bool = False, docker=None, app_mode: bool = False):
         self.cfg, self.sim, self.fixture = cfg, sim, fixture
         self.xcode_check, self.measure = xcode_check, measure
         # Project folders given with --projects: the settings can't change them.
@@ -66,7 +66,10 @@ class UIServer:
             self.env = dataclasses.replace(self.env, docker=docker)
         # Fixture data can carry real runtime UUIDs: never run xcrun in fixture mode.
         self.runner = runner or (core.fixture_runner if fixture else subprocess.run)
+        # None: never exit for being idle (the app owns the server and stops it itself).
         self.idle_timeout = idle_timeout
+        # Started by the Mac app: shows the first-run welcome. Never true for `devclean ui`.
+        self.app_mode = app_mode
         # What this server was started with; a second `devclean ui` reuses it only on a match.
         self.options = dict(options or {}, fixture=fixture)
         self.token = secrets.token_urlsafe(32)
@@ -101,8 +104,9 @@ class UIServer:
 
     def serve_forever(self):
         """Serve until shutdown() or until idle for idle_timeout with no clean running."""
-        check = min(5.0, max(0.05, self.idle_timeout / 4))
         stop, idle_exit = threading.Event(), threading.Event()
+        check = (min(5.0, max(0.05, self.idle_timeout / 4))
+                 if self.idle_timeout is not None else None)
 
         def watchdog():
             while not stop.wait(check):
@@ -112,7 +116,8 @@ class UIServer:
                     self.httpd.shutdown()
                     return
 
-        threading.Thread(target=watchdog, daemon=True).start()
+        if check is not None:
+            threading.Thread(target=watchdog, daemon=True).start()
         self._serving = True
         try:
             self.httpd.serve_forever(poll_interval=0.1)
@@ -176,7 +181,18 @@ class UIServer:
             cfg = self.cfg
         return {"project_folders": list(cfg.project_roots),
                 "auto_project_folders": report.auto_project_folders(cfg),
-                "fixed": self.fixed_roots}
+                "fixed": self.fixed_roots,
+                "welcome": self.app_mode and not core.load_settings(cfg.home).get("welcome_done")}
+
+    def welcome_done(self) -> tuple:
+        with self._lock:
+            try:
+                data = core.load_settings(self.cfg.home)
+                data["welcome_done"] = True
+                core.save_settings(self.cfg.home, data)
+            except Exception as e:
+                return 400, {"error": str(e) or type(e).__name__}
+        return 200, {"ok": True}
 
     def change_project_folders(self, body) -> tuple:
         """{"add": path} or {"remove": path}. The path is remembered for scanning only."""
@@ -356,6 +372,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/settings/project-folders":
             status, out = app.change_project_folders(body)
             return self._send(status, out)
+        if path == "/api/settings/welcome-done":
+            status, out = app.welcome_done()
+            return self._send(status, out)
         return self._send(404, {"error": "not found"})
 
 
@@ -423,6 +442,41 @@ def _raise_interrupt(signum, frame):
     raise KeyboardInterrupt
 
 
+def _watch_stdin():
+    """The Mac app owns this server: when its pipe closes (even if it crashed), stop."""
+    try:
+        while os.read(0, 65536):   # raw fd: a blocked buffered read aborts the interpreter at exit
+            pass
+    except (OSError, ValueError):
+        pass
+    os.kill(os.getpid(), signal.SIGTERM)
+
+
+def _run_app(cfg, sim, fixture, args, options, docker) -> int:
+    """`devclean ui --app`: own server, no URL file, no idle exit, one handshake line on stdout."""
+    srv = UIServer(cfg, sim, fixture=fixture,
+                   xcode_check=(lambda: False) if args.home else core.xcode_running,
+                   idle_timeout=None, options=options,
+                   fixed_roots=bool(args.projects), docker=docker, app_mode=True)
+    if threading.current_thread() is threading.main_thread():
+        signal.signal(signal.SIGTERM, _raise_interrupt)
+    print(json.dumps({"labyrinth_server": 1, "url": srv.url}), flush=True)
+    if fixture:
+        print("fixture mode: xcrun deletes are disabled", file=sys.stderr, flush=True)
+    threading.Thread(target=_watch_stdin, daemon=True).start()
+    try:
+        srv.serve_forever()
+    except KeyboardInterrupt:
+        if srv._job_running:
+            try:
+                srv.finish_jobs()
+            except KeyboardInterrupt:
+                pass
+    finally:
+        srv.shutdown()
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="devclean ui",
                                  description="Open the devclean web UI (local only).")
@@ -435,6 +489,7 @@ def main(argv=None) -> int:
     ap.add_argument("--no-open", action="store_true", help="print the URL, don't open a browser")
     ap.add_argument("--idle-timeout", type=float, default=3600, help=argparse.SUPPRESS)
     ap.add_argument("--fake-docker", metavar="FILE", help=argparse.SUPPRESS)
+    ap.add_argument("--app", action="store_true", help=argparse.SUPPRESS)
     args = ap.parse_args(argv)
     if args.fake_docker and not args.home:
         ap.error("--fake-docker needs --home (it is for demos on a fixture home)")
@@ -458,6 +513,9 @@ def main(argv=None) -> int:
         "fixture": fixture,
         "fake_docker": os.path.realpath(args.fake_docker) if args.fake_docker else None,
     }
+
+    if args.app:
+        return _run_app(cfg, sim, fixture, args, options, docker)
 
     uf = url_file(cfg)
     lock = _startup_lock(uf)

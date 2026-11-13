@@ -18,6 +18,7 @@ import threading
 import time
 import unittest
 from unittest import mock
+from urllib.parse import parse_qs, urlsplit
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -388,7 +389,7 @@ class ApiTests(ServerTestCase):
         self.assertEqual(status, 200, data)
         dev = os.path.join(self.home, "Developer")
         self.assertEqual(data, {"project_folders": [dev], "auto_project_folders": [dev],
-                                "fixed": False})
+                                "fixed": False, "welcome": False})
         self.assertEqual(self.req("GET", "/api/settings", token=False)[0], 403)
 
     def test_add_project_folder_then_rescan_shows_it(self):
@@ -827,6 +828,153 @@ class PageTests(unittest.TestCase):
         self.assertEqual(out.returncode, 0, out.stderr)
         self.assertEqual(json.loads(out.stdout), [core.human(v) for v in values])
         self.assertIn("node", shutil.which("node"))
+
+
+DEVCLEAN = os.path.join(ROOT, "devclean")
+
+
+class AppModeTests(ServerTestCase):
+    def setUp(self):
+        super().setUp()
+        self.procs = []
+
+    def tearDown(self):
+        for p in self.procs:
+            if p.poll() is None:
+                p.kill()
+            p.wait()
+            for f in (p.stdin, p.stdout, p.stderr):
+                if f:
+                    f.close()
+        super().tearDown()
+
+    def spawn(self, args):
+        p = subprocess.Popen([sys.executable, DEVCLEAN, "ui", *args], stdin=subprocess.PIPE,
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.procs.append(p)
+        return p
+
+    def start_app_server(self, extra=()):
+        p = self.spawn(["--app", "--home", self.home, *extra])
+        return p, json.loads(p.stdout.readline())
+
+    def get(self, url, path, token=None, host=None):
+        u = urlsplit(url)
+        tok = parse_qs(u.query)["t"][0] if token is None else token
+        conn = http.client.HTTPConnection("127.0.0.1", u.port, timeout=10)
+        try:
+            conn.request("GET", path, headers={"Host": host or f"127.0.0.1:{u.port}",
+                                               "X-Devclean-Token": tok})
+            r = conn.getresponse()
+            return r.status, json.loads(r.read() or b"null")
+        finally:
+            conn.close()
+
+    def url_file(self):
+        return os.path.join(self.home, ".cache", "devclean", "ui.url")
+
+    def test_app_mode_handshake_and_stdin_eof_exit(self):
+        p, hs = self.start_app_server()
+        self.assertEqual(set(hs), {"labyrinth_server", "url"})
+        self.assertEqual(hs["labyrinth_server"], 1)
+        u = urlsplit(hs["url"])
+        self.assertEqual(u.hostname, "127.0.0.1")
+        status, body = self.get(hs["url"], "/api/settings")
+        self.assertEqual(status, 200)
+        self.assertIs(body["welcome"], True)
+        p.stdin.close()
+        self.assertEqual(p.wait(timeout=10), 0)
+        self.assertEqual(p.stdout.read(), b"")          # nothing after the handshake line
+        self.assertIn(b"fixture mode", p.stderr.read())   # the notice goes to stderr
+        self.assertFalse(os.path.exists(self.url_file()))
+
+    def test_app_mode_ignores_live_cli_server(self):
+        cli = self.spawn(["--no-open", "--home", self.home, "--idle-timeout", "30"])
+        cli.stdin.close()
+        end = time.time() + 10
+        while not os.path.exists(self.url_file()) and time.time() < end:
+            time.sleep(0.05)
+        with open(self.url_file()) as f:
+            cli_url = f.read().strip()
+        p, hs = self.start_app_server()
+        self.assertNotEqual(hs["url"], cli_url)
+        with open(self.url_file()) as f:
+            self.assertEqual(f.read().strip(), cli_url)    # the URL file is untouched
+        p.stdin.close()
+        self.assertEqual(p.wait(timeout=10), 0)
+        self.assertTrue(os.path.exists(self.url_file()))
+        cli.terminate()
+        cli.wait(10)
+
+    def test_app_flag_hidden_from_help(self):
+        r = subprocess.run([sys.executable, DEVCLEAN, "ui", "--help"],
+                           capture_output=True, text=True, timeout=30)
+        self.assertNotIn("--app", r.stdout)
+
+    def test_idle_timeout_none_never_exits(self):
+        srv = self.start(idle_timeout=None)
+        time.sleep(0.3)
+        self.assertTrue(srv._serving)
+
+    def test_stop_mid_job_finishes_current_skips_rest(self):
+        blocking = Blocking()
+        srv = self.start(runner=blocking)
+        p = self.scan()
+        keys = self.safe_keys(p)[:3]
+        self.assertEqual(len(keys), 3)
+        status, data = self.clean(p["scan_id"], keys)
+        self.assertEqual(status, 200, data)
+        self.assertTrue(blocking.started.wait(5))
+        stopper = threading.Thread(target=srv.finish_jobs)
+        stopper.start()
+        blocking.release.set()
+        stopper.join(10)
+        self.assertFalse(stopper.is_alive())
+        job = self.req("GET", f"/api/job/{data['job_id']}")[1]
+        self.assertEqual([i["status"] for i in job["items"]], ["done", "cancelled", "cancelled"])
+        self.assertTrue(os.path.isdir(os.path.join(self.home, ".npm/_cacache")))
+
+    def test_welcome_flag_and_done(self):
+        core.save_settings(self.home, {"project_folders": [self.home], "other": 1})
+        srv = self.start(app_mode=True)
+        self.assertIs(self.req("GET", "/api/settings")[1]["welcome"], True)
+        status, data, _ = self.req("POST", "/api/settings/welcome-done", {})
+        self.assertEqual((status, data), (200, {"ok": True}))
+        self.assertIs(self.req("GET", "/api/settings")[1]["welcome"], False)
+        saved = core.load_settings(self.home)
+        self.assertIs(saved["welcome_done"], True)
+        self.assertEqual(saved["project_folders"], [self.home])   # other keys kept
+        self.assertEqual(saved["other"], 1)
+
+    def test_welcome_false_for_non_app_server(self):
+        self.start()
+        self.assertIs(self.req("GET", "/api/settings")[1]["welcome"], False)
+
+    def test_welcome_done_checks(self):
+        self.start(app_mode=True)
+        url = "/api/settings/welcome-done"
+        self.assertEqual(self.req("POST", url, {}, token=False)[0], 403)
+        self.assertEqual(self.req("POST", url, {}, host="evil.com")[0], 403)
+        self.assertEqual(self.req("POST", url, {}, headers={"Origin": "http://evil.com"})[0], 403)
+        self.assertEqual(self.req("POST", url, {}, headers={"Content-Type": "text/plain"})[0], 415)
+        self.assertIs(self.req("GET", "/api/settings")[1]["welcome"], True)
+
+    def test_app_mode_security(self):
+        p, hs = self.start_app_server()
+        self.assertEqual(self.get(hs["url"], "/api/settings", token="wrong")[0], 403)
+        self.assertEqual(self.get(hs["url"], "/api/settings", host="evil.com")[0], 403)
+        u = urlsplit(hs["url"])
+        conn = http.client.HTTPConnection("127.0.0.1", u.port, timeout=10)
+        try:
+            conn.request("POST", "/api/settings/welcome-done", body="{}", headers={
+                "Host": f"127.0.0.1:{u.port}", "Origin": "http://evil.com",
+                "X-Devclean-Token": parse_qs(u.query)["t"][0],
+                "Content-Type": "application/json"})
+            self.assertEqual(conn.getresponse().status, 403)
+        finally:
+            conn.close()
+        p.stdin.close()
+        self.assertEqual(p.wait(timeout=10), 0)
 
 
 if __name__ == "__main__":
