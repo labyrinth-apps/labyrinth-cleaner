@@ -261,10 +261,10 @@ final class TrashCheckTests: XCTestCase {
     // MARK: byte-wise comparison (grapheme-cluster regressions)
 
     func testPrependMarkBeforeSlashDotDotRefused() throws {
-        try mkdir("outside")
+        try mkdir("outside/sub")
         let out = try mkfile("outside/x")
         try mkdir("Downloads")
-        try fm.createSymbolicLink(atPath: p("Downloads/a\u{0600}"), withDestinationPath: p("outside"))
+        try fm.createSymbolicLink(atPath: p("Downloads/a\u{0600}"), withDestinationPath: p("outside/sub"))
         let r = run(home + "/Downloads/a\u{0600}/../x")
         assertRefused(r)
         XCTAssertTrue(fm.fileExists(atPath: out))
