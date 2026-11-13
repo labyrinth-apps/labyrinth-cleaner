@@ -15,6 +15,7 @@ import os
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import tempfile
 import time
@@ -55,6 +56,14 @@ DEVSUPPORT_NEWEST_WARNING = "Re-copied the next time you debug on that iPhone."
 ARCHIVE_WARNING = "Shipped builds. You need them to read crash reports for those versions."
 TRASH_RESTORE = "Moved to the Trash, so you can Put Back."
 SITUATION_CHANGED = "Situation changed: scan again"
+DOWNLOAD_RESTORE = "Moved to the Trash. You can Put Back."
+TRASH_HELPER_ENV = "LABYRINTH_TRASH_HELPER"
+TRASH_REFUSAL = "REFUSED: use the app to move these to the Trash"
+INSTALLER_EXTS = (".dmg", ".pkg", ".mpkg", ".xip")
+INSTALLER_MIN_AGE_DAYS = 14
+ZIP_INSTALLER_MIN_SIZE = 50 * 1024 ** 2
+LARGE_MIN_SIZE = 500 * 1024 ** 2
+LARGE_UNUSED_DAYS = 90
 
 # Conventional places developers keep projects, under home. Only those that exist are scanned.
 DEFAULT_PROJECT_DIRS = ("Developer", "Projects", "code", "src", "dev", "workspace", "git", "repos")
@@ -386,15 +395,30 @@ def _dev_tools_installed() -> bool:
         return False
 
 
+def _last_used(path: str) -> Optional[float]:
+    """Spotlight's last-opened time for `path` (epoch seconds), or None if unknown."""
+    try:
+        r = subprocess.run(["mdls", "-raw", "-name", "kMDItemLastUsedDate", path],
+                           capture_output=True, text=True, timeout=5)
+        out = (r.stdout or "").strip()
+        if r.returncode != 0 or not out or out == "(null)":
+            return None
+        return datetime.strptime(out, "%Y-%m-%d %H:%M:%S %z").timestamp()
+    except Exception:
+        return None
+
+
 @dataclass
 class Env:
     """What the scan may ask the real Mac. Tests use `Env.fake()`."""
     dev_tools: Callable[[], bool] = lambda: False
     xcode_running: Callable[[], bool] = lambda: False
+    last_used: Callable[[str], Optional[float]] = lambda path: None
 
     @classmethod
     def real(cls) -> "Env":
-        return cls(dev_tools=_dev_tools_installed, xcode_running=xcode_running)
+        return cls(dev_tools=_dev_tools_installed, xcode_running=xcode_running,
+                   last_used=_last_used)
 
     @classmethod
     def fake(cls, **overrides) -> "Env":
@@ -911,6 +935,65 @@ def scan_archives(cfg: Config) -> list:
     return items
 
 
+def _download_item(cfg: Config, env: Env, now: float, path: str) -> Optional[Item]:
+    """The REVIEW item for one Downloads file if it matches a rule right now, else None."""
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return None
+    if not stat.S_ISREG(st.st_mode):
+        return None
+    name = os.path.basename(path)
+    ext = os.path.splitext(name)[1].lower()
+    maybe_installer = ext in INSTALLER_EXTS or (ext == ".zip" and st.st_size > ZIP_INSTALLER_MIN_SIZE)
+    if not maybe_installer and st.st_size <= LARGE_MIN_SIZE:
+        return None
+    used = env.last_used(path)
+    if used is None:
+        used = st.st_mtime
+    idle_days = (now - used) / 86400
+    if maybe_installer and idle_days > INSTALLER_MIN_AGE_DAYS:
+        rule = "installer"
+    elif st.st_size > LARGE_MIN_SIZE and idle_days > LARGE_UNUSED_DAYS:
+        rule = "large"
+    else:
+        return None
+    rel = os.path.relpath(path, cfg.p("Downloads"))
+    return Item(key=f"download:{rel}", category="Downloads", label=rel, tier=REVIEW,
+                kind="trash", path=path, size=st.st_size, mtime=used,
+                note="old installer" if rule == "installer" else "large, not opened for months",
+                meta={"rule": rule}, restore=DOWNLOAD_RESTORE)
+
+
+def scan_downloads(cfg: Config, env: Env, now: float) -> list:
+    """Old installers and large untouched files, directly in ~/Downloads or one folder down.
+    Regular files only. They move to the Trash, never rm."""
+    root = cfg.p("Downloads")
+    if not os.path.isdir(root) or os.path.islink(root):
+        return []
+    items = []
+
+    def entries(d):
+        try:
+            return sorted(os.listdir(d))
+        except OSError:
+            return []
+
+    for name in entries(root):
+        path = os.path.join(root, name)
+        if os.path.islink(path):
+            continue
+        if os.path.isdir(path):
+            children = [os.path.join(path, n) for n in entries(path)]
+        else:
+            children = [path]
+        for child in children:
+            it = _download_item(cfg, env, now, child)
+            if it:
+                items.append(it)
+    return items
+
+
 def scan_info(cfg: Config) -> list:
     p = cfg.p("Downloads")
     if not os.path.isdir(p):
@@ -1002,7 +1085,7 @@ def explain_for(it: Item, home: Optional[str] = None) -> tuple:
     home = home or os.path.realpath(os.path.expanduser("~"))
     deletes = tilde(it.path, home) if it.kind in ("path", "trash") else (it.command or "")
     if it.kind == "trash":
-        restore = TRASH_RESTORE
+        restore = DOWNLOAD_RESTORE if it.key.startswith("download:") else TRASH_RESTORE
     elif it.kind == "runtime":
         restore = "Re-download the runtime in Xcode › Settings › Components."
     elif it.kind == "simdevice":
@@ -1102,6 +1185,8 @@ def scan(cfg: Config, sim: Optional[SimctlProvider] = None,
     items += rt_items
     items += scan_simulators(cfg, sim)
     items += scan_archives(cfg)
+    now = time.time() if now is None else now
+    items += scan_downloads(cfg, env, now)
     items += scan_info(cfg)
 
     if measure:
@@ -1129,7 +1214,6 @@ def scan(cfg: Config, sim: Optional[SimctlProvider] = None,
     for it in items:
         it.cost_tag, it.cost = cost_for(it)
         it.deletes, it.restore = explain_for(it, cfg.home)
-    now = time.time() if now is None else now
     changed = {}
     for it in items:
         d = it.meta.get("project_dir")
@@ -1209,7 +1293,7 @@ def validate_path(path: str, cfg: Config) -> str:
 
 # ---------------------------------------------------------------- re-scan one item
 
-def _rescan_projects(key: str, cfg: Config, sim, env) -> list:
+def _rescan_projects(key: str, cfg: Config, sim, env, now) -> list:
     """Re-check one project artifact without walking every project root."""
     rel = key.split(":", 1)[1]
     d = os.path.dirname(os.path.join(cfg.home, rel))
@@ -1230,21 +1314,36 @@ def _rescan_projects(key: str, cfg: Config, sim, env) -> list:
     return []
 
 
-def _rescan_fixed(key: str, cfg: Config, sim, env) -> list:
+def _rescan_fixed(key: str, cfg: Config, sim, env, now) -> list:
     return scan_fixed(cfg, xcode_is_running=env.xcode_running())
 
 
-# Key prefix -> scanner(key, cfg, sim, env) returning the items that scanner produces.
+def _rescan_download(key: str, cfg: Config, sim, env, now) -> list:
+    """Re-check one Downloads file against the rules with fresh last-used time and clock."""
+    root = cfg.p("Downloads")
+    path = os.path.join(root, key.split(":", 1)[1])
+    if os.path.normpath(path) != path or not is_within(path, root):
+        return []
+    if len(os.path.relpath(path, root).split(os.sep)) > 2:
+        return []
+    if os.path.islink(root) or os.path.islink(os.path.dirname(path)):
+        return []
+    it = _download_item(cfg, env, now, path)
+    return [it] if it else []
+
+
+# Key prefix -> scanner(key, cfg, sim, env, now) returning the items that scanner produces.
 # Later tasks add their prefixes here. A key with no entry falls back to a full
 # scan(measure=False): correct, but it walks every project root, so it is slow.
 RESCANNERS = {
-    "runtime:": lambda key, cfg, sim, env: scan_runtimes(cfg, sim)[0],
-    "simctl-unavailable": lambda key, cfg, sim, env: scan_runtimes(cfg, sim)[0],
-    "simdevice:": lambda key, cfg, sim, env: scan_simulators(cfg, sim),
-    "gradle:": lambda key, cfg, sim, env: scan_gradle_versions(cfg),
-    "devsupport:": lambda key, cfg, sim, env: scan_device_support(cfg),
-    "android:": lambda key, cfg, sim, env: scan_android(cfg),
-    "archive:": lambda key, cfg, sim, env: scan_archives(cfg),
+    "runtime:": lambda key, cfg, sim, env, now: scan_runtimes(cfg, sim)[0],
+    "simctl-unavailable": lambda key, cfg, sim, env, now: scan_runtimes(cfg, sim)[0],
+    "simdevice:": lambda key, cfg, sim, env, now: scan_simulators(cfg, sim),
+    "gradle:": lambda key, cfg, sim, env, now: scan_gradle_versions(cfg),
+    "devsupport:": lambda key, cfg, sim, env, now: scan_device_support(cfg),
+    "android:": lambda key, cfg, sim, env, now: scan_android(cfg),
+    "download:": _rescan_download,
+    "archive:": lambda key, cfg, sim, env, now: scan_archives(cfg),
     "flutter:": _rescan_projects,
     "web:": _rescan_projects,
     "derived-data": _rescan_fixed,
@@ -1258,21 +1357,57 @@ RESCANNERS = {
 
 
 def rescan_item(it: Item, cfg: Config, sim: Optional[SimctlProvider] = None,
-                env: Optional[Env] = None) -> Optional[Item]:
+                env: Optional[Env] = None, now: Optional[float] = None) -> Optional[Item]:
     """Re-run the scanner that produced `it.key`; the fresh item with that key, or None."""
     sim, env = resolve_providers(cfg, sim, env)
+    now = time.time() if now is None else now
     scanner = next((f for prefix, f in RESCANNERS.items() if it.key.startswith(prefix)), None)
     if scanner is not None:
-        fresh = scanner(it.key, cfg, sim, env)
+        fresh = scanner(it.key, cfg, sim, env, now)
     else:
-        fresh = scan(cfg, sim, measure=False, env=env).items
+        fresh = scan(cfg, sim, measure=False, env=env, now=now).items
     return next((f for f in fresh if f.key == it.key), None)
 
 
 # ---------------------------------------------------------------- gate
 
+def validate_trash(it: Item, cfg: Config, env: Env, now: float) -> None:
+    """Gate for items that move to the Trash. Raises UnsafeTarget.
+
+    Downloads: a regular file (no symlink) inside ~/Downloads, at most two levels deep.
+    Archives: a `.xcarchive` folder exactly at Archives/<date>/<name>.xcarchive.
+    The rule itself was already re-applied by rescan_item with the fresh clock.
+    """
+    path = it.path
+    if not path or not os.path.isabs(path) or os.path.normpath(path) != path:
+        raise UnsafeTarget(f"not a clean absolute path: {path!r}")
+    if os.path.islink(path) or os.path.realpath(path) != path:
+        raise UnsafeTarget(f"is a symlink or resolves elsewhere: {path}")
+    if it.key.startswith("download:"):
+        root = cfg.p("Downloads")
+        if os.path.islink(root) or os.path.realpath(root) != root:
+            raise UnsafeTarget("~/Downloads is a symlink")
+        if not is_within(path, root) or path == root:
+            raise UnsafeTarget(f"not inside ~/Downloads: {path}")
+        if len(os.path.relpath(path, root).split(os.sep)) > 2:
+            raise UnsafeTarget(f"too deep inside ~/Downloads: {path}")
+        if not os.path.isfile(path):
+            raise UnsafeTarget(f"not a regular file: {path}")
+        return
+    if it.key.startswith("archive:"):
+        root = cfg.p("Library/Developer/Xcode/Archives")
+        if os.path.islink(root) or os.path.realpath(root) != root:
+            raise UnsafeTarget("the Archives folder is a symlink")
+        if not path.endswith(".xcarchive") or not os.path.isdir(path):
+            raise UnsafeTarget(f"not an .xcarchive folder: {path}")
+        if not is_within(path, root) or len(os.path.relpath(path, root).split(os.sep)) != 2:
+            raise UnsafeTarget(f"not at Archives/<date>/<name>.xcarchive: {path}")
+        return
+    raise UnsafeTarget(f"not something that moves to the Trash: {it.key}")
+
+
 def validate_item(it: Item, cfg: Config, sim: Optional[SimctlProvider] = None,
-                  env: Optional[Env] = None) -> None:
+                  env: Optional[Env] = None, now: Optional[float] = None) -> None:
     """Re-check an item right before it is deleted. Raises UnsafeTarget.
 
     The item is scanned again from fresh data: it must still exist, still be
@@ -1283,7 +1418,9 @@ def validate_item(it: Item, cfg: Config, sim: Optional[SimctlProvider] = None,
     """
     if not it.offerable:
         raise UnsafeTarget(f"{it.label} is not offerable ({it.tier})")
-    fresh = rescan_item(it, cfg, sim, env)
+    sim, env = resolve_providers(cfg, sim, env)
+    now = time.time() if now is None else now
+    fresh = rescan_item(it, cfg, sim, env, now)
     if fresh is None:
         raise UnsafeTarget(f"{it.label} is gone")
     if not fresh.offerable:
@@ -1310,18 +1447,31 @@ def validate_item(it: Item, cfg: Config, sim: Optional[SimctlProvider] = None,
             raise UnsafeTarget("unexpected simctl command")
         return
     if it.kind == "trash":
-        raise UnsafeTarget("moving to the Trash is not available yet")
+        validate_trash(it, cfg, env, now)
+        return
     raise UnsafeTarget(f"unknown item kind {it.kind}")
 
 
 def execute_item(it: Item, cfg: Config, sim: Optional[SimctlProvider] = None,
-                 runner: Callable = subprocess.run, env: Optional[Env] = None):
-    """Delete one item after re-validating it. Returns (ok, message)."""
+                 runner: Callable = subprocess.run, env: Optional[Env] = None,
+                 now: Optional[float] = None):
+    """Delete one item after re-validating it. Returns (ok, message).
+
+    Items of kind "trash" are never rm'd: they go through the trash helper named by
+    LABYRINTH_TRASH_HELPER, and are refused when there is none.
+    """
+    if it.kind == "trash":
+        helper = os.environ.get(TRASH_HELPER_ENV)
+        if not helper or not os.path.isfile(helper) or not os.access(helper, os.X_OK):
+            return False, TRASH_REFUSAL
     try:
-        validate_item(it, cfg, sim, env)
+        validate_item(it, cfg, sim, env, now)
     except UnsafeTarget as e:
         return False, f"REFUSED: {e}"
-    argv = ["rm", "-rf", "--", it.path] if it.kind == "path" else it.argv
+    if it.kind == "trash":
+        argv = [helper, it.path]
+    else:
+        argv = ["rm", "-rf", "--", it.path] if it.kind == "path" else it.argv
     r = runner(argv, capture_output=True, text=True)
     if r.returncode != 0:
         return False, (r.stderr or "").strip() or f"exit {r.returncode}"
