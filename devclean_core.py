@@ -16,6 +16,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -47,6 +48,9 @@ DEVICE_SUPPORT_RE = re.compile(
 DEFAULT_PINNED_DEVICE_TYPES = ("com.apple.CoreSimulator.SimDeviceType.iPhone-18-Pro",)
 DEFAULT_PROTECTED_AVDS = ("Pixel_10_Pro", "Television_4K")
 
+# Conventional places developers keep projects, under home. Only those that exist are scanned.
+DEFAULT_PROJECT_DIRS = ("Developer", "Projects", "code", "src", "dev", "workspace", "git", "repos")
+
 
 class UnsafeTarget(Exception):
     """Raised when something tries to delete a path the safety gate refuses."""
@@ -57,14 +61,23 @@ class UnsafeTarget(Exception):
 @dataclass
 class Config:
     home: str
-    projects: Optional[str] = None
+    project_roots: Optional[tuple] = None
     android_sdk: Optional[str] = None
-    pinned_device_types: tuple = DEFAULT_PINNED_DEVICE_TYPES
-    protected_avds: tuple = DEFAULT_PROTECTED_AVDS
 
     def __post_init__(self):
         self.home = os.path.realpath(os.path.expanduser(self.home))
-        self.projects = os.path.realpath(self.projects or self.p("Documents/Projects"))
+        if self.project_roots is None:
+            candidates = [self.p(d) for d in DEFAULT_PROJECT_DIRS]
+            candidates += [f for f in load_settings(self.home).get("project_folders", [])
+                           if isinstance(f, str)]
+        else:
+            candidates = list(self.project_roots)
+        roots = []
+        for c in candidates:
+            r = os.path.realpath(os.path.expanduser(c))
+            if os.path.isdir(r) and r not in roots:
+                roots.append(r)
+        self.project_roots = tuple(roots)
         self.android_sdk = os.path.realpath(self.android_sdk or self.p("Library/Android/sdk"))
 
     def p(self, rel: str) -> str:
@@ -127,6 +140,80 @@ class Config:
         ]
 
 
+# ---------------------------------------------------------------- settings
+
+def settings_path(home: str) -> str:
+    return os.path.join(home, ".config", "devclean", "settings.json")
+
+
+def load_settings(home: str) -> dict:
+    """Saved user settings; {} when the file is missing or broken."""
+    try:
+        with open(settings_path(home), encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def save_settings(home: str, data: dict) -> None:
+    """Write settings atomically (temp file + os.replace), mode 0600."""
+    path = settings_path(home)
+    d = os.path.dirname(path)
+    os.makedirs(d, mode=0o700, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=d, prefix=".settings-")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            os.fchmod(f.fileno(), 0o600)
+            json.dump(data, f, indent=2)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def add_project_folder(home: str, path: str) -> str:
+    """Remember a folder to scan for projects. Returns the stored realpath or raises ValueError."""
+    home = os.path.realpath(os.path.expanduser(home))
+    if not isinstance(path, str) or not os.path.isabs(path):
+        raise ValueError(f"not an absolute path: {path!r}")
+    if os.path.islink(path.rstrip(os.sep) or os.sep):
+        raise ValueError(f"is a symlink: {path}")
+    if not os.path.isdir(path):
+        raise ValueError(f"not an existing folder: {path}")
+    real = os.path.realpath(path)
+    if real == home or not is_within(real, home):
+        raise ValueError("must be a folder inside your home folder")
+    if is_within(real, os.path.join(home, "Library")):
+        raise ValueError("~/Library is not a projects folder")
+    downloads = os.path.join(home, "Downloads")
+    for d in Config(home=home, project_roots=()).static_deny():
+        d = os.path.realpath(d)
+        if d == downloads:
+            continue   # allowed when the user picks it; the gate still never rm's there
+        if is_within(real, d) or is_within(d, real):
+            raise ValueError(f"folder is or contains a protected path: {d}")
+    data = load_settings(home)
+    folders = [f for f in data.get("project_folders", []) if isinstance(f, str)]
+    if real not in folders:
+        folders.append(real)
+    data["project_folders"] = folders
+    save_settings(home, data)
+    return real
+
+
+def remove_project_folder(home: str, path: str) -> None:
+    home = os.path.realpath(os.path.expanduser(home))
+    data = load_settings(home)
+    drop = {path, os.path.realpath(path)}
+    data["project_folders"] = [f for f in data.get("project_folders", [])
+                               if isinstance(f, str) and f not in drop]
+    save_settings(home, data)
+
+
 # ---------------------------------------------------------------- items
 
 @dataclass
@@ -145,7 +232,7 @@ class Item:
     meta: dict = field(default_factory=dict)
     cost_tag: str = ""                   # NO COST, ~2 MIN, 9.9 GB DL ...
     cost: str = ""                       # plain-language cost of deleting it
-    project: Optional[str] = None        # project folder relative to cfg.projects
+    project: Optional[str] = None        # project folder relative to its project root
     stale_days: Optional[int] = None     # days since the project's own files changed
 
     @property
@@ -250,6 +337,30 @@ def xcode_running() -> bool:
         return False
 
 
+# ---------------------------------------------------------------- environment
+
+def _dev_tools_installed() -> bool:
+    try:
+        return subprocess.run(["xcode-select", "-p"], capture_output=True,
+                              timeout=10).returncode == 0
+    except Exception:
+        return False
+
+
+@dataclass
+class Env:
+    """What the scan may ask the real Mac. Tests use `Env.fake()`."""
+    dev_tools: Callable[[], bool] = lambda: False
+
+    @classmethod
+    def real(cls) -> "Env":
+        return cls(dev_tools=_dev_tools_installed)
+
+    @classmethod
+    def fake(cls, **overrides) -> "Env":
+        return cls(**overrides)
+
+
 # ---------------------------------------------------------------- projects
 
 def find_projects(root: str, warnings: Optional[list] = None):
@@ -280,26 +391,38 @@ def find_projects(root: str, warnings: Optional[list] = None):
 
 
 def scan_projects(cfg: Config, warnings: Optional[list] = None) -> list:
+    items, seen = [], set()
+    for root in cfg.project_roots:
+        for d, pub, pkg in find_projects(root, warnings):
+            real = os.path.realpath(d)
+            if real in seen:
+                continue
+            seen.add(real)
+            items += _project_items(cfg, root, d, pub, pkg)
+    return items
+
+
+def _project_items(cfg: Config, root: str, d: str, pub: bool, pkg: bool) -> list:
     items = []
-    for d, pub, pkg in find_projects(cfg.projects, warnings):
-        rel = os.path.relpath(d, cfg.projects)
-        if pub:
-            for name in FLUTTER_ARTIFACTS:
-                t = os.path.join(d, name)
-                if os.path.isdir(t) and not os.path.islink(t):
-                    items.append(Item(key=f"flutter:{rel}/{name}", category="Flutter",
-                                      label=f"{rel}/{name}", tier=SAFE, path=t,
-                                      note="flutter pub get / build regenerates",
-                                      preselect=True, project=rel,
-                                      meta={"project_dir": d}))
-        if pkg:
-            for name in WEB_ARTIFACTS:
-                t = os.path.join(d, name)
-                if os.path.isdir(t) and not os.path.islink(t):
-                    note = "needs `npm install` again" if name == "node_modules" else "rebuilt by next build/dev"
-                    items.append(Item(key=f"web:{rel}/{name}", category="Web",
-                                      label=f"{rel}/{name}", tier=OPTIN, path=t, note=note,
-                                      project=rel, meta={"project_dir": d}))
+    rel = os.path.relpath(d, root)
+    key_rel = os.path.relpath(d, cfg.home)
+    if pub:
+        for name in FLUTTER_ARTIFACTS:
+            t = os.path.join(d, name)
+            if os.path.isdir(t) and not os.path.islink(t):
+                items.append(Item(key=f"flutter:{key_rel}/{name}", category="Flutter",
+                                  label=f"{rel}/{name}", tier=SAFE, path=t,
+                                  note="flutter pub get / build regenerates",
+                                  preselect=True, project=rel,
+                                  meta={"project_dir": d}))
+    if pkg:
+        for name in WEB_ARTIFACTS:
+            t = os.path.join(d, name)
+            if os.path.isdir(t) and not os.path.islink(t):
+                note = "needs `npm install` again" if name == "node_modules" else "rebuilt by next build/dev"
+                items.append(Item(key=f"web:{key_rel}/{name}", category="Web",
+                                  label=f"{rel}/{name}", tier=OPTIN, path=t, note=note,
+                                  project=rel, meta={"project_dir": d}))
     return items
 
 
@@ -421,7 +544,7 @@ def android_protection(cfg: Config):
                 avd_dirs[name] = p
             elif n.endswith(".avd"):
                 avd_dirs.setdefault(n[:-4], os.path.join(avd_root, n))
-    for name in cfg.protected_avds:
+    for name in DEFAULT_PROTECTED_AVDS:
         if name in avd_dirs and not os.path.isfile(os.path.join(avd_dirs[name], "config.ini")):
             unsafe = True
             notes.append(f"protected AVD {name} has no readable config.ini")
@@ -432,7 +555,7 @@ def android_protection(cfg: Config):
         try:
             ini = _read_ini(cfgfile)
         except OSError:
-            if name in cfg.protected_avds:
+            if name in DEFAULT_PROTECTED_AVDS:
                 unsafe = True
             continue
         for k, v in ini.items():
@@ -567,7 +690,7 @@ def scan_runtimes(cfg: Config, sim: SimctlProvider):
         images = sim.runtime_images()
     except Exception as e:  # xcrun missing, timeout, bad JSON
         return [], [f"simulator scan skipped: {e}"]
-    reasons, warnings = runtime_protection(sim_list, cfg.pinned_device_types)
+    reasons, warnings = runtime_protection(sim_list, DEFAULT_PINNED_DEVICE_TYPES)
     runtimes = {r["identifier"]: r for r in sim_list.get("runtimes", []) if r.get("identifier")}
     devices = sim_list.get("devices") or {}
     items = []
@@ -751,8 +874,13 @@ TIER_ORDER = {SAFE: 0, OPTIN: 1, CAUTION: 2, PROTECTED: 3}
 
 def scan(cfg: Config, sim: Optional[SimctlProvider] = None,
          xcode_check: Callable[[], bool] = xcode_running,
-         measure: bool = True, now: Optional[float] = None) -> ScanResult:
-    sim = sim or SimctlProvider()
+         measure: bool = True, now: Optional[float] = None,
+         env: Optional[Env] = None) -> ScanResult:
+    if env is None:
+        # Only the real home may query the real Mac; fixture homes never do.
+        env = Env.real() if cfg.home == os.path.realpath(os.path.expanduser("~")) else Env.fake()
+    if sim is None:
+        sim = SimctlProvider() if env.dev_tools() else NoSimctl()
     xr = xcode_check()
     items, project_warnings = [], []
     items += scan_projects(cfg, project_warnings)
@@ -840,7 +968,7 @@ def validate_path(path: str, cfg: Config) -> str:
     parent, base = os.path.dirname(real), os.path.basename(real)
 
     # 1. Project build artifacts
-    if is_within(parent, cfg.projects) and parent != cfg.projects:
+    if parent not in cfg.project_roots and any(is_within(parent, r) for r in cfg.project_roots):
         if base in FLUTTER_ARTIFACTS and os.path.isfile(os.path.join(parent, "pubspec.yaml")):
             return real
         if base in WEB_ARTIFACTS and os.path.isfile(os.path.join(parent, "package.json")):

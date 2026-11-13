@@ -271,9 +271,9 @@ class ApiTests(ServerTestCase):
         status, data = self.clean(p["scan_id"], self.safe_keys(p))
         job = self.wait_job(data["job_id"])
         by = {i["key"]: i for i in job["items"]}
-        self.assertEqual(by["flutter:flutter_app/build"]["status"], "refused")
-        self.assertIn("does not exist", by["flutter:flutter_app/build"]["message"])
-        others = [i["status"] for k, i in by.items() if k != "flutter:flutter_app/build"]
+        self.assertEqual(by["flutter:Documents/Projects/flutter_app/build"]["status"], "refused")
+        self.assertIn("does not exist", by["flutter:Documents/Projects/flutter_app/build"]["message"])
+        others = [i["status"] for k, i in by.items() if k != "flutter:Documents/Projects/flutter_app/build"]
         self.assertTrue(others)
         self.assertEqual(set(others), {"done"})
 

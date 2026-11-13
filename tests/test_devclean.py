@@ -8,6 +8,7 @@ touched.
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -78,7 +79,7 @@ def make_home(base):
 
 
 def cfg_for(home):
-    return core.Config(home=home)
+    return core.Config(home=home, project_roots=(os.path.join(home, "Documents", "Projects"),))
 
 
 def fixture_sim(path=REAL_FIXTURE):
@@ -86,7 +87,8 @@ def fixture_sim(path=REAL_FIXTURE):
 
 
 def scan(home, sim=None, xcode=False):
-    return core.scan(cfg_for(home), sim or core.NoSimctl(), xcode_check=lambda: xcode)
+    return core.scan(cfg_for(home), sim or core.NoSimctl(), xcode_check=lambda: xcode,
+                     env=core.Env.fake())
 
 
 def offered_paths(res):
@@ -451,10 +453,10 @@ class CostAndStaleTests(unittest.TestCase):
         self.assertEqual(by["gradle-build-cache"].cost_tag, "~2 MIN")
         self.assertIn("8.14", by["gradle:8.14"].cost)
         self.assertEqual(by["derived-data"].cost_tag, "~5 MIN")
-        self.assertEqual(by["flutter:flutter_app/build"].cost_tag, "~2 MIN")
-        self.assertEqual(by["web:web_app/node_modules"].cost_tag, "~1 MIN")
-        self.assertIn("web_app", by["web:web_app/node_modules"].cost)
-        self.assertEqual(by["web:web_app/.next"].cost_tag, "~1 MIN")
+        self.assertEqual(by["flutter:Documents/Projects/flutter_app/build"].cost_tag, "~2 MIN")
+        self.assertEqual(by["web:Documents/Projects/web_app/node_modules"].cost_tag, "~1 MIN")
+        self.assertIn("web_app", by["web:Documents/Projects/web_app/node_modules"].cost)
+        self.assertEqual(by["web:Documents/Projects/web_app/.next"].cost_tag, "~1 MIN")
 
     def test_kept_items_cost_is_reason(self):
         by = {i.key: i for i in scan(self.home).items}
@@ -472,9 +474,9 @@ class CostAndStaleTests(unittest.TestCase):
 
     def test_project_field(self):
         by = {i.key: i for i in scan(self.home).items}
-        self.assertEqual(by["flutter:flutter_app/build"].project, "flutter_app")
-        self.assertEqual(by["web:web_app/.next"].project, "web_app")
-        self.assertEqual(by["flutter:labryinth-iptv/third_party/plugin/.dart_tool"].project,
+        self.assertEqual(by["flutter:Documents/Projects/flutter_app/build"].project, "flutter_app")
+        self.assertEqual(by["web:Documents/Projects/web_app/.next"].project, "web_app")
+        self.assertEqual(by["flutter:Documents/Projects/labryinth-iptv/third_party/plugin/.dart_tool"].project,
                          "labryinth-iptv/third_party/plugin")
         self.assertIsNone(by["homebrew-cache"].project)
 
@@ -485,12 +487,12 @@ class CostAndStaleTests(unittest.TestCase):
             os.utime(os.path.join(P, name), (old, old))
         os.makedirs(os.path.join(P, ".git"), exist_ok=True)   # fresh .git must not count
         os.utime(os.path.join(P, "node_modules"))             # fresh artifact must not count
-        nm = [i for i in scan(self.home).items if i.key == "web:web_app/node_modules"][0]
+        nm = [i for i in scan(self.home).items if i.key == "web:Documents/Projects/web_app/node_modules"][0]
         self.assertGreaterEqual(nm.stale_days, 89)
         self.assertEqual(nm.to_dict()["stale_days"], nm.stale_days)
 
     def test_fresh_project_not_stale(self):
-        fl = [i for i in scan(self.home).items if i.key == "flutter:flutter_app/build"][0]
+        fl = [i for i in scan(self.home).items if i.key == "flutter:Documents/Projects/flutter_app/build"][0]
         self.assertEqual(fl.stale_days, 0)
 
     def test_stale_label(self):
@@ -575,6 +577,7 @@ class MinorFixTests(unittest.TestCase):
             with open(os.path.join(fx, name), "w") as f:
                 json.dump(data, f)
         r = subprocess.run([sys.executable, CLI, "--home", self.home, "--min-size", "0",
+                            "--projects", os.path.join(self.home, "Documents", "Projects"),
                             "--dry-run", "--select", "all", "--simctl-fixture", fx],
                            capture_output=True, text=True, stdin=subprocess.DEVNULL,
                            env={**os.environ, "NO_COLOR": "1"})
@@ -587,7 +590,7 @@ class MinorFixTests(unittest.TestCase):
         P = os.path.join(self.home, "Documents", "Projects", "odd`name")
         write(os.path.join(P, "package.json"), "{}")
         mkdir(os.path.join(P, "node_modules"))
-        it = [i for i in scan(self.home).items if i.key == "web:odd`name/node_modules"][0]
+        it = [i for i in scan(self.home).items if i.key == "web:Documents/Projects/odd`name/node_modules"][0]
         self.assertEqual(it.cost.count("`") % 2, 0, it.cost)
         self.assertIn("odd'name", it.cost)
         self.assertEqual(it.project, "odd`name")   # the name itself is untouched
@@ -602,7 +605,8 @@ class CliTests(unittest.TestCase):
         shutil.rmtree(self.tmp)
 
     def run_cli(self, *args):
-        r = subprocess.run([sys.executable, CLI, "--home", self.home, "--min-size", "0", *args],
+        r = subprocess.run([sys.executable, CLI, "--home", self.home, "--min-size", "0",
+                            "--projects", os.path.join(self.home, "Documents", "Projects"), *args],
                            capture_output=True, text=True, stdin=subprocess.DEVNULL,
                            env={**os.environ, "NO_COLOR": "1"})
         return r.returncode, r.stdout + r.stderr
@@ -687,6 +691,105 @@ class CliTests(unittest.TestCase):
     def test_bad_selection(self):
         code, out = self.run_cli("--dry-run", "--select", "999")
         self.assertEqual(code, 2)
+
+
+class ProjectRootTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = os.path.realpath(tempfile.mkdtemp(prefix="devclean-test-"))
+        self.home = make_home(self.tmp)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp)
+
+    def scan(self, cfg):
+        return core.scan(cfg, core.NoSimctl(), xcode_check=lambda: False, env=core.Env.fake())
+
+    def test_default_roots_only_existing_conventional_dirs(self):
+        os.makedirs(os.path.join(self.home, "Developer"))
+        cfg = core.Config(home=self.home)
+        self.assertEqual(cfg.project_roots, (os.path.join(self.home, "Developer"),))
+
+    def test_documents_projects_not_scanned_unless_added(self):
+        res = self.scan(core.Config(home=self.home))
+        self.assertFalse([i for i in res.items if i.category in ("Flutter", "Web")])
+
+    def test_settings_folder_is_scanned(self):
+        core.add_project_folder(self.home, os.path.join(self.home, "Documents", "Projects"))
+        res = self.scan(core.Config(home=self.home))
+        self.assertIn("flutter:Documents/Projects/flutter_app/build", {i.key for i in res.items})
+        self.assertEqual(stat.S_IMODE(os.stat(core.settings_path(self.home)).st_mode), 0o600)
+
+    def test_add_project_folder_rejects_bad_paths(self):
+        os.symlink(os.path.join(self.home, "Documents"), os.path.join(self.home, "link"))
+        for bad in (self.home, os.path.join(self.home, "Library"), os.path.join(self.home, "link"),
+                    os.path.join(self.home, "Documents/taxes.pdf"), "relative/path", "/etc",
+                    os.path.join(self.home, "nope")):
+            with self.assertRaises(ValueError, msg=bad):
+                core.add_project_folder(self.home, bad)
+
+    def test_add_project_folder_rejects_folder_containing_deny_path(self):
+        os.makedirs(os.path.join(self.home, ".ssh"), exist_ok=True)
+        with self.assertRaises(ValueError):
+            core.add_project_folder(self.home, os.path.join(self.home, ".ssh"))
+
+    def test_downloads_allowed_when_picked(self):
+        d = os.path.join(self.home, "Downloads")
+        os.makedirs(d, exist_ok=True)
+        self.assertEqual(core.add_project_folder(self.home, d), d)
+
+    def test_remove_project_folder(self):
+        P = os.path.join(self.home, "Documents", "Projects")
+        core.add_project_folder(self.home, P)
+        self.assertIn(P, core.load_settings(self.home)["project_folders"])
+        core.remove_project_folder(self.home, P)
+        self.assertNotIn(P, core.load_settings(self.home)["project_folders"])
+
+    def test_load_settings_survives_broken_file(self):
+        core.save_settings(self.home, {"a": 1})
+        with open(core.settings_path(self.home), "w") as f:
+            f.write("{nope")
+        self.assertEqual(core.load_settings(self.home), {})
+
+    def test_overlapping_roots_list_each_project_once(self):
+        P = os.path.join(self.home, "Documents", "Projects")
+        cfg = core.Config(home=self.home, project_roots=(P, os.path.join(P, "labryinth-iptv")))
+        keys = [i.key for i in self.scan(cfg).items]
+        self.assertEqual(len(keys), len(set(keys)))
+
+    def test_gate_accepts_artifact_in_any_root_and_refuses_outside(self):
+        dev = os.path.join(self.home, "Developer", "app")
+        write(os.path.join(dev, "package.json"), "{}")
+        mkdir(os.path.join(dev, "node_modules"))
+        cfg = core.Config(home=self.home, project_roots=(os.path.join(self.home, "Developer"),))
+        self.assertTrue(core.validate_path(os.path.join(dev, "node_modules"), cfg))
+        with self.assertRaises(core.UnsafeTarget):
+            core.validate_path(os.path.join(self.home, "Documents/Projects/web_app/node_modules"), cfg)
+
+    def test_scan_never_uses_real_simctl_for_fixture_home(self):
+        with mock.patch.object(core.SimctlProvider, "_json", side_effect=AssertionError("real xcrun")):
+            core.scan(core.Config(home=self.home), xcode_check=lambda: False)
+
+    def test_real_simctl_only_when_dev_tools(self):
+        calls = []
+        with mock.patch.object(core.SimctlProvider, "_json",
+                               side_effect=lambda a: calls.append(a) or {}):
+            core.scan(core.Config(home=self.home), xcode_check=lambda: False,
+                      env=core.Env.fake(dev_tools=lambda: False))
+            self.assertEqual(calls, [])
+            core.scan(core.Config(home=self.home), xcode_check=lambda: False,
+                      env=core.Env.fake(dev_tools=lambda: True))
+            self.assertTrue(calls)
+
+    def test_cli_projects_flag_repeatable(self):
+        mkdir(os.path.join(self.home, "Developer", "app", "node_modules"))
+        write(os.path.join(self.home, "Developer", "app", "package.json"), "{}")
+        r = subprocess.run([sys.executable, CLI, "--home", self.home, "--json",
+                            "--projects", os.path.join(self.home, "Documents", "Projects"),
+                            "--projects", os.path.join(self.home, "Developer")],
+                           capture_output=True, text=True, stdin=subprocess.DEVNULL)
+        keys = {i["key"] for i in json.loads(r.stdout)["items"]}
+        self.assertIn("flutter:Documents/Projects/flutter_app/build", keys)
+        self.assertIn("web:Developer/app/node_modules", keys)
 
 
 if __name__ == "__main__":

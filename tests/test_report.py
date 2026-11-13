@@ -38,7 +38,7 @@ class ReportTests(unittest.TestCase):
         r = self.rows()["safe:flutter_app"]
         self.assertEqual(r["label"], "flutter_app · build + .dart_tool")
         self.assertEqual(sorted(r["keys"]),
-                         ["flutter:flutter_app/.dart_tool", "flutter:flutter_app/build"])
+                         ["flutter:Documents/Projects/flutter_app/.dart_tool", "flutter:Documents/Projects/flutter_app/build"])
         self.assertEqual(r["size"], sum(m["size"] for m in r["members"]))
         self.assertEqual(r["path"], "~/Documents/Projects/flutter_app")
         self.assertEqual(r["group"], "safe")

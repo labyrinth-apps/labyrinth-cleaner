@@ -354,7 +354,8 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="devclean ui",
                                  description="Open the devclean web UI (local only).")
     ap.add_argument("--home", help="pretend this directory is $HOME (testing/demo)")
-    ap.add_argument("--projects", help="projects root (default ~/Documents/Projects)")
+    ap.add_argument("--projects", action="append", metavar="DIR",
+                    help="projects folder to scan (repeatable; default: common folders under home plus saved ones)")
     ap.add_argument("--simctl-fixture", metavar="DIR",
                     help="read simctl_list.json/runtime_list.json from DIR instead of xcrun")
     ap.add_argument("--no-simulators", action="store_true", help="skip simulator runtimes")
@@ -362,7 +363,7 @@ def main(argv=None) -> int:
     ap.add_argument("--idle-timeout", type=float, default=3600, help=argparse.SUPPRESS)
     args = ap.parse_args(argv)
 
-    cfg = core.Config(home=args.home or os.path.expanduser("~"), projects=args.projects)
+    cfg = core.Config(home=args.home or os.path.expanduser("~"), project_roots=tuple(args.projects) if args.projects else None)
     if args.simctl_fixture:
         sim = core.FixtureSimctl.from_dir(args.simctl_fixture)
     elif args.no_simulators or args.home:
@@ -372,7 +373,7 @@ def main(argv=None) -> int:
     fixture = bool(args.home or args.simctl_fixture)
     options = {
         "home": cfg.home,
-        "projects": cfg.projects,
+        "projects": list(cfg.project_roots),
         "simctl_fixture": os.path.realpath(args.simctl_fixture) if args.simctl_fixture else None,
         "simulators": not (args.no_simulators or args.home or args.simctl_fixture),
         "fixture": fixture,
