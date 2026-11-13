@@ -235,11 +235,34 @@ class DenyListTests(unittest.TestCase):
         self.assertEqual(nm.tier, core.OPTIN)
         self.assertFalse(nm.preselect)
 
-    def test_xcode_running_unselects_derived_data(self):
+    def test_xcode_running_keeps_derived_data(self):
+        """Fix round 1: DerivedData is blocked (not just unselected) while Xcode runs."""
         res = scan(self.home, xcode=True)
         dd = next(i for i in res.items if i.key == "derived-data")
+        self.assertEqual((dd.tier, dd.kind, dd.note), (core.PROTECTED, "info", "Quit Xcode first"))
+        self.assertFalse(dd.offerable)
         self.assertFalse(dd.preselect)
-        self.assertIn("RUNNING", dd.note)
+
+    def test_env_xcode_running_used_when_no_xcode_check(self):
+        self.assertIs(core.Env.real().xcode_running, core.xcode_running)
+        self.assertFalse(core.Env.fake().xcode_running())
+        res = core.scan(self.cfg, core.NoSimctl(), env=core.Env.fake(xcode_running=lambda: True))
+        self.assertEqual(next(i for i in res.items if i.key == "derived-data").tier, core.PROTECTED)
+        res = core.scan(self.cfg, core.NoSimctl(), xcode_check=lambda: False,
+                        env=core.Env.fake(xcode_running=lambda: True))   # xcode_check wins
+        self.assertEqual(next(i for i in res.items if i.key == "derived-data").tier, core.SAFE)
+
+    def test_gate_refuses_derived_data_once_xcode_runs(self):
+        dd = next(i for i in scan(self.home).items if i.key == "derived-data")
+        self.assertTrue(dd.offerable)
+        core.validate_item(dd, self.cfg, core.NoSimctl(), env=core.Env.fake())
+        calls = []
+        ok, msg = core.execute_item(dd, self.cfg, core.NoSimctl(), runner=lambda *a, **k: calls.append(a),
+                                    env=core.Env.fake(xcode_running=lambda: True))
+        self.assertFalse(ok)
+        self.assertIn("Quit Xcode first", msg)
+        self.assertEqual(calls, [])
+        self.assertTrue(os.path.isdir(dd.path))
 
 
 # ============================================================ gradle
@@ -347,6 +370,34 @@ class AndroidTests(unittest.TestCase):
             core.validate_path(used, self.cfg)
         core.validate_path(self.unused, self.cfg)
 
+    def test_unlistable_avd_folder_warns_every_image(self):
+        """Fix round 1: an AVD folder that exists but can't be listed must not fail open."""
+        avd = os.path.join(self.home, ".android/avd")
+        os.chmod(avd, 0)
+        try:
+            items = core.scan_android(self.cfg)
+        finally:
+            os.chmod(avd, 0o755)
+        self.assertEqual(len(items), 4)
+        for it in items:
+            self.assertEqual(it.tier, core.CAUTION, it.path)
+            self.assertEqual(it.warning,
+                             "Couldn't read your emulators' settings; an emulator may use this image.")
+
+    def test_unsearchable_android_folder_warns_every_image(self):
+        dot_android = os.path.join(self.home, ".android")
+        os.chmod(dot_android, 0)
+        try:
+            items = core.scan_android(self.cfg)
+        finally:
+            os.chmod(dot_android, 0o755)
+        self.assertTrue(items)
+        self.assertTrue(all(it.warning == core.AVDS_UNLISTABLE_WARNING for it in items))
+
+    def test_no_avd_folder_means_no_warning(self):
+        shutil.rmtree(os.path.join(self.home, ".android"))
+        self.assertTrue(all(it.warning == "" for it in core.scan_android(self.cfg)))
+
     def test_partial_system_image_paths_refused(self):
         sdk = os.path.join(self.home, "Library/Android/sdk/system-images")
         for p in (sdk, f"{sdk}/android-33", f"{sdk}/android-33/google_apis"):
@@ -389,6 +440,9 @@ class RuntimeProtectionTests(unittest.TestCase):
         self.assertFalse(it.preselect)
         self.assertEqual(it.argv, ["xcrun", "simctl", "runtime", "delete", "U265"])
         self.assertIn("iPad (A16)", it.note)
+        # Fix round 1: the simulator on it still stops working, so the runtime warns.
+        self.assertEqual(it.warning, "Your iPad (A16) simulator stops working. "
+                                     "Xcode can create a new one on iOS 27.2.")
 
     def test_only_runtime_for_old_device_type_warns(self):
         """Task 2: was kept; now offered with a warning naming the simulator."""
@@ -412,9 +466,9 @@ class RuntimeProtectionTests(unittest.TestCase):
         items, _ = core.scan_runtimes(self.cfg, core.FixtureSimctl(lst, imgs))
         self.assertEqual(offered_runtime_uuids(items), {"A", "B"})
         by = {i.meta.get("uuid"): i for i in items}
-        # The iPhone 17 simulator lives on A; deleting B never stops it.
-        self.assertEqual(by["A"].warning, "Your iPhone 17 simulator stops working. No other "
-                                          "installed runtime runs it. " + core.NEWEST_IOS_WARNING)
+        # The iPhone 17 simulator lives on A; deleting B never stops it. B can host a new one.
+        self.assertEqual(by["A"].warning, "Your iPhone 17 simulator stops working. Xcode can create "
+                                          "a new one on iOS 27.2. " + core.NEWEST_IOS_WARNING)
         self.assertEqual(by["B"].warning, core.NEWEST_IOS_WARNING)
 
     def test_unmatched_image_not_offered(self):
@@ -433,7 +487,11 @@ class RuntimeProtectionTests(unittest.TestCase):
         self.assertEqual(warnings, [])
         by_uuid = {i.meta.get("uuid"): i for i in items}
         ios265 = by_uuid["91298CDE-FDEA-4F7C-8FF5-E27CFAC0C3B6"]
-        self.assertEqual((ios265.tier, ios265.warning), (core.CAUTION, ""))
+        self.assertEqual(ios265.tier, core.CAUTION)
+        # Fix round 1 (controller ruling, overrides the brief's "no warning"): its simulators break.
+        self.assertEqual(ios265.warning,
+                         "Your iPad (A16), iPad Air 11-inch (M4), iPad mini (A17 Pro) simulators stop "
+                         "working. Xcode can create a new one on iOS 27.2.")
         general = by_uuid["8CC38006-6DBA-4D63-9F9E-A0C3B02E5B16"]  # iOS 27.2 24B8117
         self.assertEqual(general.tier, core.PROTECTED)
         self.assertIn("iPhone 18 Pro Max", general.note)
@@ -561,7 +619,61 @@ class ChoiceAndSimulatorTests(unittest.TestCase):
         """The iPad (A16) simulator lives on 26.5: deleting 27.2 doesn't stop it."""
         by = self.by_key(orphan_sim())
         self.assertNotIn("iPad (A16)", by["runtime:UUID-272"].warning)
-        self.assertEqual(by["runtime:UUID-265"].warning, "")
+        self.assertEqual(by["runtime:UUID-265"].warning,
+                         "Your iPad (A16) simulator stops working. Xcode can create a new one on iOS 27.2.")
+        self.assertEqual(by["runtime:UUID-272"].warning,
+                         "Your iPhone 18 Pro simulator stops working. Xcode can create a new one on "
+                         "iOS 26.5. " + core.NEWEST_IOS_WARNING)
+
+    def test_runtime_warning_groups_by_wording(self):
+        """A runtime hosting both kinds of simulator: 'no other runtime' group first."""
+        lst = {"runtimes": [runtime("iOS-26-5", "26.5", "23F77", ["iPhone 15", "iPhone 17"]),
+                            runtime("iOS-27-2", "27.2", "24B8117", ["iPhone 17", "iPhone 18 Pro"])],
+               "devices": {R + "iOS-26-5": [device("iPhone 17", "B"), device("iPhone 15", "A"),
+                                            device("iPhone 15 Work", "C")]}}
+        lst["devices"][R + "iOS-26-5"][2]["deviceTypeIdentifier"] = T + "iPhone-15"
+        imgs = {"U265": image("iOS-26-5", "26.5", "23F77"), "U272": image("iOS-27-2", "27.2", "24B8117")}
+        items, _ = core.scan_runtimes(self.cfg, core.FixtureSimctl(lst, imgs))
+        it = next(i for i in items if i.key == "runtime:U265")
+        self.assertEqual(it.warning,
+                         "Your iPhone 15, iPhone 15 Work simulators stop working. No other installed "
+                         "runtime runs them. Your iPhone 17 simulator stops working. Xcode can create "
+                         "a new one on iOS 27.2.")
+
+    def test_gate_accepts_shrunk_runtime_warning(self):
+        """Fix round 1: deleting a simulator before its runtime only shrinks the runtime's
+        warning; the gate accepts that (it refuses only sentences the user never saw)."""
+        cfg = self.cfg
+        it = next(i for i in core.scan_runtimes(cfg, fixture_sim())[0]
+                  if i.key == "runtime:91298CDE-FDEA-4F7C-8FF5-E27CFAC0C3B6")
+        sim = fixture_sim()
+        devs = sim._list["devices"][R + "iOS-26-5"]
+        devs[:] = [d for d in devs if d["name"] != "iPad (A16)"]
+        core.validate_item(it, cfg, sim)            # one simulator gone
+        devs[:] = []
+        core.validate_item(it, cfg, sim)            # all gone: no warning at all
+
+    def test_gate_refuses_new_simulator_on_runtime(self):
+        cfg = self.cfg
+        it = next(i for i in core.scan_runtimes(cfg, fixture_sim())[0]
+                  if i.key == "runtime:91298CDE-FDEA-4F7C-8FF5-E27CFAC0C3B6")
+        sim = fixture_sim()
+        new = dict(sim._list["devices"][R + "iOS-26-5"][0], name="Kids iPad", udid="NEW1")
+        sim._list["devices"][R + "iOS-26-5"].append(new)
+        with self.assertRaises(core.UnsafeTarget) as cm:
+            core.validate_item(it, cfg, sim)
+        self.assertEqual(str(cm.exception), "Situation changed: scan again")
+
+    def test_warning_units(self):
+        u = core.warning_units("Your A, B simulators stop working. Xcode can create a new one on "
+                               "iOS 27.2. " + core.NEWEST_IOS_WARNING)
+        self.assertEqual(u, {("sim", "A", "on:iOS 27.2"), ("sim", "B", "on:iOS 27.2"),
+                             "This is your newest iOS runtime", "New simulators need it"})
+        self.assertEqual(core.warning_units(""), set())
+        self.assertLessEqual(core.warning_units("Your A simulator stops working. No other installed "
+                                                "runtime runs it."),
+                             core.warning_units("Your A, B simulators stop working. No other "
+                                                "installed runtime runs them."))
 
     def test_newest_gradle_offered_with_warning(self):
         it = self.by_key()["gradle:9.10.0"]

@@ -11,6 +11,7 @@ See README.md for the tiers and protection rules.
 """
 
 import argparse
+import dataclasses
 import json
 import os
 import sys
@@ -177,7 +178,9 @@ def main(argv=None):
     if not args.json:
         roots = ", ".join(cfg.project_roots) or "none found"
         print(f"Scanning {cfg.home} (projects: {roots}) ...", file=sys.stderr)
-    res = core.scan(cfg, sim, xcode_check=(lambda: False) if args.home else core.xcode_running)
+    xcode_check = (lambda: False) if args.home else core.xcode_running
+    env = dataclasses.replace(core.default_env(cfg), xcode_running=xcode_check)
+    res = core.scan(cfg, sim, xcode_check=xcode_check, env=env)
 
     if args.json:
         print(json.dumps({"free_bytes": res.free_bytes, "total_bytes": res.total_bytes,
@@ -196,7 +199,7 @@ def main(argv=None):
     for w in res.warnings:
         print(c(f"warning: {w}", "31"))
     if res.xcode_running:
-        print(c("note: Xcode is running; DerivedData is not preselected.", "33"))
+        print(c("note: Xcode is running; quit it to clean DerivedData.", "33"))
 
     interactive = sys.stdin.isatty() and not args.yes and args.select is None
     try:
@@ -264,7 +267,7 @@ def main(argv=None):
     failures = 0
     for it in chosen:
         print(f"  deleting {it.label} ({human(it.size)}) ...", end="", flush=True)
-        ok, msg = core.execute_item(it, cfg, sim, runner=runner)
+        ok, msg = core.execute_item(it, cfg, sim, runner=runner, env=env)
         print(c(" done", "32") if ok else c(f" {msg}", "31"))
         failures += not ok
     after = core.shutil.disk_usage(cfg.home).free

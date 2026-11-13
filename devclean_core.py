@@ -390,10 +390,11 @@ def _dev_tools_installed() -> bool:
 class Env:
     """What the scan may ask the real Mac. Tests use `Env.fake()`."""
     dev_tools: Callable[[], bool] = lambda: False
+    xcode_running: Callable[[], bool] = lambda: False
 
     @classmethod
     def real(cls) -> "Env":
-        return cls(dev_tools=_dev_tools_installed)
+        return cls(dev_tools=_dev_tools_installed, xcode_running=xcode_running)
 
     @classmethod
     def fake(cls, **overrides) -> "Env":
@@ -489,8 +490,8 @@ def scan_fixed(cfg: Config, xcode_is_running: bool) -> list:
         it = Item(key=key, category="Cache", label=label, tier=tier, path=path, note=note,
                   preselect=(tier == SAFE))
         if key == "derived-data" and xcode_is_running:
-            it.note = "Xcode is RUNNING - quit it first"
-            it.preselect = False
+            # In use: never offered while Xcode runs (the gate re-checks this).
+            it.tier, it.kind, it.preselect, it.note = PROTECTED, "info", False, "Quit Xcode first"
         items.append(it)
     return items
 
@@ -574,18 +575,22 @@ def _read_ini(path: str) -> dict:
 
 
 def android_protection(cfg: Config):
-    """Return (used, unreadable).
+    """Return (used, unreadable, unlistable).
 
     used maps the realpath of each system image an emulator (AVD) uses to the
     sorted names of those AVDs. unreadable lists, sorted, the AVDs whose
-    config.ini can't be read: any image might be theirs.
+    config.ini can't be read: any image might be theirs. unlistable is True
+    when the AVD folder exists but can't be listed: then any image might be
+    in use (fail closed, never "no AVD uses it").
     """
     avd_root = cfg.avd_dir
     avd_dirs = {}
     try:
-        names = os.listdir(avd_root) if os.path.isdir(avd_root) else []
-    except OSError:
+        names = os.listdir(avd_root)
+    except FileNotFoundError:   # no emulators at all
         names = []
+    except OSError:             # exists but can't be listed (or ~/.android can't be searched)
+        return {}, [], True
     for n in names:
         if n.endswith(".ini"):
             name = n[:-4]
@@ -613,11 +618,14 @@ def android_protection(cfg: Config):
                 lst = used.setdefault(os.path.realpath(full), [])
                 if name not in lst:
                     lst.append(name)
-    return used, unreadable
+    return used, unreadable, False
 
 
-def android_warning(avds, unreadable) -> str:
-    parts = []
+AVDS_UNLISTABLE_WARNING = "Couldn't read your emulators' settings; an emulator may use this image."
+
+
+def android_warning(avds, unreadable, unlistable=False) -> str:
+    parts = [AVDS_UNLISTABLE_WARNING] if unlistable else []
     if avds:
         names, many = plural_names(avds)
         parts.append(f"The {names} emulator{'s stop' if many else ' stops'} working until you "
@@ -633,7 +641,7 @@ def scan_android(cfg: Config) -> list:
     root = cfg.system_images_dir
     if not os.path.isdir(root):
         return []
-    used, unreadable = android_protection(cfg)
+    used, unreadable, unlistable = android_protection(cfg)
     items = []
     for api in sorted(os.listdir(root)):
         api_d = os.path.join(root, api)
@@ -652,7 +660,7 @@ def scan_android(cfg: Config) -> list:
                 items.append(Item(key=f"android:{label}", category="Android", label=label,
                                   tier=CAUTION, path=path,
                                   note=("used by " + ", ".join(avds)) if avds else "no AVD uses it",
-                                  warning=android_warning(avds, unreadable)))
+                                  warning=android_warning(avds, unreadable, unlistable)))
     return items
 
 
@@ -668,6 +676,32 @@ def _is_ios(r: dict) -> bool:
     return plat == "iOS" if plat else ".iOS-" in (r.get("identifier") or "")
 
 
+def _runtime_name(rid: str, r: dict) -> str:
+    """"iOS 27.2": platform and version, for warning text."""
+    plat = r.get("platform") or rid.rsplit(".", 1)[-1].split("-")[0]
+    return f"{plat} {r.get('version', '?')}"
+
+
+def simulators_warning(no_other, elsewhere) -> str:
+    """Text for the simulators a runtime deletion breaks.
+
+    no_other: names whose device type no other installed runtime supports.
+    elsewhere: {runtime name: names} for which Xcode can create a new one there.
+    Names are sorted so the text is stable; the "no other runtime" group comes first.
+    """
+    parts = []
+    groups = ([(sorted(no_other), None)] if no_other else []) + \
+        [(sorted(elsewhere[t]), t) for t in sorted(elsewhere)]
+    for names, target in groups:
+        joined, many = plural_names(names)
+        parts.append(f"Your {joined} simulator{'s stop' if many else ' stops'} working.")
+        if target is None:
+            parts.append(f"No other installed runtime runs {'them' if many else 'it'}.")
+        else:
+            parts.append(f"Xcode can create a new one on {target}.")
+    return " ".join(parts)
+
+
 def runtime_protection(sim_list: dict):
     """Decide which simulator runtimes are blocked and which carry a warning.
 
@@ -676,16 +710,15 @@ def runtime_protection(sim_list: dict):
       warns    {runtime id: text}: offered (never preselected) with this warning.
       warnings scan-level messages (none at present).
 
-    Warning rules (the 2026-11-02 incident: deleting iOS 27.0 left the iPhone 18
-    Pro simulator with nothing to run on, because 27.1 only ran the iPhone Duo):
-      1. A runtime warns for each available simulator on it when it is the
-         newest runtime (ties: all) supporting that simulator's device type,
-         so no newer runtime could run a replacement. This covers "the only
-         runtime supporting it". Only simulators that live on the runtime are
-         named: deleting a runtime never stops a simulator on another one.
-      2. The newest general iOS runtime(s) (supporting more than one device
-         type) warn, whether or not a simulator exists yet.
-    Text is built from sorted names, so the gate's exact comparison is stable.
+    A simulator lives on exactly one runtime, so deleting a runtime always
+    breaks the available simulators on it. Its warning names them:
+      - "... No other installed runtime runs it." when no other installed
+        runtime supports the simulator's device type (the 2026-11-02 incident:
+        27.1 only ran the iPhone Duo, so the iPhone 18 Pro on 27.0 had nowhere to go);
+      - "... Xcode can create a new one on iOS 27.2." naming the newest other
+        runtime that supports it.
+    The newest general iOS runtime(s) (more than one device type; ties: all)
+    also warn, whether or not a simulator exists yet.
     """
     runtimes = {r["identifier"]: r for r in sim_list.get("runtimes", []) if r.get("identifier")}
     supports = {}  # device type id -> [runtime ids]
@@ -695,42 +728,74 @@ def runtime_protection(sim_list: dict):
             if tid:
                 supports.setdefault(tid, []).append(rid)
 
-    def newest(cands):
-        if not cands:
-            return []
-        top = max(version_key(runtimes[c].get("version", "")) for c in cands)
-        return [c for c in cands if version_key(runtimes[c].get("version", "")) == top]
+    def vkey(rid):
+        return (version_key(runtimes[rid].get("version", "")), rid)
 
-    blocks, breaks = {}, {}
+    blocks, no_other, elsewhere = {}, {}, {}
     for dev_rid, devs in (sim_list.get("devices") or {}).items():
+        if dev_rid not in runtimes:
+            continue
         for dev in devs:
             name = dev.get("name") or dev.get("udid") or "?"
-            if dev_rid in runtimes and _is_running(dev):
+            if _is_running(dev):
                 blocks.setdefault(dev_rid, set()).add(f"{name} is running")
-            tid = dev.get("deviceTypeIdentifier")
-            if dev_rid not in runtimes or dev.get("isAvailable") is False or not tid:
-                continue   # already can't run: deleting a runtime breaks nothing more
-            cands = supports.get(tid, [])
-            if dev_rid not in cands:
-                cands = cands + [dev_rid]   # inconsistent simctl data: assume it needs dev_rid
-            if dev_rid in newest(cands):
-                breaks.setdefault(dev_rid, set()).add(name)
+            if dev.get("isAvailable") is False:
+                continue   # already can't run: deleting its runtime breaks nothing more
+            others = [c for c in supports.get(dev.get("deviceTypeIdentifier") or "", [])
+                      if c != dev_rid]
+            if others:
+                best = max(others, key=vkey)
+                target = _runtime_name(best, runtimes[best])
+                elsewhere.setdefault(dev_rid, {}).setdefault(target, set()).add(name)
+            else:
+                no_other.setdefault(dev_rid, set()).add(name)
 
-    general = newest([rid for rid, r in runtimes.items()
-                      if _is_ios(r) and len(r.get("supportedDeviceTypes") or []) > 1])
+    general_cands = [rid for rid, r in runtimes.items()
+                     if _is_ios(r) and len(r.get("supportedDeviceTypes") or []) > 1]
+    top = max((vkey(c)[0] for c in general_cands), default=None)
+    general = {c for c in general_cands if vkey(c)[0] == top}
     warns = {}
     for rid in runtimes:
         parts = []
-        if rid in breaks:
-            names, many = plural_names(sorted(breaks[rid]))
-            parts.append(f"Your {names} simulators stop working. No other installed runtime runs them."
-                         if many else
-                         f"Your {names} simulator stops working. No other installed runtime runs it.")
+        if rid in no_other or rid in elsewhere:
+            parts.append(simulators_warning(no_other.get(rid, ()), elsewhere.get(rid, {})))
         if rid in general:
             parts.append(NEWEST_IOS_WARNING)
         if parts:
             warns[rid] = " ".join(parts)
     return {rid: sorted(r) for rid, r in blocks.items()}, warns, []
+
+
+SIM_WARNING_RE = re.compile(r"^Your (.+) simulators? stops? working$")
+
+
+def warning_units(text: str) -> set:
+    """Split a generated warning into the facts it states, for the gate.
+
+    Sentences end with "." followed by a space (or the end). A "Your A, B
+    simulators stop working." sentence and the sentence after it become one
+    unit per simulator, ("sim", name, "none" | "on:<runtime>"), so a warning
+    that lost a simulator is a subset of the one the user saw. Every other
+    sentence is its own unit.
+    """
+    sentences = [x[:-1] if x.endswith(".") else x
+                 for x in re.split(r"(?<=\.)\s+", (text or "").strip()) if x]
+    units, i = set(), 0
+    while i < len(sentences):
+        m = SIM_WARNING_RE.match(sentences[i])
+        nxt = sentences[i + 1] if i + 1 < len(sentences) else ""
+        if m and nxt.startswith("No other installed runtime runs "):
+            where = "none"
+        elif m and nxt.startswith("Xcode can create a new one on "):
+            where = "on:" + nxt[len("Xcode can create a new one on "):]
+        else:
+            units.add(sentences[i])
+            i += 1
+            continue
+        for name in m.group(1).split(", "):
+            units.add(("sim", name, where))
+        i += 2
+    return units
 
 
 def scan_runtimes(cfg: Config, sim: SimctlProvider):
@@ -885,7 +950,7 @@ def stale_label(days: Optional[int]) -> Optional[str]:
     return f"{days}d unused" if days < 60 else f"{days // 30} mo unused"
 
 
-def cost_for(it: Item, xcode_is_running: bool) -> tuple:
+def cost_for(it: Item) -> tuple:
     """(tag, text): what deleting this item costs the user."""
     if not it.offerable:
         return "", it.note
@@ -894,8 +959,7 @@ def cost_for(it: Item, xcode_is_running: bool) -> tuple:
     if it.key.startswith("gradle:"):
         return "~2 MIN", f"Re-downloaded only if a project still uses Gradle {it.key[7:]}."
     if it.key == "derived-data":
-        text = "Xcode re-indexes and rebuilds."
-        return "~5 MIN", ("Quit Xcode first. " + text) if xcode_is_running else text
+        return "~5 MIN", "Xcode re-indexes and rebuilds."
     if it.category == "Flutter":
         return "~2 MIN", "Next `flutter run` does a full build."
     if it.key.endswith("/node_modules"):
@@ -1021,11 +1085,12 @@ TIER_ORDER = {SAFE: 0, OPTIN: 1, CAUTION: 2, REVIEW: 3, PROTECTED: 4}
 
 
 def scan(cfg: Config, sim: Optional[SimctlProvider] = None,
-         xcode_check: Callable[[], bool] = xcode_running,
+         xcode_check: Optional[Callable[[], bool]] = None,
          measure: bool = True, now: Optional[float] = None,
          env: Optional[Env] = None) -> ScanResult:
+    """`xcode_check`, when given, wins over `env.xcode_running`."""
     sim, env = resolve_providers(cfg, sim, env)
-    xr = xcode_check()
+    xr = (xcode_check or env.xcode_running)()
     items, project_warnings = [], []
     items += scan_projects(cfg, project_warnings)
     items += scan_fixed(cfg, xr)
@@ -1062,7 +1127,7 @@ def scan(cfg: Config, sim: Optional[SimctlProvider] = None,
                 it.note = f"refused by safety gate: {e}"
 
     for it in items:
-        it.cost_tag, it.cost = cost_for(it, xr)
+        it.cost_tag, it.cost = cost_for(it)
         it.deletes, it.restore = explain_for(it, cfg.home)
     now = time.time() if now is None else now
     changed = {}
@@ -1166,7 +1231,7 @@ def _rescan_projects(key: str, cfg: Config, sim, env) -> list:
 
 
 def _rescan_fixed(key: str, cfg: Config, sim, env) -> list:
-    return scan_fixed(cfg, xcode_is_running=False)   # Xcode running only changes the note
+    return scan_fixed(cfg, xcode_is_running=env.xcode_running())
 
 
 # Key prefix -> scanner(key, cfg, sim, env) returning the items that scanner produces.
@@ -1200,7 +1265,7 @@ def rescan_item(it: Item, cfg: Config, sim: Optional[SimctlProvider] = None,
     if scanner is not None:
         fresh = scanner(it.key, cfg, sim, env)
     else:
-        fresh = scan(cfg, sim, xcode_check=lambda: False, measure=False, env=env).items
+        fresh = scan(cfg, sim, measure=False, env=env).items
     return next((f for f in fresh if f.key == it.key), None)
 
 
@@ -1211,7 +1276,8 @@ def validate_item(it: Item, cfg: Config, sim: Optional[SimctlProvider] = None,
     """Re-check an item right before it is deleted. Raises UnsafeTarget.
 
     The item is scanned again from fresh data: it must still exist, still be
-    offered, and carry exactly the warning the user saw. Its kind, path and
+    offered, and carry no warning the user didn't see (an equal or shrunk
+    warning passes, so a simulator deleted before its runtime is fine). Its kind, path and
     command must match the fresh item, so a forged item can't borrow another
     item's clean status.
     """
@@ -1222,8 +1288,8 @@ def validate_item(it: Item, cfg: Config, sim: Optional[SimctlProvider] = None,
         raise UnsafeTarget(f"{it.label} is gone")
     if not fresh.offerable:
         raise UnsafeTarget(f"{it.label}: {fresh.note or 'not offered now'}")
-    if fresh.warning != it.warning:
-        raise UnsafeTarget(SITUATION_CHANGED)
+    if not warning_units(fresh.warning) <= warning_units(it.warning):
+        raise UnsafeTarget(SITUATION_CHANGED)   # a warning the user never saw
     if (fresh.kind, fresh.path, fresh.argv) != (it.kind, it.path, it.argv):
         raise UnsafeTarget(SITUATION_CHANGED)
     if it.kind == "path":

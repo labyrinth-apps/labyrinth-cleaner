@@ -86,13 +86,14 @@ When "Clean up…" starts a scan, macOS may ask once whether **DevcleanBar** may
 - the newest Gradle version, and the newest DeviceSupport build per device model;
 - Xcode archives (you need them to read crash reports for shipped versions).
 
-**Simulator runtimes.** On 2026-11-02 the iOS 27.0 runtime was deleted because 27.1 looked like its replacement. But 27.1 only ran the iPhone Duo, so the iPhone 18 Pro simulator disappeared. Since then a runtime carries a warning if:
-1. It is the newest runtime (or the only one) that supports the device type of an existing simulator ("Your iPhone 18 Pro simulator stops working. No other installed runtime runs it."). Ties all warn.
-2. It is the newest *general* iOS runtime (one that supports more than one device type): "This is your newest iOS runtime. New simulators need it."
+**Simulator runtimes.** On 2026-11-02 the iOS 27.0 runtime was deleted because 27.1 looked like its replacement. But 27.1 only ran the iPhone Duo, so the iPhone 18 Pro simulator disappeared. Since then every runtime with simulators on it warns that they stop working, and says whether you can recreate them:
+1. "Your iPhone 18 Pro simulator stops working. No other installed runtime runs it." when no other installed runtime supports that device type.
+2. "Your iPad (A16) simulator stops working. Xcode can create a new one on iOS 27.2." naming the newest other runtime that does.
+3. The newest *general* iOS runtime (one that supports more than one device type) also says "This is your newest iOS runtime. New simulators need it."
 
-Still never offered: a runtime with a running simulator, a running simulator, and a disk image that can't be matched to a runtime. Runtimes are deleted with `xcrun simctl runtime delete <disk-image-id>`.
+Still never offered: a runtime with a running simulator, a running simulator, DerivedData while Xcode is running ("Quit Xcode first"), and a disk image that can't be matched to a runtime. Runtimes are deleted with `xcrun simctl runtime delete <disk-image-id>`.
 
-**The gate re-checks.** Right before each deletion the item is scanned again from fresh data (`simctl`, the AVD configs, the folders). It is refused if it is gone, now in use, its path or command changed, or its warning differs from the one you saw ("Situation changed: scan again").
+**The gate re-checks.** Right before each deletion the item is scanned again from fresh data (`simctl`, the AVD configs, the folders). It is refused if it is gone, now in use, its path or command changed, or its warning now says something you didn't see ("Situation changed: scan again"). A warning that only got shorter, say because you deleted a simulator before its runtime, is fine.
 
 ## Layout
 

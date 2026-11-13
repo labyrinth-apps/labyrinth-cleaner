@@ -16,6 +16,7 @@ Security model (see docs/superpowers/specs/2026-11-11-devclean-ui-design.md):
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import hmac
 import http.client
 import fcntl
@@ -53,6 +54,8 @@ class UIServer:
                  port: int = 0, measure=core.du_bytes, options: dict = None):
         self.cfg, self.sim, self.fixture = cfg, sim, fixture
         self.xcode_check, self.measure = xcode_check, measure
+        # The gate re-checks "Xcode is running" with the same check the scan used.
+        self.env = dataclasses.replace(core.default_env(cfg), xcode_running=xcode_check)
         # Fixture data can carry real runtime UUIDs: never run xcrun in fixture mode.
         self.runner = runner or (core.fixture_runner if fixture else subprocess.run)
         self.idle_timeout = idle_timeout
@@ -195,7 +198,8 @@ class UIServer:
                         continue
                     entry["status"] = "running"
                 try:
-                    ok, msg = core.execute_item(it, self.cfg, self.sim, runner=self.runner)
+                    ok, msg = core.execute_item(it, self.cfg, self.sim, runner=self.runner,
+                                                env=self.env)
                 except Exception as e:
                     ok, msg = False, str(e)
                 with self._lock:
