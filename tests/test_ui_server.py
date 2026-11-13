@@ -69,9 +69,9 @@ class ServerTestCase(unittest.TestCase):
             self.srv.shutdown()
         shutil.rmtree(self.tmp)
 
-    def start(self, sim=None, **kw):
+    def start(self, sim=None, cfg=None, **kw):
         kw.setdefault("xcode_check", lambda: False)
-        self.srv = ui.UIServer(cfg_for(self.home), sim or fixture_sim(), fixture=True, **kw)
+        self.srv = ui.UIServer(cfg or cfg_for(self.home), sim or fixture_sim(), fixture=True, **kw)
         self.srv.start()
         return self.srv
 
@@ -181,7 +181,7 @@ class ApiTests(ServerTestCase):
         p = self.scan()
         for key in ("scan_id", "rows", "segments", "headline", "disk", "duration_s"):
             self.assertIn(key, p)
-        self.assertIn("safe:flutter_app", {r["id"] for r in p["rows"]})
+        self.assertIn("safe:Documents/Projects/flutter_app", {r["id"] for r in p["rows"]})
 
     def test_clean_stale_scan_id_409(self):
         self.start()
@@ -368,6 +368,150 @@ class ApiTests(ServerTestCase):
         self.assertIn("exploded", data["error"])
         self.assertEqual(self.req("GET", "/api/ping")[0], 200)
 
+    # ------------------------------------------------------------ settings
+
+    def settings_post(self, body):
+        status, data, _ = self.req("POST", "/api/settings/project-folders", body)
+        return status, data
+
+    def make_project(self, rel):
+        d = os.path.join(self.home, rel)
+        os.makedirs(os.path.join(d, "build"))
+        with open(os.path.join(d, "pubspec.yaml"), "w") as f:
+            f.write("name: x")
+        return d
+
+    def test_settings_get(self):
+        os.makedirs(os.path.join(self.home, "Developer"))
+        self.start(cfg=core.Config(home=self.home))
+        status, data, _ = self.req("GET", "/api/settings")
+        self.assertEqual(status, 200, data)
+        dev = os.path.join(self.home, "Developer")
+        self.assertEqual(data, {"project_folders": [dev], "auto_project_folders": [dev],
+                                "fixed": False})
+        self.assertEqual(self.req("GET", "/api/settings", token=False)[0], 403)
+
+    def test_add_project_folder_then_rescan_shows_it(self):
+        self.start(cfg=core.Config(home=self.home))
+        work = os.path.join(self.home, "Work")
+        self.make_project("Work/app")
+        self.assertNotIn("safe:Work/app", {r["id"] for r in self.scan()["rows"]})
+        status, data = self.settings_post({"add": work})
+        self.assertEqual(status, 200, data)
+        self.assertEqual(data["project_folders"], [work])
+        self.assertEqual(data["auto_project_folders"], [])
+        self.assertFalse(data["fixed"])
+        self.assertEqual(core.load_settings(self.home)["project_folders"], [work])
+        p = self.scan()
+        self.assertIn("safe:Work/app", {r["id"] for r in p["rows"]})
+        self.assertEqual(p["project_folders"], [work])
+        self.assertTrue(os.path.isdir(os.path.join(work, "app", "build")))   # never deleted
+        status, data = self.settings_post({"remove": work})
+        self.assertEqual(status, 200, data)
+        self.assertEqual(data["project_folders"], [])
+        self.assertNotIn("safe:Work/app", {r["id"] for r in self.scan()["rows"]})
+        self.assertTrue(os.path.isdir(os.path.join(work, "app", "build")))
+
+    def test_add_bad_folder_400_with_reason(self):
+        rec = Recorder()
+        self.start(cfg=core.Config(home=self.home), runner=rec)
+        status, data = self.settings_post({"add": self.tmp})     # outside the fixture home
+        self.assertEqual(status, 400)
+        self.assertIn("inside your home folder", data["error"])
+        status, data = self.settings_post({"add": "/etc"})       # a symlink on macOS
+        self.assertEqual(status, 400)
+        self.assertTrue(data["error"])
+        status, data = self.settings_post({"add": os.path.join(self.home, "Library")})
+        self.assertEqual(status, 400)
+        self.assertIn("Library", data["error"])
+        for body in ({}, [], "x", 0, {"add": 1}, {"remove": None}, {"foo": "/x"},
+                     {"add": self.home, "remove": self.home}):
+            self.assertEqual(self.settings_post(body)[0], 400, body)
+        self.assertEqual(core.load_settings(self.home), {})
+        self.assertEqual(rec.calls, [])
+
+    def test_settings_change_invalidates_scan_id(self):
+        self.start(cfg=core.Config(home=self.home))
+        p = self.scan()
+        work = os.path.join(self.home, "Work")
+        os.makedirs(work)
+        self.assertEqual(self.settings_post({"add": work})[0], 200)
+        status, _ = self.clean(p["scan_id"], ["homebrew-cache"])
+        self.assertEqual(status, 409)
+        self.assertTrue(os.path.isdir(os.path.join(self.home, "Library/Caches/Homebrew")))
+
+    def test_fixed_roots_settings_409(self):
+        self.start(fixed_roots=True)
+        status, data, _ = self.req("GET", "/api/settings")
+        self.assertEqual(status, 200)
+        self.assertTrue(data["fixed"])
+        self.assertEqual(data["project_folders"], [self.P()])
+        work = os.path.join(self.home, "Work")
+        os.makedirs(work)
+        status, _ = self.settings_post({"add": work})
+        self.assertEqual(status, 409)
+        self.assertEqual(core.load_settings(self.home), {})
+
+    # ------------------------------------------------------------ Trash
+
+    def downloads_fixture(self):
+        dmg = os.path.join(self.home, "Downloads", "Setup.dmg")
+        with open(dmg, "w") as f:
+            f.write("d" * 2000)
+        old = time.time() - 20 * 86400
+        os.utime(dmg, (old, old))
+        trash = os.path.join(self.home, ".Trash")
+        os.makedirs(trash)
+        with open(os.path.join(trash, "old.bin"), "w") as f:
+            f.write("x" * 3000)
+        helper = os.path.join(self.tmp, "fake-trash-helper")
+        with open(helper, "w") as f:
+            f.write(f'#!/bin/sh\nmkdir -p "{trash}" && mv "$1" "{trash}/"\n')
+        os.chmod(helper, 0o755)
+        return dmg, trash, helper
+
+    def test_job_runs_empty_trash_first(self):
+        dmg, trash, helper = self.downloads_fixture()
+        rec = Recorder()
+        self.start(runner=rec)
+        with mock.patch.dict(os.environ, {core.TRASH_HELPER_ENV: helper}):
+            p = self.scan()
+            self.assertTrue(p["trash_helper"])
+            status, data = self.clean(p["scan_id"], ["download:Setup.dmg", "empty-trash"])
+            self.assertEqual(status, 200, data)
+            job = self.wait_job(data["job_id"])
+        self.assertEqual([i["key"] for i in job["items"]], ["empty-trash", "download:Setup.dmg"])
+        self.assertEqual([i["status"] for i in job["items"]], ["done", "trashed"])
+        self.assertEqual(rec.calls[0], ["osascript", "-e", 'tell application "Finder" to empty trash'])
+        self.assertEqual(rec.calls[1], [helper, dmg])
+        self.assertTrue(os.path.isfile(dmg))            # the recorder moves nothing
+
+    def test_trash_job_status_trashed(self):
+        dmg, trash, helper = self.downloads_fixture()
+        self.start()
+        with mock.patch.dict(os.environ, {core.TRASH_HELPER_ENV: helper}):
+            p = self.scan()
+            row = next(r for r in p["rows"] if r["id"] == "download:Setup.dmg")
+            self.assertEqual((row["group"], row["kind"]), ("review", "trash"))
+            status, data = self.clean(p["scan_id"], ["download:Setup.dmg"])
+            self.assertEqual(status, 200, data)
+            job = self.wait_job(data["job_id"])
+        self.assertEqual(job["items"][0]["status"], "trashed", job)
+        self.assertFalse(os.path.exists(dmg))
+        self.assertTrue(os.path.isfile(os.path.join(trash, "Setup.dmg")))
+
+    def test_trash_without_helper_is_refused(self):
+        dmg, trash, helper = self.downloads_fixture()
+        self.start()
+        env = {k: v for k, v in os.environ.items() if k != core.TRASH_HELPER_ENV}
+        with mock.patch.dict(os.environ, env, clear=True):
+            p = self.scan()
+            self.assertFalse(p["trash_helper"])
+            status, data = self.clean(p["scan_id"], ["download:Setup.dmg"])
+            job = self.wait_job(data["job_id"])
+        self.assertEqual(job["items"][0]["status"], "refused")
+        self.assertTrue(os.path.isfile(dmg))
+
 
 class LifecycleTests(ServerTestCase):
     def test_idle_shutdown_after_timeout(self):
@@ -496,6 +640,36 @@ class LifecycleTests(ServerTestCase):
         reused = [o for o in outs if "already running" in o]
         self.assertEqual((len(started), len(reused)), (1, 1), outs)
 
+    def test_fake_docker_needs_home(self):
+        df = os.path.join(self.tmp, "df.json")
+        with open(df, "w") as f:
+            f.write('{"Type":"Build Cache","Reclaimable":"1GB"}')
+        r = subprocess.run([sys.executable, os.path.join(ROOT, "devclean"), "ui", "--no-open",
+                            "--fake-docker", df], capture_output=True, text=True, timeout=30)
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertIn("--fake-docker needs --home", r.stderr)
+
+    def test_fake_docker_answers_only_system_df(self):
+        df = os.path.join(self.tmp, "df.json")
+        with open(df, "w") as f:
+            f.write('{"Type":"Build Cache","Reclaimable":"1GB"}')
+        run = ui.fake_docker(df)
+        ok = run(["docker", "system", "df", "--format", "json"], capture_output=True, text=True)
+        self.assertEqual((ok.returncode, ok.stdout), (0, '{"Type":"Build Cache","Reclaimable":"1GB"}'))
+        for argv in (["docker", "builder", "prune", "-f"], ["docker", "image", "prune", "-a", "-f"],
+                     ["rm", "-rf", "/"]):
+            self.assertNotEqual(run(argv).returncode, 0, argv)
+        srv = ui.UIServer(cfg_for(self.home), core.NoSimctl(), fixture=True,
+                          xcode_check=lambda: False, docker=run)
+        self.srv = srv
+        srv.start()
+        p = self.scan()
+        row = next(r for r in p["rows"] if r["id"] == "docker:builder")
+        self.assertEqual(row["size"], 10 ** 9)
+        status, data = self.clean(p["scan_id"], ["docker:builder"])
+        job = self.wait_job(data["job_id"])
+        self.assertEqual(job["items"][0]["status"], "refused")   # fixture mode never prunes
+
     def test_cli_dispatches_ui(self):
         r = subprocess.run([sys.executable, os.path.join(ROOT, "devclean"), "ui", "--help"],
                            capture_output=True, text=True)
@@ -522,6 +696,20 @@ class PageTests(unittest.TestCase):
         self.assertIn("Lost contact with devclean", html)
         self.assertIn("cancelled:", html)                 # status icon for cancelled items
         self.assertNotIn("terminal still running", html)  # also started from the menu bar
+
+    def test_page_has_new_copy(self):
+        html = self.html()
+        for needle in ("Review: moves to Trash", "I've read the warnings above",
+                       "Deleted permanently", "Moved to Trash", "What happens",
+                       "pickProjectFolder", "labyrinthAddedFolder",
+                       "Moving to the Trash needs the Labyrinth Cleaner app.",
+                       "Select all", "Select none", "Deletes", "Costs you", "To get it back",
+                       "Moves to Trash", "found automatically", "Add project folder…",
+                       "Add folders in the app, or run devclean ui --projects DIR.",
+                       "Moved to Trash: ", "aria-expanded", "/api/settings"):
+            self.assertIn(needle, html)
+        self.assertIn("S.sel = new Set()", html)
+        self.assertNotIn("r.preselect", html)
 
     def test_no_html_injection_sinks(self):
         """Scan data (folder names!) must only reach the DOM as text."""

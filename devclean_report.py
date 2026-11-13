@@ -22,10 +22,16 @@ SEGMENTS = [
     ("xcode", "Xcode"),
     ("web", "node_modules"),
     ("caches", "Caches & builds"),
+    ("appcache", "App caches"),
+    ("docker", "Docker"),
+    ("downloads", "Downloads (reviewable)"),
+    ("trash", "Trash"),
     ("other", "System, apps & other files"),
     ("free", "Free"),
 ]
-MEASURED = ("sim", "android", "xcode", "web", "caches")
+MEASURED = ("sim", "android", "xcode", "web", "caches", "appcache", "docker", "downloads", "trash")
+# Segments sized from their scan items (Android is sized from extras only).
+ITEM_SIZED = ("sim", "xcode", "web", "caches", "appcache", "docker", "downloads", "trash")
 SMALL_BYTES = 20 * 1024 * 1024
 ARTIFACT_ORDER = {name: i for i, name in enumerate(core.FLUTTER_ARTIFACTS + core.WEB_ARTIFACTS)}
 
@@ -35,7 +41,7 @@ def _artifact_index(it: core.Item) -> int:
 
 
 def segment_of(it: core.Item) -> str:
-    if it.category == "Simulator":
+    if it.category == "Simulator" or it.kind == "simdevice":
         return "sim"
     if it.category == "Android":
         return "android"
@@ -43,9 +49,18 @@ def segment_of(it: core.Item) -> str:
         return "xcode"
     if it.category == "Web":
         return "web"
-    if it.key == "downloads":
+    if it.category == "App cache":
+        return "appcache"
+    if it.category == "Docker":
+        return "docker"
+    if it.category == "Downloads":
+        return "downloads"
+    if it.kind == "empty-trash":
+        return "trash"
+    # The whole ~/Downloads info row and iOS backups are personal files, not caches.
+    if it.key == "downloads" or it.category == "iOS backups":
         return "other"
-    return "caches"
+    return "caches"           # fixed caches, Gradle, Flutter builds, logs
 
 
 def _tilde(path, home: str) -> str:
@@ -73,6 +88,7 @@ def _row(rid, group, members, label, path):
     lead = min(members, key=lambda m: (-_cost_rank(m.cost_tag), _artifact_index(m)))
     stale_days = max((m.stale_days for m in members if m.stale_days is not None), default=None)
     offer = group != "kept"
+    warnings = list(dict.fromkeys(m.warning for m in members if m.warning))
     return {
         "id": rid,
         "group": group,
@@ -86,7 +102,11 @@ def _row(rid, group, members, label, path):
         "cost_tag": lead.cost_tag,
         "cost": lead.cost,
         "stale": core.stale_label(stale_days) if group == "time" else None,
-        "preselect": offer and all(m.preselect for m in members),
+        "warning": " ".join(warnings),
+        "deletes": lead.deletes,
+        "restore": lead.restore,
+        "kind": lead.kind,
+        "preselect": False,          # the page never ticks anything for the user
         "members": [{"key": m.key, "label": m.label, "size": m.size} for m in members],
     }
 
@@ -96,15 +116,16 @@ def build_rows(items: list, home: str) -> list:
     for it in items:
         group = GROUP_OF[it.tier]
         if it.project and it.meta.get("project_dir"):
-            projects.setdefault((group, it.project), []).append(it)
+            projects.setdefault((group, it.meta["project_dir"]), []).append(it)
         else:
             rows.append(_row(it.key, group, [it], it.label, _tilde(it.path, home)))
-    for (group, project), members in projects.items():
+    # One row per project folder and group: two roots can each hold a project named "app".
+    for (group, project_dir), members in projects.items():
         members.sort(key=_artifact_index)
         names = " + ".join(os.path.basename(m.path) for m in members)
-        label = f"{os.path.basename(project)} · {names}"
-        path = _tilde(members[0].meta["project_dir"], home)
-        rows.append(_row(f"{group}:{project}", group, members, label, path))
+        label = f"{os.path.basename(members[0].project)} · {names}"
+        rid = f"{group}:{os.path.relpath(project_dir, home)}"
+        rows.append(_row(rid, group, members, label, _tilde(project_dir, home)))
     rows.sort(key=lambda r: (GROUP_ORDER[r["group"]], -(r["size"] or 0), r["label"]))
     return rows
 
@@ -133,7 +154,8 @@ def disk_map(res: core.ScanResult, extras: dict) -> list:
         if it.offerable:
             reclaim[seg] += it.size or 0
         # Simulator data folders are measured whole in extras["sim_devices"].
-        if (seg in ("sim", "xcode", "web", "caches") and it.kind != "simctl-unavailable"
+        # Docker has no separate total: its segment is the sum of its items.
+        if (seg in ITEM_SIZED and it.kind != "simctl-unavailable"
                 and not it.key.startswith("simdevice:")):
             size[seg] += it.size or 0
     size["sim"] += extras.get("sim_devices", 0)
@@ -145,6 +167,16 @@ def disk_map(res: core.ScanResult, extras: dict) -> list:
     reclaim["other"] = reclaim["free"] = 0
     return [{"id": sid, "label": label, "bytes": size[sid], "reclaimable": reclaim[sid]}
             for sid, label in SEGMENTS]
+
+
+def auto_project_folders(cfg: core.Config) -> list:
+    """The default project folders (~/Developer, ~/Projects, ...) that exist, as realpaths."""
+    found = []
+    for d in core.DEFAULT_PROJECT_DIRS:
+        r = os.path.realpath(cfg.p(d))
+        if os.path.isdir(r) and r not in found:
+            found.append(r)
+    return found
 
 
 def scan_payload(res: core.ScanResult, cfg: core.Config, scan_id: str, duration_s: float,
@@ -165,4 +197,7 @@ def scan_payload(res: core.ScanResult, cfg: core.Config, scan_id: str, duration_
         "warnings": list(res.warnings),
         "xcode_running": res.xcode_running,
         "small_bytes": SMALL_BYTES,
+        "project_folders": list(cfg.project_roots),
+        "auto_project_folders": auto_project_folders(cfg),
+        "trash_helper": bool(os.environ.get(core.TRASH_HELPER_ENV)),
     }

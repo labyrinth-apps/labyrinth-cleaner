@@ -8,8 +8,9 @@
   :root{
     --bg:#0b0d12; --panel:#12161d; --line:rgba(255,255,255,.07);
     --text:#e9edf3; --muted:#8b95a5; --dim:#5d6676;
-    --safe:#34d399; --time:#fbbf24; --check:#fb7185; --kept:#94a3b8;
+    --safe:#34d399; --time:#fbbf24; --check:#fb7185; --review:#60a5fa; --kept:#94a3b8;
     --sim:#a78bfa; --android:#86efac; --xcode:#60a5fa; --node:#fbbf24; --cache:#34d399; --sys:#475569;
+    --appcache:#a3e635; --docker:#22d3ee; --downloads:#f9a8d4; --trash:#fdba74;
   }
   *{box-sizing:border-box}
   [hidden]{display:none!important}
@@ -54,7 +55,7 @@
   .big{font-size:52px;font-weight:750;letter-spacing:-.035em;line-height:1.05;margin:6px 0 2px;
        background:linear-gradient(90deg,#6ee7b7,#93c5fd 50%,#c4b5fd);-webkit-background-clip:text;background-clip:text;color:transparent}
   .big small{font-size:22px;font-weight:650;letter-spacing:-.01em}
-  .tiers{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:16px}
+  .tiers{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:16px}
   .tier{border-radius:12px;padding:11px 12px;background:rgba(255,255,255,.03);border:1px solid var(--line);cursor:pointer;transition:.15s;text-align:left;color:inherit}
   .tier:hover{transform:translateY(-1px);background:rgba(255,255,255,.06)}
   .tier.on{border-color:rgba(255,255,255,.35)}
@@ -123,6 +124,28 @@
   .stale{white-space:nowrap;display:inline-block;font-size:10px;font-weight:700;color:var(--time);border:1px solid rgba(251,191,36,.35);padding:0 5px;border-radius:5px;margin-left:6px;vertical-align:1px}
   .more{padding:10px 12px 12px 86px;color:var(--muted);font-size:12.5px;cursor:pointer;background:none;border:0;text-align:left;width:100%}
   .more:hover{color:var(--text)}
+  .warn{color:var(--check);font-size:12px;margin-top:2px;overflow-wrap:anywhere}
+  .chev{background:none;border:0;color:var(--muted);cursor:pointer;padding:0 4px;margin-left:4px;font-size:13px;line-height:1;vertical-align:0;transition:transform .15s,color .15s;display:inline-block}
+  .chev:hover{color:var(--text)}
+  .chev[aria-expanded="true"]{transform:rotate(90deg);color:var(--text)}
+  .chev:focus-visible{outline:2px solid #93c5fd;outline-offset:2px;border-radius:4px}
+  .totrash{display:block;color:var(--review);font-weight:600;font-size:11px;margin-top:5px}
+  .what{grid-column:3 / -1;background:rgba(255,255,255,.035);border:1px solid var(--line);border-radius:10px;padding:10px 12px;font-size:12.5px}
+  .what .wtitle{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);font-weight:600;margin-bottom:6px}
+  .what dl{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:4px 12px;margin:0}
+  .what dt{color:var(--muted)}
+  .what dd{margin:0;color:#c8d0dc;overflow-wrap:anywhere}
+  .what code{font:11.5px ui-monospace,SFMono-Regular,Menlo,monospace;background:rgba(255,255,255,.07);padding:1px 5px;border-radius:5px;color:#e2e8f0}
+
+  /* project folders */
+  .folders h3{margin:0;font-size:15px;font-weight:650}
+  .folders .gdesc{color:var(--muted);font-size:12.5px;margin:2px 0 12px}
+  .frow{display:flex;align-items:center;gap:10px;padding:9px 0;border-top:1px solid var(--line);flex-wrap:wrap}
+  .frow .fpath{font-weight:600;overflow-wrap:anywhere;min-width:0}
+  .frow .fauto{color:var(--muted);font-size:12px;margin-left:auto}
+  .frow .ghost{margin-left:auto;padding:4px 10px;font-size:12px}
+  .fnote{color:var(--muted);font-size:12.5px;margin-top:10px}
+  .ferr{color:var(--check);font-size:12.5px;margin-top:8px}
 
   /* checkbox */
   .cb{appearance:none;-webkit-appearance:none;width:18px;height:18px;border-radius:6px;border:1.5px solid #4b5563;display:grid;place-items:center;cursor:pointer;margin:0;transition:.12s}
@@ -157,9 +180,13 @@
   .mrow .l{overflow-wrap:anywhere}
   .mrow .c{color:var(--muted);font-size:12px;white-space:nowrap}
   .mrow .msg{display:block;color:var(--check);font-size:11.5px}
+  .msec{padding:8px 12px 6px;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);font-weight:600;background:rgba(255,255,255,.03)}
+  .mrow + .msec,.msec + .msec{border-top:1px solid var(--line)}
+  .mack{display:flex;gap:10px;align-items:center;margin:0 0 14px;font-size:13px;cursor:pointer}
+  .mnote{color:var(--check);font-size:13px;margin:0 0 14px}
   .st{display:inline-block;width:18px;text-align:center;margin-right:6px}
   .st.running{animation:spin 1s linear infinite}
-  .st.done{color:var(--safe)} .st.failed{color:var(--check)} .st.refused{color:var(--time)} .st.pending,.st.cancelled{color:var(--dim)}
+  .st.done{color:var(--safe)} .st.trashed{color:var(--review)} .st.failed{color:var(--check)} .st.refused{color:var(--time)} .st.pending,.st.cancelled{color:var(--dim)}
   .mfoot{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
   .after{font-size:13px;color:var(--muted)} .after b{color:var(--safe)}
 
@@ -169,11 +196,12 @@
     .item .cost{grid-column:3 / -1}
     .big{font-size:40px}
     .more{padding-left:66px}
+    .what{grid-column:1 / -1}
   }
   @media (max-width:480px){
     .wrap{padding:16px 12px 150px}
     .big{font-size:34px} .big small{display:block;font-size:17px;margin-top:4px}
-    .tiers{gap:6px} .tier{padding:9px} .tier b{font-size:16px}
+    .tiers{gap:6px;grid-template-columns:repeat(2,1fr)} .tier{padding:9px} .tier b{font-size:16px}
     .gauge svg{width:104px;height:104px}
     .seg .lbl{display:none}
     .item,.kept .item{grid-template-columns:22px 28px minmax(0,1fr) 74px;gap:9px;padding:10px 6px}
@@ -220,6 +248,7 @@
           <button class="tier" data-g="safe"><div class="bar" style="background:var(--safe)"></div><b></b><span></span></button>
           <button class="tier" data-g="time"><div class="bar" style="background:var(--time)"></div><b></b><span></span></button>
           <button class="tier" data-g="check"><div class="bar" style="background:var(--check)"></div><b></b><span></span></button>
+          <button class="tier" data-g="review"><div class="bar" style="background:var(--review)"></div><b></b><span></span></button>
         </div>
       </div>
       <div class="card gauge">
@@ -251,11 +280,22 @@
       <button class="chip" data-f="safe"><i style="background:var(--safe)"></i>Safe</button>
       <button class="chip" data-f="time"><i style="background:var(--time)"></i>Costs time</button>
       <button class="chip" data-f="check"><i style="background:var(--check)"></i>Check first</button>
+      <button class="chip" data-f="review"><i style="background:var(--review)"></i>Review</button>
       <button class="chip" data-f="kept"><i style="background:var(--kept)"></i>Kept</button>
       <button class="chip segchip" id="segchip" hidden></button>
     </div>
 
     <div id="groups"></div>
+
+    <div class="card folders" id="folders" hidden>
+      <h3>Project folders</h3>
+      <div class="gdesc">devclean looks for build folders and node_modules in these folders. It never deletes them.</div>
+      <div id="flist"></div>
+      <div class="fnote" id="fFixed" hidden>Set with devclean ui --projects for this run.</div>
+      <div class="fnote" id="fNote" hidden>Add folders in the app, or run devclean ui --projects DIR.</div>
+      <button class="ghost" id="fAdd" style="margin-top:12px" hidden>Add project folder…</button>
+      <div class="ferr" id="fErr" hidden></div>
+    </div>
   </div>
 </div>
 
@@ -271,6 +311,8 @@
     <div class="muted" id="mSub">Deleting is permanent. Nothing goes to the Trash, so the space is freed right away.</div>
     <div class="mwarn" id="mwarn" hidden></div>
     <div class="mlist" id="mlist"></div>
+    <label class="mack" id="mAckWrap" hidden><input type="checkbox" class="cb" id="mAck" style="--c:var(--check)"> I've read the warnings above</label>
+    <div class="mnote" id="mHelper" hidden>Moving to the Trash needs the Labyrinth Cleaner app.</div>
     <div class="mfoot">
       <div class="after" id="mAfterWrap">Free space: <span id="mFree"></span> → <b id="mAfter"></b></div>
       <div style="flex:1"></div>
@@ -360,20 +402,28 @@ const GROUPS = [
   { id: "safe", title: "Safe to remove", desc: "Rebuilt or re-downloaded automatically. Nothing for you to do.", color: "var(--safe)", tagBg: "rgba(52,211,153,.15)", tier: "Safe · nothing to redo" },
   { id: "time", title: "Costs you some time", desc: "Safe, but you need to reinstall before working on the project again.", color: "var(--time)", tagBg: "rgba(251,191,36,.15)", tier: "Costs reinstall time" },
   { id: "check", title: "Check first", desc: "Removes something you might still use. Getting it back means a big download.", color: "var(--check)", tagBg: "rgba(251,113,133,.15)", tier: "Check first" },
+  { id: "review", title: "Review: moves to Trash", desc: "Your own files and shipped builds. They go to the Trash, so you can Put Back.", color: "var(--review)", tagBg: "rgba(96,165,250,.15)", tier: "Moves to Trash" },
   { id: "kept", title: "Kept on purpose", desc: "Big, but devclean never deletes these. Here's why.", color: "var(--kept)", tagBg: "transparent", tier: "" },
 ];
 const GROUP = Object.fromEntries(GROUPS.map(g => [g.id, g]));
-const SEG_COLOR = { sim: "var(--sim)", android: "var(--android)", xcode: "var(--xcode)", web: "var(--node)", caches: "var(--cache)", other: "var(--sys)", free: "rgba(255,255,255,.06)" };
-const ICON = { Flutter: "🐦", Web: "📦", Cache: "🗄️", Gradle: "🐘", DeviceSupport: "📱", Android: "🤖", Simulator: "📲", Protected: "🔒" };
+const SEG_COLOR = { sim: "var(--sim)", android: "var(--android)", xcode: "var(--xcode)", web: "var(--node)", caches: "var(--cache)",
+  appcache: "var(--appcache)", docker: "var(--docker)", downloads: "var(--downloads)", trash: "var(--trash)", other: "var(--sys)", free: "rgba(255,255,255,.06)" };
+const ICON = { Flutter: "🐦", Web: "📦", Cache: "🗄️", Gradle: "🐘", DeviceSupport: "📱", Android: "🤖", Simulator: "📲", Protected: "🔒",
+  "App cache": "🧩", Logs: "📜", Trash: "🗑️", "iOS backups": "💾", Docker: "🐳", Downloads: "⬇️", "Xcode Archives": "🗃️" };
+// The native app (plan 2) injects this bridge; a plain browser doesn't have it.
+const BRIDGE = (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.labyrinth) || null;
 const RING = 2 * Math.PI * 54;
 
 // ---------------------------------------------------------------- state
-const S = { data: null, sel: new Set(), filter: "all", seg: null, expanded: new Set(), scanning: false, job: null, pollFails: 0 };
+const S = { data: null, sel: new Set(), filter: "all", seg: null, expanded: new Set(), open: new Set(), scanning: false, job: null, pollFails: 0 };
 const MAX_POLL_FAILS = 10;
 
 function rowsOf(group) { return S.data.rows.filter(r => r.group === group); }
 function selectedRows() { return S.data ? S.data.rows.filter(r => S.sel.has(r.id)) : []; }
 function sum(rows) { return rows.reduce((a, r) => a + (r.size || 0), 0); }
+// Moving to the Trash frees nothing until the Trash is emptied.
+function freeable(rows) { return sum(rows.filter(r => r.kind !== "trash")); }
+function offerable(g) { return g.id !== "kept"; }
 
 // ---------------------------------------------------------------- scan
 async function scan() {
@@ -387,10 +437,12 @@ async function scan() {
     const { status, data } = await api("GET", "/api/scan");
     if (status !== 200 || !data) throw new Error((data && data.error) || ("HTTP " + status + (status === 403 ? ": reopen the link devclean printed" : "")));
     S.data = data;
-    S.sel = new Set(data.rows.filter(r => r.preselect && r.keys.length).map(r => r.id));
+    S.sel = new Set();          // nothing is ticked for you
     S.expanded.clear();
+    S.open.clear();
     render();
     $("main").hidden = false;
+    loadSettings();
     return data;
   } catch (e) {
     $("errmsg").textContent = e.message || String(e);
@@ -499,14 +551,15 @@ function groupCard(g, rows) {
     el("span", { class: "dot", style: "background:" + g.color }),
     el("div", {}, el("h3", { text: g.title }), el("div", { class: "gdesc", text: g.desc })),
     el("span", { class: "gtotal", style: g.id === "kept" ? "color:var(--muted)" : null, text: human(sum(rows)) }));
-  if (g.id === "safe") {
-    const any = rows.some(r => S.sel.has(r.id));
-    head.append(el("button", { class: "selall", text: any ? "Select none" : "Select all", onclick: () => {
-      rows.forEach(r => any ? S.sel.delete(r.id) : S.sel.add(r.id)); renderGroups(); updateSelection();
-    } }));
-  } else if (g.id === "time") {
+  if (g.id === "time") {
     head.append(el("button", { class: "selall", text: "Select stale", onclick: () => {
       rows.forEach(r => r.stale ? S.sel.add(r.id) : S.sel.delete(r.id)); renderGroups(); updateSelection();
+    } }));
+  }
+  if (offerable(g)) {
+    head.append(el("button", { class: "selall toggle", text: selAllText(rows), onclick: () => {
+      const any = rows.some(r => S.sel.has(r.id));
+      rows.forEach(r => any ? S.sel.delete(r.id) : S.sel.add(r.id)); renderGroups(); updateSelection();
     } }));
   }
   card.append(head);
@@ -524,6 +577,8 @@ function groupCard(g, rows) {
   return card;
 }
 
+let whatSeq = 0;
+
 function rowEl(g, r, max) {
   const kept = g.id === "kept";
   const lead = kept
@@ -534,31 +589,67 @@ function rowEl(g, r, max) {
   const cost = el("div", { class: "cost" });
   if (r.cost_tag) cost.append(el("span", { class: "tag", style: "background:" + g.tagBg + ";color:" + g.color, text: r.cost_tag }));
   cost.append(...costNodes(r.cost));
-  return el("div", { class: "item" },
+  const open = S.open.has(r.id), wid = "what-" + (++whatSeq);
+  // Kept rows delete nothing, so they have no "What happens" panel.
+  const chev = kept ? null : el("button", { class: "chev", type: "button", "aria-expanded": open ? "true" : "false",
+    "aria-controls": wid, "aria-label": "What happens: " + r.label, title: "What happens", text: "›",
+    onclick: e => toggleWhat(r.id, e.currentTarget, wid) });
+  const size = el("div", { class: "size" }, human(r.size));
+  if (r.kind === "trash") size.append(el("span", { class: "totrash", text: "Moves to Trash" }));
+  else if (!kept) size.append(el("div", { class: "mini" }, el("div", { style: "width:" + pct.toFixed(1) + "%;background:" + g.color })));
+  size.append(el("small", { text: age(r.mtime) }));
+  const row = el("div", { class: "item" },
     lead,
     el("div", { class: "ico", text: ICON[r.category] || "📁" }),
     el("div", {},
-      el("div", { class: "name" }, r.label, r.stale ? el("span", { class: "stale", text: r.stale }) : null),
+      el("div", { class: "name" }, r.label, r.stale ? el("span", { class: "stale", text: r.stale }) : null, chev),
+      r.warning ? el("div", { class: "warn", text: "⚠ " + r.warning }) : null,
       el("div", { class: "path", title: r.path, text: r.path })),
-    el("div", { class: "size" }, human(r.size),
-      kept ? null : el("div", { class: "mini" }, el("div", { style: "width:" + pct.toFixed(1) + "%;background:" + g.color })),
-      el("small", { text: age(r.mtime) })),
+    size,
     cost);
+  if (!kept) {
+    const panel = whatPanel(r, wid);
+    panel.hidden = !open;
+    row.append(panel);
+  }
+  return row;
 }
 
+// "What happens": all three lines come from the core, shown as text.
+function whatPanel(r, wid) {
+  const restore = el("dd", {}, ...costNodes(r.restore || "-"));
+  return el("div", { class: "what", id: wid, role: "region", "aria-label": "What happens: " + r.label },
+    el("div", { class: "wtitle", text: "What happens" }),
+    el("dl", {},
+      el("dt", { text: "Deletes" }), el("dd", {}, r.deletes ? el("code", { text: r.deletes }) : "-"),
+      el("dt", { text: "Costs you" }), el("dd", {}, ...costNodes(r.cost || "-")),
+      el("dt", { text: "To get it back" }), restore));
+}
+
+function toggleWhat(id, btn, wid) {
+  const open = !S.open.has(id);
+  open ? S.open.add(id) : S.open.delete(id);
+  btn.setAttribute("aria-expanded", open ? "true" : "false");
+  const panel = document.getElementById(wid);
+  if (panel) panel.hidden = !open;
+}
+
+function selAllText(rows) { return rows.some(r => S.sel.has(r.id)) ? "Select none" : "Select all"; }
+
 function refreshSelAll() {
-  const btn = document.querySelector('.group[data-g="safe"] .selall');
-  if (!btn) return;
-  const any = rowsOf("safe").some(r => S.sel.has(r.id));
-  btn.textContent = any ? "Select none" : "Select all";
+  for (const btn of document.querySelectorAll(".group[data-g] .selall.toggle")) {
+    let rows = rowsOf(btn.closest(".group").dataset.g);
+    if (S.seg) rows = rows.filter(r => r.segment === S.seg);
+    btn.textContent = selAllText(rows);
+  }
 }
 
 function updateSelection() {
-  const d = S.data, rows = selectedRows(), total = sum(rows);
-  $("selTotal").textContent = human(total) + " selected";
+  const d = S.data, rows = selectedRows(), total = freeable(rows);
+  $("selTotal").textContent = human(sum(rows)) + " selected";
   $("selCount").textContent = plural(rows.length, "item") + " · free after: " + human(d.disk.free + total);
   $("afterBig").textContent = human(d.disk.free + total);
-  const risky = rows.filter(r => r.group === "check").length;
+  const risky = rows.filter(r => r.group === "check" || r.warning).length;
   $("warnsel").textContent = risky ? "⚠ Includes " + plural(risky, "item") + " to check first" : "";
   $("action").hidden = !rows.length || S.job !== null;
   const f = Math.min(1, d.disk.free / d.disk.total) * RING, a = Math.min(1 - f / RING, total / d.disk.total) * RING;
@@ -571,26 +662,50 @@ function updateSelection() {
 function openModal() {
   const rows = selectedRows();
   if (!rows.length) return;
-  const total = sum(rows), free = S.data.disk.free;
-  $("mTitle").textContent = "Delete " + plural(rows.length, "item") + ", " + human(total) + "?";
-  $("mSub").textContent = "Deleting is permanent. Nothing goes to the Trash, so the space is freed right away.";
+  const toTrash = rows.filter(r => r.kind === "trash"), toDelete = rows.filter(r => r.kind !== "trash");
+  const free = S.data.disk.free, freed = freeable(rows);
+  $("mTitle").textContent = (toTrash.length && !toDelete.length ? "Move " : toTrash.length ? "Clean " : "Delete ") +
+    plural(rows.length, "item") + ", " + human(sum(rows)) + (toTrash.length && !toDelete.length ? " to the Trash?" : "?");
+  $("mSub").textContent = !toTrash.length
+    ? "Deleting is permanent. Nothing goes to the Trash, so the space is freed right away."
+    : "Moved to the Trash: you can Put Back, and the space is freed when you empty the Trash." +
+      (toDelete.length ? " Deleted permanently: can't be undone." : "");
   $("mFree").textContent = human(free);
-  $("mAfter").textContent = human(free + total);
+  $("mAfter").textContent = human(free + freed);
   $("mAfterWrap").hidden = false;
   $("mwarn").hidden = true;
   const list = $("mlist");
   clear(list);
-  for (const r of rows) for (const m of r.members) {
-    list.append(el("div", { class: "mrow" },
-      el("span", { class: "l" }, m.label, r.group === "check" ? el("span", { style: "color:var(--check)", text: " · check first" }) : null),
-      el("span", { class: "c", text: human(m.size) })));
-  }
+  const section = (title, rs) => {
+    if (!rs.length) return;
+    list.append(el("div", { class: "msec", text: title }));
+    for (const r of rs) r.members.forEach((m, i) => {
+      const last = i === r.members.length - 1;
+      list.append(el("div", { class: "mrow" },
+        el("span", { class: "l" }, m.label, r.group === "check" ? el("span", { style: "color:var(--check)", text: " · check first" }) : null,
+          last && r.warning ? el("span", { class: "msg", text: "⚠ " + r.warning }) : null),
+        el("span", { class: "c", text: human(m.size) })));
+    });
+  };
+  section("Deleted permanently", toDelete);
+  section("Moved to Trash", toTrash);
+  const warned = rows.some(r => r.warning), noHelper = toTrash.length > 0 && !S.data.trash_helper;
+  $("mAck").checked = false;
+  $("mAckWrap").hidden = !warned;
+  $("mHelper").hidden = !noHelper;
   $("mCancel").hidden = false;
   $("mCancel").textContent = "Cancel";
   $("mDelete").hidden = false;
-  $("mDelete").disabled = false;
+  S.blocked = { warned, noHelper };
+  refreshDelete();
   $("scrim").classList.add("on");
   $("mCancel").focus();
+}
+
+// Delete waits for the warnings to be acknowledged, and for the app when anything moves to the Trash.
+function refreshDelete() {
+  const b = S.blocked || {};
+  $("mDelete").disabled = !!b.noHelper || (!!b.warned && !$("mAck").checked);
 }
 
 function closeModal() {
@@ -621,6 +736,8 @@ async function doDelete() {
   S.job = res.data.job_id;
   S.pollFails = 0;
   $("action").hidden = true;
+  $("mAckWrap").hidden = true;
+  $("mHelper").hidden = true;
   $("mTitle").textContent = "Cleaning…";
   $("mSub").textContent = "Keep this page open to follow along. Closing it won't stop the clean.";
   $("mCancel").hidden = true;
@@ -634,7 +751,7 @@ function showModalError(msg) {
   $("mwarn").hidden = false;
 }
 
-const STATUS_ICON = { pending: "○", running: "◐", done: "✓", failed: "✕", refused: "⛔", cancelled: "–" };
+const STATUS_ICON = { pending: "○", running: "◐", done: "✓", trashed: "✓", failed: "✕", refused: "⛔", cancelled: "–" };
 
 async function pollJob() {
   let res;
@@ -650,6 +767,7 @@ async function pollJob() {
   for (const it of job.items) {
     list.append(el("div", { class: "mrow" },
       el("span", { class: "l" }, el("span", { class: "st " + it.status, text: STATUS_ICON[it.status] || "?" }), it.label,
+        it.status === "trashed" ? el("span", { style: "color:var(--review)", text: " · Moved to Trash" }) : null,
         it.message ? el("span", { class: "msg", text: it.message.replace(/^REFUSED: /, "Refused: ") }) : null),
       el("span", { class: "c", text: human(it.size) })));
   }
@@ -669,7 +787,9 @@ function lostContact() {
 
 async function finishJob(job) {
   $("mTitle").textContent = "Done. Scanning again…";
-  const problems = job.items.filter(i => i.status !== "done");
+  const problems = job.items.filter(i => i.status !== "done" && i.status !== "trashed");
+  const trashed = job.items.filter(i => i.status === "trashed").length;
+  // Only real deletes free space; moving to the Trash doesn't.
   const expected = job.items.filter(i => i.status === "done").reduce((a, i) => a + (i.size || 0), 0);
   await new Promise(r => setTimeout(r, 600));
   S.job = null;
@@ -677,7 +797,7 @@ async function finishJob(job) {
   const data = await scan();
   const now = data ? data.disk.free : job.free_now;
   const freed = Math.max(0, now - job.free_before);
-  $("bTitle").textContent = "Freed " + human(freed);
+  $("bTitle").textContent = "Freed " + human(freed) + (trashed ? " · Moved to Trash: " + trashed : "");
   let sub = human(job.free_before) + " → " + human(now) + " free";
   if (expected && freed < expected * 0.5) sub += " · macOS can release space lazily, or a Time Machine local snapshot may still hold it (tmutil listlocalsnapshots /).";
   $("bSub").textContent = sub;
@@ -687,7 +807,61 @@ async function finishJob(job) {
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
 
+// ---------------------------------------------------------------- project folders
+function tildePath(p) {
+  const home = S.data ? S.data.home : "";
+  if (home && p === home) return "~";
+  return home && p.startsWith(home + "/") ? "~" + p.slice(home.length) : p;
+}
+
+async function loadSettings() {
+  let st = null;
+  try {
+    const res = await api("GET", "/api/settings");
+    if (res.status === 200) st = res.data;
+  } catch (e) { /* fall back to the scan's copy */ }
+  if (!st && S.data) st = { project_folders: S.data.project_folders || [], auto_project_folders: S.data.auto_project_folders || [], fixed: false };
+  if (st) renderFolders(st);
+}
+
+function renderFolders(st) {
+  const list = $("flist"), auto = new Set(st.auto_project_folders || []);
+  clear(list);
+  for (const f of st.project_folders || []) {
+    list.append(el("div", { class: "frow" },
+      el("span", { class: "fpath", title: f, text: tildePath(f) }),
+      auto.has(f) ? el("span", { class: "fauto", text: "found automatically" })
+        : st.fixed ? null
+        : el("button", { class: "ghost", type: "button", text: "Remove", "aria-label": "Remove " + tildePath(f),
+            onclick: () => changeFolders({ remove: f }) })));
+  }
+  if (!(st.project_folders || []).length) list.append(el("div", { class: "frow", style: "color:var(--muted)", text: "No project folders found yet." }));
+  $("fFixed").hidden = !st.fixed;
+  $("fAdd").hidden = st.fixed || !BRIDGE;
+  $("fNote").hidden = st.fixed || !!BRIDGE;
+  $("folders").hidden = false;
+}
+
+async function changeFolders(body) {
+  $("fErr").hidden = true;
+  let res;
+  try { res = await api("POST", "/api/settings/project-folders", body); }
+  catch (e) { res = { status: 0, data: { error: "Could not reach devclean: " + e.message } }; }
+  if (res.status !== 200) {
+    $("fErr").textContent = (res.data && res.data.error) || ("HTTP " + res.status);
+    $("fErr").hidden = false;
+    return;
+  }
+  renderFolders(res.data);
+  await scan();
+}
+
+// Plan 2's native side calls this with the folder the user picked.
+window.labyrinthAddedFolder = path => { if (typeof path === "string" && path) changeFolders({ add: path }); };
+
 // ---------------------------------------------------------------- wiring
+$("fAdd").addEventListener("click", () => { if (BRIDGE) BRIDGE.postMessage({ type: "pickProjectFolder" }); });
+$("mAck").addEventListener("change", refreshDelete);
 $("rescan").addEventListener("click", () => { $("banner").hidden = true; scan(); });
 $("retry").addEventListener("click", scan);
 $("bClose").addEventListener("click", () => { $("banner").hidden = true; });

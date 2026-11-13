@@ -10,7 +10,9 @@ Security model (see docs/superpowers/specs/2026-11-11-devclean-ui-design.md):
 - a POST with a foreign (or "null") Origin is refused, and POSTs must be JSON;
 - the API takes only item keys from the server's own latest scan, never paths,
   and every delete goes through devclean_core.execute_item(), which re-runs the
-  safety gate right before deleting.
+  safety gate right before deleting;
+- the one path the API takes is a project folder to remember in the settings
+  (core.add_project_folder validates it); it is only ever scanned, never deleted.
 """
 
 from __future__ import annotations
@@ -51,11 +53,17 @@ def url_file(cfg: core.Config) -> str:
 class UIServer:
     def __init__(self, cfg: core.Config, sim: core.SimctlProvider, *, fixture: bool,
                  xcode_check=core.xcode_running, runner=None, idle_timeout: float = 3600,
-                 port: int = 0, measure=core.du_bytes, options: dict = None):
+                 port: int = 0, measure=core.du_bytes, options: dict = None,
+                 fixed_roots: bool = False, docker=None):
         self.cfg, self.sim, self.fixture = cfg, sim, fixture
         self.xcode_check, self.measure = xcode_check, measure
+        # Project folders given with --projects: the settings can't change them.
+        self.fixed_roots = fixed_roots
         # The gate re-checks "Xcode is running" with the same check the scan used.
         self.env = core.fixture_env(cfg, xcode_check, fixture)
+        if docker is not None:
+            # Only `devclean ui --home ... --fake-docker FILE` passes one (see fake_docker).
+            self.env = dataclasses.replace(self.env, docker=docker)
         # Fixture data can carry real runtime UUIDs: never run xcrun in fixture mode.
         self.runner = runner or (core.fixture_runner if fixture else subprocess.run)
         self.idle_timeout = idle_timeout
@@ -72,7 +80,8 @@ class UIServer:
         self.last_request = time.time()
         self._lock = threading.Lock()
         self._scan_inflight = None
-        self._latest = None          # (scan_id, {key: Item})
+        self._latest = None          # (scan_id, {key: Item}, cfg)
+        self._settings_gen = 0       # bumped by a settings change; older scans can't be cleaned
         self._jobs = {}
         self._job_running = False
         self._job_thread = None
@@ -147,15 +156,51 @@ class UIServer:
 
     def _do_scan(self) -> dict:
         t0 = time.time()
+        with self._lock:
+            cfg, gen = self.cfg, self._settings_gen
         with ThreadPoolExecutor(max_workers=1) as ex:
-            extras_f = ex.submit(report.measure_extras, self.cfg, self.measure)
-            res = core.scan(self.cfg, self.sim, xcode_check=self.xcode_check)
+            extras_f = ex.submit(report.measure_extras, cfg, self.measure)
+            res = core.scan(cfg, self.sim, xcode_check=self.xcode_check, env=self.env)
             extras = extras_f.result()
         scan_id = secrets.token_hex(8)
-        payload = report.scan_payload(res, self.cfg, scan_id, round(time.time() - t0, 1), extras)
+        payload = report.scan_payload(res, cfg, scan_id, round(time.time() - t0, 1), extras)
         with self._lock:
-            self._latest = (scan_id, {i.key: i for i in res.items})
+            if gen == self._settings_gen:     # a scan of the old folders is never cleanable
+                self._latest = (scan_id, {i.key: i for i in res.items}, cfg)
         return payload
+
+    # -------------------------------------------------------------- settings
+
+    def settings(self) -> dict:
+        with self._lock:
+            cfg = self.cfg
+        return {"project_folders": list(cfg.project_roots),
+                "auto_project_folders": report.auto_project_folders(cfg),
+                "fixed": self.fixed_roots}
+
+    def change_project_folders(self, body) -> tuple:
+        """{"add": path} or {"remove": path}. The path is remembered for scanning only."""
+        if self.fixed_roots:
+            return 409, {"error": "project folders were set with --projects for this run"}
+        if (not isinstance(body, dict) or len(body) != 1
+                or next(iter(body)) not in ("add", "remove")
+                or not isinstance(next(iter(body.values())), str)):
+            return 400, {"error": 'expected {"add": path} or {"remove": path}'}
+        (op, path), = body.items()
+        with self._lock:
+            try:
+                if op == "add":
+                    core.add_project_folder(self.cfg.home, path)
+                else:
+                    core.remove_project_folder(self.cfg.home, path)
+            except ValueError as e:
+                return 400, {"error": str(e)}
+            self.cfg = core.Config(home=self.cfg.home, android_sdk=self.cfg.android_sdk)
+            self._settings_gen += 1
+            self._latest = None          # the next clean needs a scan of the new folders
+            # A second `devclean ui` resolves the roots from the same settings: keep matching.
+            self.options["projects"] = list(self.cfg.project_roots)
+        return 200, self.settings()
 
     # -------------------------------------------------------------- clean
 
@@ -168,7 +213,7 @@ class UIServer:
                 return 409, {"error": "stale scan"}
             if not isinstance(keys, list) or not keys or not all(isinstance(k, str) for k in keys):
                 return 400, {"error": "keys must be a non-empty list of strings"}
-            items = self._latest[1]
+            items, cfg = self._latest[1], self._latest[2]
             bad = [k for k in keys if k not in items or not items[k].offerable]
             if bad:
                 return 400, {"error": "unknown or protected key", "keys": bad}
@@ -184,11 +229,12 @@ class UIServer:
             self._latest = None          # the same scan can never be cleaned twice
             self._job_running = True
             self._cancel.clear()
-            self._job_thread = threading.Thread(target=self._run_job, args=(job, chosen), daemon=True)
+            self._job_thread = threading.Thread(target=self._run_job, args=(job, chosen, cfg),
+                                                daemon=True)
             self._job_thread.start()
         return 200, {"job_id": job_id}
 
-    def _run_job(self, job, chosen):
+    def _run_job(self, job, chosen, cfg):
         try:
             for entry, it in zip(job["items"], chosen):
                 with self._lock:
@@ -198,14 +244,16 @@ class UIServer:
                         continue
                     entry["status"] = "running"
                 try:
-                    ok, msg = core.execute_item(it, self.cfg, self.sim, runner=self.runner,
+                    ok, msg = core.execute_item(it, cfg, self.sim, runner=self.runner,
                                                 env=self.env)
                 except Exception as e:
                     ok, msg = False, str(e)
                 with self._lock:
                     entry["message"] = "" if ok else msg
-                    entry["status"] = ("done" if ok else
-                                       "refused" if msg.startswith("REFUSED: ") else "failed")
+                    if ok:
+                        entry["status"] = "trashed" if it.kind == "trash" else "done"
+                    else:
+                        entry["status"] = "refused" if msg.startswith("REFUSED: ") else "failed"
         finally:
             with self._lock:
                 job["state"] = "done"
@@ -279,6 +327,8 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send(200, app.get_scan())
                 except Exception as e:
                     return self._send(500, {"error": f"scan failed: {e}"})
+            if path == "/api/settings":
+                return self._send(200, app.settings())
             if path.startswith("/api/job/"):
                 job = app.job_status(path[len("/api/job/"):])
                 return self._send(200, job) if job else self._send(404, {"error": "no such job"})
@@ -303,10 +353,29 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/clean":
             status, out = app.start_clean(body)
             return self._send(status, out)
+        if path == "/api/settings/project-folders":
+            status, out = app.change_project_folders(body)
+            return self._send(status, out)
         return self._send(404, {"error": "not found"})
 
 
 # ------------------------------------------------------------------ CLI
+
+DOCKER_DF = ["docker", "system", "df", "--format", "json"]
+
+
+def fake_docker(path: str):
+    """A docker runner for demos on a fixture home: answers `docker system df --format json`
+    with the contents of `path` and refuses everything else, so nothing is ever pruned."""
+    with open(path, encoding="utf-8") as f:
+        out = f.read()
+
+    def run(argv, **kw):
+        if list(argv) == DOCKER_DF:
+            return subprocess.CompletedProcess(argv, 0, out, "")
+        return subprocess.CompletedProcess(argv, 1, "", "fake docker: only `docker system df` is answered")
+    return run
+
 
 def _live_server(path: str):
     """(url, options) if a devclean server answers at the URL in `path`, else None."""
@@ -365,7 +434,16 @@ def main(argv=None) -> int:
     ap.add_argument("--no-simulators", action="store_true", help="skip simulator runtimes")
     ap.add_argument("--no-open", action="store_true", help="print the URL, don't open a browser")
     ap.add_argument("--idle-timeout", type=float, default=3600, help=argparse.SUPPRESS)
+    ap.add_argument("--fake-docker", metavar="FILE", help=argparse.SUPPRESS)
     args = ap.parse_args(argv)
+    if args.fake_docker and not args.home:
+        ap.error("--fake-docker needs --home (it is for demos on a fixture home)")
+    docker = None
+    if args.fake_docker:
+        try:
+            docker = fake_docker(args.fake_docker)
+        except OSError as e:
+            ap.error(f"--fake-docker: {e}")
 
     cfg = core.Config(home=args.home or os.path.expanduser("~"), project_roots=tuple(args.projects) if args.projects else None)
     if args.simctl_fixture:
@@ -381,6 +459,7 @@ def main(argv=None) -> int:
         "simctl_fixture": os.path.realpath(args.simctl_fixture) if args.simctl_fixture else None,
         "simulators": not (args.no_simulators or args.home or args.simctl_fixture),
         "fixture": fixture,
+        "fake_docker": os.path.realpath(args.fake_docker) if args.fake_docker else None,
     }
 
     uf = url_file(cfg)
@@ -400,7 +479,8 @@ def main(argv=None) -> int:
             return 0
         srv = UIServer(cfg, sim, fixture=fixture,
                        xcode_check=(lambda: False) if args.home else core.xcode_running,
-                       idle_timeout=args.idle_timeout, options=options)
+                       idle_timeout=args.idle_timeout, options=options,
+                       fixed_roots=bool(args.projects), docker=docker)
         _write_private(uf, srv.url)
     finally:
         os.close(lock)   # releases the flock
