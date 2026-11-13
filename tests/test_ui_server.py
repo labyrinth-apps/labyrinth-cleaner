@@ -450,6 +450,7 @@ class ApiTests(ServerTestCase):
         os.makedirs(work)
         status, _ = self.settings_post({"add": work})
         self.assertEqual(status, 409)
+        self.assertEqual(self.settings_post({"foo": work})[0], 400)    # shape is checked first
         self.assertEqual(core.load_settings(self.home), {})
 
     # ------------------------------------------------------------ Trash

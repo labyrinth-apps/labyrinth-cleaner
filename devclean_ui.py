@@ -180,12 +180,12 @@ class UIServer:
 
     def change_project_folders(self, body) -> tuple:
         """{"add": path} or {"remove": path}. The path is remembered for scanning only."""
-        if self.fixed_roots:
-            return 409, {"error": "project folders were set with --projects for this run"}
         if (not isinstance(body, dict) or len(body) != 1
                 or next(iter(body)) not in ("add", "remove")
                 or not isinstance(next(iter(body.values())), str)):
             return 400, {"error": 'expected {"add": path} or {"remove": path}'}
+        if self.fixed_roots:
+            return 409, {"error": "project folders were set with --projects for this run"}
         (op, path), = body.items()
         with self._lock:
             try:

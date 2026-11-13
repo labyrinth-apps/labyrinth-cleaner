@@ -621,9 +621,16 @@ function whatPanel(r, wid) {
   return el("div", { class: "what", id: wid, role: "region", "aria-label": "What happens: " + r.label },
     el("div", { class: "wtitle", text: "What happens" }),
     el("dl", {},
-      el("dt", { text: "Deletes" }), el("dd", {}, r.deletes ? el("code", { text: r.deletes }) : "-"),
+      el("dt", { text: "Deletes" }), deletesNodes(r),
       el("dt", { text: "Costs you" }), el("dd", {}, ...costNodes(r.cost || "-")),
       el("dt", { text: "To get it back" }), restore));
+}
+
+// A project row deletes every member folder: list each one.
+function deletesNodes(r) {
+  const lines = r.members.length > 1 ? r.members.map(m => m.deletes).filter(Boolean) : [r.deletes].filter(Boolean);
+  if (!lines.length) return el("dd", { text: "-" });
+  return el("dd", {}, ...lines.map((t, i) => el("div", { style: i ? "margin-top:3px" : null }, el("code", { text: t }))));
 }
 
 function toggleWhat(id, btn, wid) {
@@ -691,6 +698,7 @@ function openModal() {
   section("Moved to Trash", toTrash);
   const warned = rows.some(r => r.warning), noHelper = toTrash.length > 0 && !S.data.trash_helper;
   $("mAck").checked = false;
+  $("mAck").disabled = false;
   $("mAckWrap").hidden = !warned;
   $("mHelper").hidden = !noHelper;
   $("mCancel").hidden = false;
@@ -715,6 +723,7 @@ function closeModal() {
 
 async function doDelete() {
   $("mDelete").disabled = true;
+  $("mAck").disabled = true;      // so toggling it can't re-enable Delete while the request is out
   const keys = selectedRows().flatMap(r => r.keys);
   let res;
   try {

@@ -107,7 +107,8 @@ def _row(rid, group, members, label, path):
         "restore": lead.restore,
         "kind": lead.kind,
         "preselect": False,          # the page never ticks anything for the user
-        "members": [{"key": m.key, "label": m.label, "size": m.size} for m in members],
+        "members": [{"key": m.key, "label": m.label, "size": m.size, "deletes": m.deletes}
+                    for m in members],
     }
 
 

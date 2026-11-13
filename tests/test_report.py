@@ -193,7 +193,10 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(gradle["kind"], "path")
         flutter = rows["safe:Documents/Projects/flutter_app"]
         self.assertEqual(flutter["warning"], "")
-        self.assertTrue(flutter["deletes"].startswith("~/Documents/Projects/flutter_app/"))
+        self.assertEqual(flutter["deletes"], "~/Documents/Projects/flutter_app/build")   # the lead
+        self.assertEqual([m["deletes"] for m in flutter["members"]],
+                         ["~/Documents/Projects/flutter_app/build",
+                          "~/Documents/Projects/flutter_app/.dart_tool"])
         self.assertEqual(flutter["restore"], "Rebuilt automatically by the next build.")
         # Member warnings are de-duplicated and joined; deletes/restore/kind come from the lead.
         d = os.path.join(self.home, "Documents", "Projects", "x")
