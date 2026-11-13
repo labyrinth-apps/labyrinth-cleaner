@@ -1,6 +1,6 @@
 # Labyrinth Cleaner
 
-Labyrinth Cleaner gets disk space back on a Mac. It shows what is using your disk, what you can delete, and what each delete costs you, then deletes only what you pick. Nothing is preselected and nothing is cleaned automatically.
+Labyrinth Cleaner gets disk space back on a Mac. It shows what is using your disk, what you can delete, and what each delete costs you, then deletes only what you pick. In the page nothing is preselected, and nothing is ever cleaned automatically.
 
 **The Mac app is coming soon** (a signed, notarized download). Until then, the same engine runs from this repository: `devclean ui` opens the app's page in your browser, and `devclean` is the command-line version. It needs only Python 3 and has no dependencies. The command-line tool is still called `devclean`.
 
