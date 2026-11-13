@@ -77,8 +77,6 @@ The menu bar shows Finder's "available" number, in decimal GB. That number inclu
 
 Building it needs `swiftc`, which comes with Xcode or the Command Line Tools.
 
-When "Clean up…" starts a scan, macOS may ask once whether **DevcleanBar** may access folders such as Documents or Downloads: the scan reads your project folders and measures `~/Downloads`. The question can come back after a reinstall. If you say no, the page warns that it couldn't read a project folder, and that folder's build folders are missing from the list. Running `devclean ui` from Terminal uses Terminal's own access instead.
-
 ## Tiers
 
 | tier | preselected | `--yes` | what |
