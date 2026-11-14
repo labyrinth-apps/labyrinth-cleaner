@@ -310,7 +310,7 @@ Still never offered: a runtime with a running simulator, a running simulator, De
 - `devclean_ui.py` and `ui/index.html`: the local web server and the page. The page is a single HTML file with no build step.
 - `app/`: the Mac app (a Swift package): the window, the menu-bar item, the Trash helper, and `LabyrinthKit` with the logic that is tested.
 - `devclean-launcher`: the command-line entry point inside the app. It runs the app's own Python.
-- `scripts/build_app.sh`: builds, signs, notarizes and publishes the app and its DMG (see Build and release). `scripts/verify_bundle.sh` checks a built bundle: universal binaries, signatures and the embedded Python.
+- `scripts/build_app.sh`: builds, signs, notarizes and publishes the app and its DMG (see Build and release). `scripts/verify_bundle.sh` checks a built bundle: universal binaries, signatures and the embedded Python. Its `--rosetta` option also runs the Intel half of Python under Rosetta; on macOS 27 that makes the system show "App Update Required" for the app, so it is off by default.
 - `app/LabyrinthCleaner.entitlements`: the app's only entitlement, Apple Events (Empty Trash asks Finder).
 - `devclean_menubar.py`: removes the old DevcleanBar (`devclean menubar uninstall`).
 - `tests/`: fixture tests. Every test builds a fake `$HOME` in a temp dir, and simulator data comes from JSON fixtures (`tests/fixtures/real_2026-11-11/` is a real capture from this Mac). The tests never call the real `xcrun`.

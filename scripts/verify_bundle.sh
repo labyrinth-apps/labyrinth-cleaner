@@ -1,19 +1,23 @@
 #!/bin/bash
-# Verify a built app bundle. Usage: scripts/verify_bundle.sh APP [--signed] [--native]
-#   --signed  every Mach-O must carry a Developer ID Application signature with the hardened runtime
-#             and a secure timestamp
-#   --native  skip the universal (x86_64 arm64) check and the Rosetta run (for --debug --sign builds)
+# Verify a built app bundle. Usage: scripts/verify_bundle.sh APP [--signed] [--native] [--rosetta]
+#   --signed   every Mach-O must carry a Developer ID Application signature with the hardened runtime
+#              and a secure timestamp
+#   --native   skip the universal (x86_64 arm64) check (for --debug --sign builds)
+#   --rosetta  also run the embedded Python's x86_64 slice under Rosetta. Off by default: on macOS 27
+#              any Rosetta run inside the app makes the system show "App Update Required" for it.
 # Exits non-zero on the first failure.
 set -euo pipefail
 
-APP_ARG="${1:?usage: verify_bundle.sh APP [--signed] [--native]}"
+APP_ARG="${1:?usage: verify_bundle.sh APP [--signed] [--native] [--rosetta]}"
 shift
 SIGNED=0
 NATIVE=0
+ROSETTA=0
 for opt in "$@"; do
     case "$opt" in
         --signed) SIGNED=1 ;;
         --native) NATIVE=1 ;;
+        --rosetta) ROSETTA=1 ;;
         *) echo "verify_bundle: unknown option: $opt" >&2; exit 2 ;;
     esac
 done
@@ -73,8 +77,8 @@ run_check() {   # $1 = label, rest = optional prefix command (arch -x86_64)
     echo "verify_bundle: embedded python imports OK ($label)"
 }
 run_check native
-if [ "$NATIVE" = 1 ]; then
-    echo "verify_bundle: --native, x86_64 run skipped"
+if [ "$NATIVE" = 1 ] || [ "$ROSETTA" = 0 ]; then
+    echo "verify_bundle: x86_64 run skipped (pass --rosetta to run it)"
 elif arch -x86_64 /usr/bin/true 2>/dev/null; then
     run_check x86_64 arch -x86_64
 else
