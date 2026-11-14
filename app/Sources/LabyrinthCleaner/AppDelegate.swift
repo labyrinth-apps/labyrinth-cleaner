@@ -97,6 +97,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard let server else { return .terminateNow }
+        statusMenu.showQuitting()   // menu Quit and ⌘Q both land here
         server.stop { NSApp.reply(toApplicationShouldTerminate: true) }
         return .terminateLater
     }

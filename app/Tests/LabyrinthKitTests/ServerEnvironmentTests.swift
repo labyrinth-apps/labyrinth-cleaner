@@ -18,7 +18,7 @@ final class ServerEnvironmentTests: XCTestCase {
         let a = serverLaunch(resources: res, fixture: nil)
         XCTAssertEqual(a.python, "/A.app/Contents/Resources/python/bin/python3")
         XCTAssertEqual(a.script, "/A.app/Contents/Resources/core/devclean")
-        XCTAssertEqual(a.arguments, ["-E", "-s", "-X", "utf8", a.script, "ui", "--app"])
+        XCTAssertEqual(a.arguments, ["-E", "-s", "-B", "-X", "utf8", a.script, "ui", "--app"])
         let f = serverLaunch(resources: res, fixture: FixtureOptions(home: "/h", simctl: "/s", fakeDocker: nil))
         XCTAssertEqual(Array(f.arguments.suffix(4)), ["--home", "/h", "--simctl-fixture", "/s"])
         let g = serverLaunch(resources: res, fixture: FixtureOptions(home: "/h", simctl: nil, fakeDocker: "/d"))

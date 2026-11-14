@@ -9,4 +9,4 @@ if [ ! -x "$py" ]; then
 fi
 LABYRINTH_TRASH_HELPER=$(cd "$dir/../../MacOS" && pwd -P)/labyrinth-trash
 export LABYRINTH_TRASH_HELPER
-exec "$py" -E -s -X utf8 "$dir/devclean" "$@"
+exec "$py" -E -s -B -X utf8 "$dir/devclean" "$@"

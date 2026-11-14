@@ -31,11 +31,12 @@ public struct ServerLaunch {
     }
 }
 
-/// [python, "-E", "-s", "-X", "utf8", script, "ui", "--app"] + fixture args
+/// [python, "-E", "-s", "-B", "-X", "utf8", script, "ui", "--app"] + fixture args.
+/// -B: never write bytecode into the bundle (it would break the code signature).
 public func serverLaunch(resources: URL, fixture: FixtureOptions?) -> ServerLaunch {
     let python = resources.appendingPathComponent("python/bin/python3").path
     let script = resources.appendingPathComponent("core/devclean").path
-    var args = ["-E", "-s", "-X", "utf8", script, "ui", "--app"]
+    var args = ["-E", "-s", "-B", "-X", "utf8", script, "ui", "--app"]
     if let f = fixture {
         args += ["--home", f.home]
         if let s = f.simctl { args += ["--simctl-fixture", s] }

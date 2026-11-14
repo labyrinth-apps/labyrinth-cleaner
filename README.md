@@ -6,15 +6,85 @@ Labyrinth Cleaner gets disk space back on a Mac. It shows what is using your dis
 
 The Mac app has a window and a menu-bar item. The window is the page described below, in its own window: scan, tick what you want back, review, clean. The menu bar shows your free disk space and refreshes every minute. It turns amber below 30 GB and red below 15 GB, and one notification fires when free space drops below 15 GB (again only after it has gone back above 20 GB). Its menu opens the window, toggles Open at Login and installs the command line tool. Nothing scans until you open the window.
 
-The app is not downloadable yet: a signed, notarized download is planned. For now, build it from source on a Mac with Xcode or the Command Line Tools:
+The menu bar shows Finder's "available" number, in decimal GB. That number includes purgeable space macOS can free by itself. The window and the command line show strict free space in binary units, the same as `df -h`. So the menu bar usually reads a few GB higher.
+
+## Install
+
+1. Download `Labyrinth-Cleaner-<version>-macOS.dmg` from the [Releases page](https://github.com/labyrinth-apps/labyrinth-cleaner/releases/latest). It is signed with a Developer ID and notarized by Apple. It runs on macOS 13 or later, Apple Silicon or Intel.
+2. Open the DMG and drag **Labyrinth Cleaner** onto **Applications**.
+3. Open it from Applications. macOS asks once whether to open an app downloaded from the internet: choose **Open**.
+
+The app asks for permissions only when it needs them:
+
+- When you scan, macOS asks whether Labyrinth Cleaner may access your **Downloads** folder, and your **Documents** folder if you added a project folder there.
+- The first time free space drops below 15 GB, macOS asks whether it may send **notifications**.
+- The first time you choose **Empty Trash**, macOS asks whether it may control **Finder**.
+
+Updates are checked once a day, and the app asks before installing one (see Updates below). To check the download, run `shasum -a 256 -c Labyrinth-Cleaner-<version>-macOS.dmg.sha256` in the folder with both files.
+
+## Build and release
+
+Build from source on a Mac with Xcode or the Command Line Tools. Every command runs from the repository root.
+
+```sh
+scripts/build_app.sh --debug
+```
+
+This makes a fast, native, ad-hoc signed debug build at `build/Labyrinth Cleaner.app`. Debug builds accept `--fixture-home DIR`, which runs the app against a fake home folder.
+
+```sh
+scripts/build_app.sh --debug --sign
+```
+
+This is the same debug build, signed with the Developer ID and the hardened runtime exactly like a release. Use it to check that signing doesn't stop Python or the Trash helper. It is not notarized and makes no DMG.
+
+```sh
+scripts/build_app.sh --no-notarize
+```
+
+This is a universal release build. It signs everything inside-out with the Developer ID and the hardened runtime, then checks the signature with `codesign` and `scripts/verify_bundle.sh --signed`. It builds the DMG and signs it, but nothing is notarized, so Gatekeeper rejects both. Don't launch a release build to test it: it ignores `--fixture-home` and scans your real home.
 
 ```sh
 scripts/build_app.sh
 ```
 
-This creates `build/Labyrinth Cleaner.app`. Add `--debug` for a faster, single-architecture debug build.
+This is the full release. It does everything `--no-notarize` does, and also:
+- notarizes and staples the app;
+- notarizes and staples the DMG;
+- runs the Gatekeeper checks, including on a quarantined copy;
+- writes the `.sha256`.
 
-The menu bar shows Finder's "available" number, in decimal GB. That number includes purgeable space macOS can free by itself. The window and the command line show strict free space in binary units, the same as `df -h`. So the menu bar usually reads a few GB higher.
+The result is `build/Labyrinth-Cleaner-<version>-macOS.dmg`. The version comes from `VERSION`.
+
+```sh
+scripts/build_app.sh --publish v0.1.0
+```
+
+This does the full release, then publishes it. It generates `appcast.xml` with Sparkle's `generate_appcast`, signed with the key in your login keychain. Then it uploads the DMG, the `.sha256` and `appcast.xml` to the GitHub release `v0.1.0`, creating the release or replacing its files. The tag must match `VERSION`. It refuses to run without `app/sparkle_public_key.txt` and never runs with `--no-notarize`. It never creates the repository or changes its visibility. It needs `gh auth login` once.
+
+Environment variables:
+
+- `LABYRINTH_TEAM_ID`: the Apple team (default `X8BX4XM7S2`).
+- `LABYRINTH_NOTARY_PROFILE`: the notarytool keychain profile (default `labyrinth-notary`).
+- `LABYRINTH_RELEASES_REPO`: where `--publish` uploads (default `labyrinth-apps/labyrinth-cleaner`). The app's update feed always points at the default repository.
+- `LABYRINTH_SKIP_BUILD=1`: with `--publish`, publishes the DMG already in `build/` without building it again.
+
+One-time setup on the build Mac:
+
+1. **The Developer ID certificate.** In Xcode, open **Settings → Accounts**, select the team, then **Manage Certificates… → + → Developer ID Application**. The script finds it by its SHA-1. This command must list it:
+
+   ```sh
+   security find-identity -v -p codesigning | grep "Developer ID Application"
+   ```
+
+2. **The notary profile.** Run this in Terminal. It asks for an app-specific password, which you create at [account.apple.com](https://account.apple.com) under Sign-In and Security.
+
+   ```sh
+   xcrun notarytool store-credentials labyrinth-notary --apple-id YOUR_APPLE_ID --team-id X8BX4XM7S2
+   ```
+
+3. **The DMG tool.** Install Homebrew Python 3.11 with `brew install python@3.11`. The script installs `dmgbuild` into `build/.dmgbuild-venv` by itself.
+4. **The Sparkle key**, for publishing. See "Back up the Sparkle key" below.
 
 ## Updates
 
@@ -158,7 +228,8 @@ Still never offered: a runtime with a running simulator, a running simulator, De
 - `devclean_ui.py` and `ui/index.html`: the local web server and the page. The page is a single HTML file with no build step.
 - `app/`: the Mac app (a Swift package): the window, the menu-bar item, the Trash helper, and `LabyrinthKit` with the logic that is tested.
 - `devclean-launcher`: the command-line entry point inside the app. It runs the app's own Python.
-- `scripts/build_app.sh`: builds `build/Labyrinth Cleaner.app`.
+- `scripts/build_app.sh`: builds, signs, notarizes and publishes the app and its DMG (see Build and release). `scripts/verify_bundle.sh` checks a built bundle: universal binaries, signatures and the embedded Python.
+- `app/LabyrinthCleaner.entitlements`: the app's only entitlement, Apple Events (Empty Trash asks Finder).
 - `devclean_menubar.py`: removes the old DevcleanBar (`devclean menubar uninstall`).
 - `tests/`: fixture tests. Every test builds a fake `$HOME` in a temp dir, and simulator data comes from JSON fixtures (`tests/fixtures/real_2026-11-11/` is a real capture from this Mac). The tests never call the real `xcrun`.
 

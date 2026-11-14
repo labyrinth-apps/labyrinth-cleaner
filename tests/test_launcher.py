@@ -36,7 +36,7 @@ class LauncherTests(unittest.TestCase):
               "print('ARGV', sys.argv[1:])\n"
               "print('HELPER', os.environ.get('LABYRINTH_TRASH_HELPER'))\n", 0o644)
         self.py = os.path.join(contents, "Resources", "python", "bin", "python3")
-        write(self.py, '#!/bin/sh\nexec /usr/bin/python3 "$@"\n')
+        write(self.py, '#!/bin/sh\necho "PYARGS $*"\nexec /usr/bin/python3 "$@"\n')
         self.helper = os.path.join(contents, "MacOS", "labyrinth-trash")
         write(self.helper, "")
         os.makedirs(os.path.join(self.tmp, "bin"))
@@ -55,6 +55,8 @@ class LauncherTests(unittest.TestCase):
         self.assertIn("ARGV ['--dry-run', 'x']", r.stdout)
         self.assertIn("HELPER " + self.helper, r.stdout)
         self.assertIn("FLAGS 1 1 1", r.stdout)
+        # -B: never write bytecode into the (signed) bundle.
+        self.assertIn("PYARGS -E -s -B -X utf8 ", r.stdout)
 
     def test_helper_path_is_normalised(self):
         r = self.run_link()

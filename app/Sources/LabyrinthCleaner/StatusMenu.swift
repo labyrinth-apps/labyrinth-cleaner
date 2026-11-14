@@ -9,6 +9,8 @@ final class StatusMenu: NSObject, NSMenuDelegate, NSMenuItemValidation {
     private let infoItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private let loginItem = NSMenuItem(title: "Open at Login", action: nil, keyEquivalent: "")
     private var timer: Timer?
+    /// Set by showQuitting(); refresh() then leaves the title alone.
+    private var quitting = false
 
     /// Set in fixture runs: nothing here may touch the real login items, folders or notifications.
     var fixture: FixtureOptions?
@@ -65,7 +67,17 @@ final class StatusMenu: NSObject, NSMenuDelegate, NSMenuItemValidation {
         return (free, Int64(total))
     }
 
+    /// Decision 6: while Quit waits for the server to stop, the menu bar reads "Quitting…".
+    func showQuitting() {
+        quitting = true
+        timer?.invalidate()
+        timer = nil
+        statusItem.button?.title = "Quitting…"
+        statusItem.button?.toolTip = "Labyrinth Cleaner is quitting"
+    }
+
     func refresh() {
+        guard !quitting else { return }
         guard let space = readSpace() else {
             statusItem.button?.title = "? GB"
             infoItem.title = "Free space unavailable"
