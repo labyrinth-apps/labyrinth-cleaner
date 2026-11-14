@@ -18,7 +18,7 @@ BIN_DIR="$(cd app && swift build -c "$CONFIG" ${ARCH_ARGS[@]+"${ARCH_ARGS[@]}"} 
 
 APP="$ROOT/build/Labyrinth Cleaner.app"
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/core/ui" "$APP/Contents/Resources/python/bin"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/core/ui"
 
 cp "$BIN_DIR/LabyrinthCleaner" "$BIN_DIR/labyrinth-trash" "$APP/Contents/MacOS/"
 
@@ -31,14 +31,29 @@ cp ui/index.html "$APP/Contents/Resources/core/ui/"
 cp devclean-launcher "$APP/Contents/Resources/core/"
 chmod 755 "$APP/Contents/Resources/core/devclean-launcher"
 
-# Dev shim. Plan 3 replaces it with the embedded interpreter.
-cat > "$APP/Contents/Resources/python/bin/python3" <<'SHIM'
+# Embedded interpreter. Release builds require the real universal Python (fetched and
+# verified by fetch_python.sh); --debug builds use it when already cached, else a shim.
+PY_CACHED="$ROOT/build/python-universal/3.12.16+20261110"
+if [ "$CONFIG" = release ] || { [ -f "$PY_CACHED/.complete" ] && [ -d "$PY_CACHED/python" ]; }; then
+    PY_TREE="$("$ROOT/scripts/fetch_python.sh")"
+    ditto "$PY_TREE" "$APP/Contents/Resources/python"
+else
+    echo "warning: no cached embedded Python; using the dev shim (run scripts/fetch_python.sh to embed it)" >&2
+    mkdir -p "$APP/Contents/Resources/python/bin"
+    cat > "$APP/Contents/Resources/python/bin/python3" <<'SHIM'
 #!/bin/sh
 exec /usr/bin/python3 "$@"
 SHIM
-chmod 755 "$APP/Contents/Resources/python/bin/python3"
+    chmod 755 "$APP/Contents/Resources/python/bin/python3"
+fi
 
 plutil -lint "$APP/Contents/Info.plist"
 codesign --force --deep --sign - "$APP"
+
+if [ "$CONFIG" = release ]; then
+    "$ROOT/scripts/verify_bundle.sh" "$APP"
+else
+    echo "note: --debug build is native-only; skipping verify_bundle.sh (it requires universal binaries)" >&2
+fi
 
 echo "$APP"
