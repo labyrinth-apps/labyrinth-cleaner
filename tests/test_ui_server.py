@@ -538,6 +538,67 @@ class ApiTests(ServerTestCase):
         self.assertTrue(os.path.isfile(dmg))
 
 
+    def test_job_batches_finder_items_and_keeps_helper_results(self):
+        import dataclasses
+        import plistlib
+        apps_root = os.path.join(self.home, ".fixture-root", "Applications")
+        paths = []
+        for name, bid in (("Mine.app", "com.mine"), ('Café "Beta".app', "com.cafe"),
+                          ("Root (v2).app", "com.root")):
+            app = os.path.join(apps_root, name)
+            os.makedirs(os.path.join(app, "Contents"))
+            with open(os.path.join(app, "Contents", "Info.plist"), "wb") as f:
+                plistlib.dump({"CFBundleIdentifier": bid, "CFBundleShortVersionString": "1"}, f)
+            paths.append(app)
+        mine, cafe, root = paths
+        trash = os.path.join(self.home, ".Trash")
+        helper = os.path.join(self.tmp, "fake-trash-helper")
+        with open(helper, "w") as f:
+            f.write(f'#!/bin/sh\nshift 2; mkdir -p "{trash}" && mv "$1" "{trash}/"\n')
+        os.chmod(helper, 0o755)
+        finder_calls = []
+
+        def runner(argv, **kw):
+            if argv and argv[0] == "osascript":
+                finder_calls.append(list(argv))
+                return subprocess.CompletedProcess(argv, 1, "",
+                                                   "execution error: User canceled. (-128)")
+            return REAL_SUBPROCESS_RUN(argv, **kw)
+
+        # Two apps look root-owned (to the scan and the gate alike); none is really touched.
+        real_lstat = os.lstat
+
+        def lstat(path, *a, **kw):
+            st = real_lstat(path, *a, **kw)
+            if isinstance(path, str) and path in (cafe, root):
+                return os.stat_result(tuple(st)[:4] + (0,) + tuple(st)[5:])
+            return st
+
+        srv = self.start(runner=runner)
+        old = time.time() - 400 * 86400
+        srv.env = dataclasses.replace(srv.env, app_metadata=lambda ps: {
+            p: {"last_used": old, "size": 10, "archs": None} for p in ps})
+        keys = ["app:" + p for p in paths]
+        with mock.patch.dict(os.environ, {core.TRASH_HELPER_ENV: helper}), \
+                mock.patch.object(os, "lstat", lstat):
+            p = self.scan()
+            kinds = {r["id"]: r["kind"] for r in p["rows"] if r["id"] in keys}
+            self.assertEqual(kinds, {keys[0]: "trash", keys[1]: "finder-trash",
+                                     keys[2]: "finder-trash"})
+            status, data = self.clean(p["scan_id"], keys)
+            self.assertEqual(status, 200, data)
+            job = self.wait_job(data["job_id"])
+        by_key = {i["key"]: i for i in job["items"]}
+        self.assertEqual(by_key[keys[0]]["status"], "trashed", job)
+        for k in keys[1:]:
+            self.assertEqual((by_key[k]["status"], by_key[k]["message"]),
+                             ("failed", "Cancelled: nothing was moved"))
+        self.assertEqual(finder_calls, [core.FINDER_TRASH_ARGV_HEAD + ["--", cafe, root]])
+        self.assertFalse(os.path.exists(mine))
+        self.assertTrue(os.path.isdir(os.path.join(trash, "Mine.app")))
+        self.assertTrue(os.path.isdir(cafe) and os.path.isdir(root))
+
+
 class LifecycleTests(ServerTestCase):
     def test_idle_shutdown_after_timeout(self):
         srv = ui.UIServer(cfg_for(self.home), fixture_sim(), fixture=True,

@@ -414,5 +414,264 @@ class ScanApps(AppsTestBase):
         self.assertEqual(fresh.key, it.key)
 
 
+
+OTHER_UID = os.getuid() + 1
+
+
+def fake_lstat(uids):
+    """os.lstat that reports the owner in `uids` (path -> uid) instead of the real one."""
+    real = os.lstat
+
+    def lstat(path, *a, **kw):
+        st = real(path, *a, **kw)
+        uid = uids.get(os.fspath(path)) if isinstance(path, (str, os.PathLike)) else None
+        if uid is None:
+            return st
+        return os.stat_result(tuple(st)[:4] + (uid,) + tuple(st)[5:])
+    return lstat
+
+
+class FinderRunner:
+    """Fake osascript: records argv; `delete` removes the given paths (no Trash involved)."""
+
+    def __init__(self, rc=0, stderr="", delete=None):
+        self.calls, self.rc, self.stderr, self.delete = [], rc, stderr, delete
+
+    def __call__(self, argv, **kw):
+        self.calls.append(list(argv))
+        paths = argv[argv.index("--") + 1:] if "--" in argv else []
+        for p in paths if self.delete is None else self.delete:
+            shutil.rmtree(p)
+        return core.subprocess.CompletedProcess(argv, self.rc, "", self.stderr)
+
+
+class AppGate(AppsTestBase):
+    """The gate and the two removal routes, on fixture homes only."""
+
+    def setUp(self):
+        super().setUp()
+        self.base = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.base, ignore_errors=True)
+        self.meta = {}
+        self.uid = os.getuid()
+        self.trash = os.path.join(self.home, ".Trash")
+        self.helper_log = os.path.join(self.base, "helper.log")
+        self.helper = os.path.join(self.base, "fake-trash-helper")
+        with open(self.helper, "w") as f:
+            f.write("#!/bin/sh\n"
+                    f'for a in "$@"; do printf "%s\\n" "$a" >> "{self.helper_log}"; done\n'
+                    f'shift 2; mkdir -p "{self.trash}" && mv "$1" "{self.trash}/"\n')
+        os.chmod(self.helper, 0o755)
+        patcher = mock.patch.dict(os.environ, {core.TRASH_HELPER_ENV: self.helper})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def env(self):
+        return core.Env.fake(app_metadata=lambda paths: {
+            p: self.meta.get(p, {"last_used": NOW - 300 * DAY, "size": 10, "archs": None})
+            for p in paths}, user_uid=lambda: self.uid)
+
+    def old_app(self, parent, name, bundle_id, version="1"):
+        return make_app(parent, name, bundle_id, CFBundleShortVersionString=version)
+
+    def item(self, path):
+        items, _ = apps.scan_apps(self.cfg, self.env(), NOW)
+        return next(i for i in items if i.key == "app:" + path)
+
+    def validate(self, it):
+        core.validate_item(it, self.cfg, env=self.env(), now=NOW)
+
+    def assert_changed(self, it):
+        with self.assertRaises(core.UnsafeTarget) as cm:
+            self.validate(it)
+        self.assertEqual(str(cm.exception), core.SITUATION_CHANGED)
+
+    def test_gate_accepts_unchanged_app(self):
+        a = self.old_app(self.R, "A.app", "com.a")
+        self.validate(self.item(a))
+        self.uid = OTHER_UID
+        it = self.item(a)
+        self.assertEqual(it.kind, "finder-trash")
+        self.validate(it)
+
+    def test_gate_refuses_changed_owner_inode_bundle_or_version(self):
+        self.uid = OTHER_UID          # Finder items: an owner change keeps the kind
+        a = self.old_app(self.R, "A.app", "com.a")
+        it = self.item(a)
+        with mock.patch.object(os, "lstat", fake_lstat({a: 0})):
+            self.assert_changed(it)
+        forged = core.Item(**{**it.__dict__, "meta": {**it.meta, "uid": 0}})
+        self.assert_changed(forged)
+        # Owner changed under a helper item: the kind would change, never the route.
+        self.uid = os.getuid()
+        mine = self.item(a)
+        with mock.patch.object(os, "lstat", fake_lstat({a: 0})):
+            self.assert_changed(mine)
+
+        self.uid = OTHER_UID
+        b = self.old_app(self.R, "B.app", "com.b")
+        it = self.item(b)
+        os.rename(b, os.path.join(self.base, "B-old.app"))
+        self.old_app(self.R, "B.app", "com.b")
+        self.assertNotEqual(os.lstat(b).st_ino, it.meta["ino"])
+        self.assert_changed(it)
+
+        c = self.old_app(self.R, "C.app", "com.c")
+        it = self.item(c)
+        self.old_app(self.R, "C.app", "com.c.other")
+        self.assert_changed(it)
+
+        d = self.old_app(self.R, "D.app", "com.d", version="1")
+        it = self.item(d)
+        self.old_app(self.R, "D.app", "com.d", version="2")
+        self.assert_changed(it)
+
+    def test_gate_refuses_symlink_and_too_deep(self):
+        real = self.old_app(self.base, "Real.app", "com.real")
+        link = os.path.join(self.R, "Link.app")
+        os.symlink(real, link)
+        vendor = os.path.join(self.base, "Vendor")
+        os.makedirs(vendor)
+        in_vendor = self.old_app(vendor, "V.app", "com.v")
+        os.symlink(vendor, os.path.join(self.R, "VendorLink"))
+        via_link = os.path.join(self.R, "VendorLink", "V.app")
+        os.makedirs(os.path.join(self.R, "x", "y"))
+        deep = self.old_app(os.path.join(self.R, "x", "y"), "D.app", "com.deep")
+        outside = self.old_app(self.home, "Out.app", "com.out")
+        not_app = os.path.join(self.R, "Folder")
+        os.makedirs(not_app)
+        for path, st_path in ((link, real), (via_link, in_vendor), (deep, deep),
+                              (outside, outside), (not_app, not_app)):
+            st = os.lstat(st_path)
+            for kind in ("trash", "finder-trash"):
+                it = core.Item(key="app:" + path, category="Applications", label="x",
+                               tier=core.REVIEW, kind=kind, path=path,
+                               meta={"bundle_id": "com.x", "version": "1",
+                                     "uid": st.st_uid, "ino": st.st_ino})
+                with self.subTest(path=path, kind=kind):
+                    with self.assertRaises(core.UnsafeTarget):
+                        core.validate_trash(it, self.cfg, self.env(), NOW)
+                    with self.assertRaises(core.UnsafeTarget):
+                        self.validate(it)
+        self.assertTrue(all(os.path.isdir(p) for p in (real, in_vendor, deep, outside)))
+
+    def test_finder_trash_needs_app_key(self):
+        a = self.old_app(self.R, "A.app", "com.a")
+        it = self.item(a)
+        forged = core.Item(**{**it.__dict__, "key": "download:A.app", "kind": "finder-trash"})
+        with self.assertRaises(core.UnsafeTarget):
+            core.validate_trash(forged, self.cfg, self.env(), NOW)
+
+    def test_helper_route_for_owned_app(self):
+        a = self.old_app(os.path.join(self.H), "Figma (v88.1).app", "com.figma")
+        it = self.item(a)
+        self.assertEqual(it.kind, "trash")
+        res = core.execute_item(it, self.cfg, runner=core.subprocess.run, env=self.env(), now=NOW)
+        self.assertEqual(res, (True, "ok"))
+        with open(self.helper_log) as f:
+            self.assertEqual(f.read().splitlines(), ["--home", self.home, a])
+        self.assertFalse(os.path.exists(a))
+        self.assertTrue(os.path.isdir(os.path.join(self.trash, "Figma (v88.1).app")))
+
+    def finder_pair(self):
+        self.uid = OTHER_UID
+        os.makedirs(os.path.join(self.R, "Vendor"))
+        a = self.old_app(self.R, 'Café "Beta".app', "com.cafe")
+        b = self.old_app(os.path.join(self.R, "Vendor"), "B (v2).app", "com.b")
+        items = [self.item(a), self.item(b)]
+        self.assertEqual([i.kind for i in items], ["finder-trash", "finder-trash"])
+        return a, b, items
+
+    def test_finder_batch_one_call_args_not_source(self):
+        a, b, items = self.finder_pair()
+        run = FinderRunner()
+        res = core.execute_finder_batch(items, self.cfg, runner=run, env=self.env(), now=NOW)
+        self.assertEqual(res, [(True, "ok"), (True, "ok")])
+        self.assertEqual(len(run.calls), 1)
+        argv = run.calls[0]
+        self.assertEqual(argv, core.FINDER_TRASH_ARGV_HEAD + ["--", a, b])
+        self.assertEqual(argv[0], "osascript")
+        head = "\n".join(core.FINDER_TRASH_ARGV_HEAD)
+        for name in ("Café", "Beta", "Vendor", self.home):
+            self.assertNotIn(name, head)
+        self.assertIn('tell application "Finder" to delete', head)
+        self.assertIn("with timeout of 3600 seconds", head)
+        self.assertIn("on run argv", head)
+
+    def test_finder_batch_cancelled_maps_message(self):
+        a, b, items = self.finder_pair()
+        run = FinderRunner(rc=1, stderr="execution error: User canceled. (-128)", delete=[])
+        res = core.execute_finder_batch(items, self.cfg, runner=run, env=self.env(), now=NOW)
+        self.assertEqual(res, [(False, "Cancelled: nothing was moved")] * 2)
+        self.assertTrue(os.path.isdir(a) and os.path.isdir(b))
+
+    def test_finder_batch_error_messages(self):
+        for err, msg in (("(-1743)", core.FINDER_APPS_DENIED),
+                         ("(-1712)", "Finder took too long. Scan again to see what moved."),
+                         ("execution error: odd (-10000)", "execution error: odd (-10000)")):
+            with self.subTest(err=err):
+                a = self.old_app(self.R, "E.app", "com.e")
+                self.uid = OTHER_UID
+                run = FinderRunner(rc=1, stderr=err + "\n", delete=[])
+                res = core.execute_finder_batch([self.item(a)], self.cfg, runner=run,
+                                                env=self.env(), now=NOW)
+                self.assertEqual(res, [(False, msg)])
+        self.assertTrue(core.FINDER_APPS_DENIED.startswith(
+            "macOS didn't let Labyrinth Cleaner ask Finder to move apps to the Trash."))
+
+    def test_finder_batch_partial(self):
+        a, b, items = self.finder_pair()
+        run = FinderRunner(delete=[a])
+        res = core.execute_finder_batch(items, self.cfg, runner=run, env=self.env(), now=NOW)
+        self.assertEqual(res, [(True, "ok"), (False, "Still in place: " + b)])
+
+    def test_finder_batch_leaves_refused_items_out(self):
+        a, b, items = self.finder_pair()
+        self.old_app(os.path.join(self.R, "Vendor"), "B (v2).app", "com.b", version="9")
+        run = FinderRunner()
+        res = core.execute_finder_batch(items, self.cfg, runner=run, env=self.env(), now=NOW)
+        self.assertEqual(res, [(True, "ok"), (False, "REFUSED: " + core.SITUATION_CHANGED)])
+        self.assertEqual(run.calls, [core.FINDER_TRASH_ARGV_HEAD + ["--", a]])
+        self.assertTrue(os.path.isdir(b))
+        # A helper item never goes to Finder, and nothing valid means no call at all.
+        self.uid = os.getuid()
+        mine = self.item(b)
+        run = FinderRunner()
+        res = core.execute_finder_batch([mine], self.cfg, runner=run, env=self.env(), now=NOW)
+        self.assertFalse(res[0][0])
+        self.assertTrue(res[0][1].startswith("REFUSED: "))
+        self.assertEqual(run.calls, [])
+
+    def test_finder_trash_refused_without_helper_and_in_fixture_mode(self):
+        a, b, items = self.finder_pair()
+        run = FinderRunner()
+        env = {k: v for k, v in os.environ.items() if k != core.TRASH_HELPER_ENV}
+        with mock.patch.dict(os.environ, env, clear=True):
+            res = core.execute_item(items[0], self.cfg, runner=run, env=self.env(), now=NOW)
+            self.assertEqual(res, (False, core.TRASH_REFUSAL))
+            self.assertEqual(core.execute_finder_batch(items, self.cfg, runner=run,
+                                                       env=self.env(), now=NOW),
+                             [(False, core.TRASH_REFUSAL)] * 2)
+        res = core.execute_item(items[0], self.cfg, runner=core.fixture_runner, env=self.env(),
+                                now=NOW)
+        self.assertEqual(res, (False, "REFUSED: fixture mode never runs osascript"))
+        self.assertEqual(run.calls, [])
+        self.assertTrue(os.path.isdir(a) and os.path.isdir(b))
+
+    def test_execute_item_finder_trash_uses_batch(self):
+        a, b, items = self.finder_pair()
+        run = FinderRunner()
+        res = core.execute_item(items[1], self.cfg, runner=run, env=self.env(), now=NOW)
+        self.assertEqual(res, (True, "ok"))
+        self.assertEqual(run.calls, [core.FINDER_TRASH_ARGV_HEAD + ["--", b]])
+
+    def test_execution_order_finder_last(self):
+        def it(key, kind):
+            return core.Item(key=key, category="x", label=key, tier=core.REVIEW, kind=kind)
+        finder, empty, trash = (it("app:/F.app", "finder-trash"), it("empty-trash", "empty-trash"),
+                                it("download:a", "trash"))
+        self.assertEqual(core.execution_order([finder, empty, trash]), [empty, trash, finder])
+
+
 if __name__ == "__main__":
     unittest.main()

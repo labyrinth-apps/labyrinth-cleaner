@@ -61,6 +61,8 @@ SITUATION_CHANGED = "Situation changed: scan again"
 DOWNLOAD_RESTORE = "Moved to the Trash. You can Put Back."
 TRASH_HELPER_ENV = "LABYRINTH_TRASH_HELPER"
 TRASH_REFUSAL = "REFUSED: use the app to move these to the Trash"
+# Kinds that move to the Trash: through the helper, or through Finder (apps others own).
+TRASH_KINDS = ("trash", "finder-trash")
 INSTALLER_EXTS = (".dmg", ".pkg", ".mpkg", ".xip")
 INSTALLER_MIN_AGE_DAYS = 14
 ZIP_INSTALLER_MIN_SIZE = 50 * 1024 ** 2
@@ -1311,13 +1313,14 @@ def execution_order(items: list) -> list:
 
     `empty-trash` first (it would otherwise empty what the Trash moves just put there),
     then `simctl delete unavailable` (deleting a runtime first would make more simulators
-    unavailable than were listed). The rest keep their order, except that within a family
+    unavailable than were listed), and `finder-trash` last, after the helper's Trash moves
+    (they go to Finder in one request). The rest keep their order, except that within a family
     its members are reordered among the positions the family already occupies:
     simulators before runtimes, runtimes by version ascending, Gradle versions ascending,
     DeviceSupport entries oldest first per model.
     """
     def head(i):
-        return 0 if i.kind == "empty-trash" else 1 if i.kind == "simctl-unavailable" else 2
+        return {"empty-trash": 0, "simctl-unavailable": 1, "finder-trash": 3}.get(i.kind, 2)
     ordered = sorted(items, key=head)
     ordered = _refill(
         ordered, lambda i: "sim" if i.kind in ("simdevice", "runtime") else None,
@@ -1613,12 +1616,14 @@ def rescan_item(it: Item, cfg: Config, sim: Optional[SimctlProvider] = None,
 
 # ---------------------------------------------------------------- gate
 
-def validate_trash(it: Item, cfg: Config, env: Env, now: float) -> None:
+def validate_trash(it: Item, cfg: Config, env: Env, now: float,
+                   fresh: Optional[Item] = None) -> None:
     """Gate for items that move to the Trash. Raises UnsafeTarget.
 
     Downloads: a regular file (no symlink) inside ~/Downloads, at most two levels deep,
     with the inode, size and mtime the scan saw.
     Archives: a `.xcarchive` folder exactly at Archives/<date>/<name>.xcarchive.
+    Applications (`app:` keys, kinds `trash` and `finder-trash`): see _validate_app.
     The rule itself was already re-applied by rescan_item with the fresh clock.
     """
     path = it.path
@@ -1626,6 +1631,11 @@ def validate_trash(it: Item, cfg: Config, env: Env, now: float) -> None:
         raise UnsafeTarget(f"not a clean absolute path: {path!r}")
     if os.path.islink(path) or os.path.realpath(path) != path:
         raise UnsafeTarget(f"is a symlink or resolves elsewhere: {path}")
+    if it.key.startswith("app:"):
+        _validate_app(it, cfg, env, now, fresh)
+        return
+    if it.kind == "finder-trash":
+        raise UnsafeTarget(f"only applications go to Finder: {it.key}")
     if it.key.startswith("download:"):
         root = cfg.p("Downloads")
         if os.path.islink(root) or os.path.realpath(root) != root:
@@ -1655,6 +1665,49 @@ def validate_trash(it: Item, cfg: Config, env: Env, now: float) -> None:
             raise UnsafeTarget(f"not at Archives/<date>/<name>.xcarchive: {path}")
         return
     raise UnsafeTarget(f"not something that moves to the Trash: {it.key}")
+
+
+def _validate_app(it: Item, cfg: Config, env: Env, now: float, fresh: Optional[Item]) -> None:
+    """An application bundle: a real `.app` directory (no symlink at any level) directly in
+    one of cfg.app_roots or one folder below, with the owner and inode the scan saw, and the
+    bundle ID and version the scan saw (from a fresh scan). A change is SITUATION_CHANGED:
+    the route (helper or Finder) was fixed at scan time and never switches."""
+    path = it.path
+    if it.key != "app:" + path or it.kind not in ("trash", "finder-trash"):
+        raise UnsafeTarget(f"not an application item: {it.key}")
+    if not path.endswith(".app") or os.path.basename(path) == ".app":
+        raise UnsafeTarget(f"not an .app bundle: {path}")
+    for root in cfg.app_roots or ():
+        if not is_within(path, root) or path == root:
+            continue
+        parts = os.path.relpath(path, root).split(os.sep)
+        if len(parts) > 2:
+            raise UnsafeTarget(f"too deep inside {root}: {path}")
+        if os.path.realpath(root) != root:
+            raise UnsafeTarget(f"{root} is a symlink")
+        # Each level below the root: no symlinks (realpath == path also covers it).
+        for i in range(len(parts)):
+            if os.path.islink(os.path.join(root, *parts[:i + 1])):
+                raise UnsafeTarget(f"is a symlink or resolves elsewhere: {path}")
+        break
+    else:
+        raise UnsafeTarget(f"not in an Applications folder: {path}")
+    try:
+        st = os.lstat(path)
+    except OSError:
+        raise UnsafeTarget(f"{path} is gone")
+    if not stat.S_ISDIR(st.st_mode):
+        raise UnsafeTarget(f"not a folder: {path}")
+    seen = (it.meta.get("uid"), it.meta.get("ino"))
+    if None in seen or seen != (st.st_uid, st.st_ino):
+        raise UnsafeTarget(SITUATION_CHANGED)
+    if fresh is None:
+        fresh = rescan_item(it, cfg, None, env, now)
+        if fresh is None:
+            raise UnsafeTarget(f"{it.label} is gone")
+    keys = ("bundle_id", "version", "uid", "ino")
+    if any(fresh.meta.get(k) != it.meta.get(k) for k in keys):
+        raise UnsafeTarget(SITUATION_CHANGED)
 
 
 def validate_item(it: Item, cfg: Config, sim: Optional[SimctlProvider] = None,
@@ -1697,8 +1750,8 @@ def validate_item(it: Item, cfg: Config, sim: Optional[SimctlProvider] = None,
         if it.argv != ["xcrun", "simctl", "delete", "unavailable"]:
             raise UnsafeTarget("unexpected simctl command")
         return
-    if it.kind == "trash":
-        validate_trash(it, cfg, env, now)
+    if it.kind in ("trash", "finder-trash"):
+        validate_trash(it, cfg, env, now, fresh)
         return
     if it.kind == "empty-trash":
         if it.key != "empty-trash" or it.argv != _general().TRASH_ARGV:
@@ -1715,6 +1768,27 @@ EMPTY_TRASH_DENIED = ("macOS didn't let Labyrinth Cleaner ask Finder to empty th
                       "Allow it in System Settings \u2192 Privacy & Security \u2192 Automation, "
                       "then try again.")
 EMPTY_TRASH_BUSY = "Finder is still emptying the Trash. Scan again when it's done."
+
+# Asks Finder to move the apps given as arguments (after "--") to the Trash, in ONE delete
+# request, so macOS asks for a password at most once. The paths are arguments only, never
+# part of the script text.
+FINDER_TRASH_ARGV_HEAD = [
+    "osascript",
+    "-e", "on run argv",
+    "-e", "set targets to {}",
+    "-e", "repeat with p in argv",
+    "-e", "set end of targets to (POSIX file (contents of p))",
+    "-e", "end repeat",
+    "-e", "with timeout of 3600 seconds",
+    "-e", 'tell application "Finder" to delete targets',
+    "-e", "end timeout",
+    "-e", "end run",
+]
+FINDER_CANCELLED = "Cancelled: nothing was moved"
+FINDER_APPS_DENIED = ("macOS didn't let Labyrinth Cleaner ask Finder to move apps to the Trash. "
+                      "Allow it in System Settings \u2192 Privacy & Security \u2192 Automation, "
+                      "then try again.")
+FINDER_TIMED_OUT = "Finder took too long. Scan again to see what moved."
 
 
 def trash_helper() -> Optional[str]:
@@ -1735,7 +1809,10 @@ def execute_item(it: Item, cfg: Config, sim: Optional[SimctlProvider] = None,
     Items of kind "docker" run through env.docker, never `runner`.
     Items of kind "trash" are never rm'd: they go through the trash helper named by
     LABYRINTH_TRASH_HELPER, and are refused when there is none.
+    Items of kind "finder-trash" go to Finder through execute_finder_batch.
     """
+    if it.kind == "finder-trash":
+        return execute_finder_batch([it], cfg, runner=runner, env=env, now=now, sim=sim)[0]
     if it.kind == "trash":
         helper = trash_helper()
         if helper is None:
@@ -1770,3 +1847,53 @@ def execute_item(it: Item, cfg: Config, sim: Optional[SimctlProvider] = None,
                 return False, EMPTY_TRASH_BUSY
         return False, err or f"exit {r.returncode}"
     return True, "ok"
+
+
+def _finder_error(r) -> str:
+    err = (r.stderr or "").strip()
+    if "(-128)" in err:
+        return FINDER_CANCELLED
+    if "(-1743)" in err:
+        return FINDER_APPS_DENIED
+    if "(-1712)" in err:
+        return FINDER_TIMED_OUT
+    return err or f"exit {r.returncode}"
+
+
+def execute_finder_batch(items: list, cfg: Config, runner: Callable = subprocess.run,
+                         env: Optional[Env] = None, now: Optional[float] = None, *,
+                         sim: Optional[SimctlProvider] = None) -> list:
+    """Move `finder-trash` apps to the Trash with ONE Finder request. One (ok, message) per
+    item, in order. Each item is validated first; refused ones are left out of the request.
+    An app counts as moved only when it is gone from its path after the request."""
+    if trash_helper() is None:
+        return [(False, TRASH_REFUSAL)] * len(items)
+    if runner is fixture_runner:
+        return [(False, "REFUSED: fixture mode never runs osascript")] * len(items)
+    env = env if env is not None else default_env(cfg)
+    results, send = [None] * len(items), []
+    for n, it in enumerate(items):
+        if it.kind != "finder-trash":
+            results[n] = (False, f"REFUSED: not a Finder item: {it.label}")
+            continue
+        try:
+            validate_item(it, cfg, sim, env, now)
+        except UnsafeTarget as e:
+            results[n] = (False, f"REFUSED: {e}")
+            continue
+        send.append(n)
+    if not send:
+        return results
+    argv = FINDER_TRASH_ARGV_HEAD + ["--"] + [items[n].path for n in send]
+    try:
+        r = runner(argv, capture_output=True, text=True)
+        rc, err = r.returncode, (_finder_error(r) if r.returncode != 0 else "")
+    except (OSError, subprocess.SubprocessError) as e:
+        rc, err = 1, str(e) or "osascript failed"
+    for n in send:
+        path = items[n].path
+        if not os.path.lexists(path):
+            results[n] = (True, "ok")
+        else:
+            results[n] = (False, err if rc != 0 else f"Still in place: {path}")
+    return results

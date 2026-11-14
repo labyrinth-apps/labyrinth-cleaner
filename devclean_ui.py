@@ -261,26 +261,44 @@ class UIServer:
             self._job_thread.start()
         return 200, {"job_id": job_id}
 
+    @staticmethod
+    def _finish(entry, it, ok, msg):
+        entry["message"] = "" if ok else msg
+        if ok:
+            entry["status"] = "trashed" if it.kind in core.TRASH_KINDS else "done"
+        else:
+            entry["status"] = "refused" if msg.startswith("REFUSED: ") else "failed"
+
     def _run_job(self, job, chosen, cfg):
+        pairs = list(zip(job["items"], chosen))
         try:
-            for entry, it in zip(job["items"], chosen):
+            for entry, it in pairs:
                 with self._lock:
+                    if entry["status"] != "pending":
+                        continue          # already done in the Finder request below
                     if self._cancel.is_set():
                         entry["status"] = "cancelled"
                         entry["message"] = "Stopped before this one started"
                         continue
-                    entry["status"] = "running"
+                    # All Finder apps go in one request: at most one password prompt.
+                    batch = ([(e, i) for e, i in pairs
+                              if i.kind == "finder-trash" and e["status"] == "pending"]
+                             if it.kind == "finder-trash" else [(entry, it)])
+                    for e, _ in batch:
+                        e["status"] = "running"
                 try:
-                    ok, msg = core.execute_item(it, cfg, self.sim, runner=self.runner,
-                                                env=self.env)
-                except Exception as e:
-                    ok, msg = False, str(e)
-                with self._lock:
-                    entry["message"] = "" if ok else msg
-                    if ok:
-                        entry["status"] = "trashed" if it.kind == "trash" else "done"
+                    if it.kind == "finder-trash":
+                        results = core.execute_finder_batch(
+                            [i for _, i in batch], cfg, runner=self.runner, env=self.env,
+                            sim=self.sim)
                     else:
-                        entry["status"] = "refused" if msg.startswith("REFUSED: ") else "failed"
+                        results = [core.execute_item(it, cfg, self.sim, runner=self.runner,
+                                                     env=self.env)]
+                except Exception as e:
+                    results = [(False, str(e))] * len(batch)
+                with self._lock:
+                    for (e, i), (ok, msg) in zip(batch, results):
+                        self._finish(e, i, ok, msg)
         finally:
             with self._lock:
                 job["state"] = "done"
