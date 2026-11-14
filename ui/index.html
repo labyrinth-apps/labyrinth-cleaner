@@ -38,10 +38,104 @@
   .banner .bsub{color:var(--muted);font-size:12.5px;margin-top:2px}
   .banner .bfail{color:var(--check);font-size:12.5px;margin-top:6px}
   .banner .x{margin-left:auto;cursor:pointer;color:var(--muted);background:none;border:0;font-size:16px}
-  .welcome{padding:28px 26px;max-width:640px}
-  .welcome h2{margin:0 0 12px;font-size:20px}
-  .welcome p{color:var(--muted);font-size:14px;line-height:1.55;margin:0 0 12px}
-  .welcome .primary{margin-top:8px}
+
+  /* ---------------------------------------------------------------- welcome: the labyrinth
+     Everything here is scoped to .lw so it can't leak into the rest of the page. */
+  .lw{--lw-ink:#121110;--lw-text:#ece5d8;--lw-muted:#a69e90;--lw-faint:#8f887b;--lw-brass:#d4a24c;
+      --lw-rule:rgba(236,229,216,.12);--lw-wall:rgba(236,229,216,.5);
+      --lw-serif:ui-serif,"New York",Georgia,serif;--lw-mono:ui-monospace,"SF Mono",Menlo,monospace;
+      position:fixed;inset:0;z-index:40;overflow:auto;color:var(--lw-text);
+      background:var(--lw-ink) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='240'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 .93 0 0 0 0 .9 0 0 0 0 .85 0 0 0 .055 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+      font:15px/1.5 -apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;transition:opacity .22s ease}
+  .lw.lw-out{opacity:0}
+  .lw-grid{position:relative;box-sizing:border-box;min-height:100%;max-width:1400px;margin:0 auto;display:grid;
+           grid-template-columns:minmax(0,1fr) minmax(300px,400px);align-items:center;
+           column-gap:clamp(44px,7vw,124px);padding:clamp(28px,6vh,72px) clamp(28px,5vw,88px)}
+  .lw-map{margin:0;display:flex;flex-direction:column;align-items:center;gap:18px}
+  .lw-plate{position:relative;width:min(66vh,100%);aspect-ratio:1;container-type:inline-size}
+  .lw-maze{position:absolute;inset:0;width:100%;height:100%;overflow:visible}
+  .lw-centre{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+             pointer-events:none;text-align:center;opacity:0;animation:lw-fade .7s ease .45s forwards}
+  .lw-free{font:400 clamp(26px,10.5cqw,72px)/1 var(--lw-serif);letter-spacing:-.02em;font-variant-numeric:lining-nums;white-space:nowrap}
+  .lw-free small{font-size:.5em;letter-spacing:0;margin-left:.12em}
+  .lw-free.lw-plain{font-size:clamp(24px,7cqw,46px);font-style:italic}
+  .lw-of{margin-top:clamp(5px,1.6cqw,12px);font:500 clamp(8.5px,2.1cqw,11px)/1 var(--lw-mono);letter-spacing:clamp(.5px,.34cqw,1.8px);text-transform:uppercase;color:var(--lw-faint)}
+  .lw-cap{max-width:34em;font:italic 14px/1.45 var(--lw-serif);color:var(--lw-faint);text-align:center;opacity:0;animation:lw-fade .6s ease 1.25s forwards}
+
+  .lw-maze .lw-bezel{fill:none;stroke:var(--lw-rule);stroke-width:1}
+  .lw-maze .lw-tick{stroke:rgba(236,229,216,.2);stroke-width:1}
+  .lw-maze .lw-tick.lw-major{stroke:rgba(236,229,216,.42)}
+  .lw-maze .lw-bezel,.lw-maze .lw-tick{opacity:0;animation:lw-fade .9s ease forwards}
+  .lw-maze .lw-wall{fill:none;stroke:var(--lw-wall);stroke-width:1.7;stroke-linecap:round;
+                    stroke-dasharray:1 1.02;stroke-dashoffset:1;opacity:0;
+                    animation:lw-draw var(--t,.7s) cubic-bezier(.55,0,.25,1) var(--d,0s) forwards}
+  .lw-maze .lw-wall.lw-edge{stroke:rgba(236,229,216,.78);stroke-width:2}
+  .lw-maze .lw-path{fill:none;stroke:var(--lw-brass);stroke-width:2.6;stroke-linecap:round;stroke-linejoin:round;
+                    stroke-dasharray:1 1.02;stroke-dashoffset:1;opacity:0;
+                    animation:lw-draw 1s cubic-bezier(.45,0,.2,1) .95s forwards}
+  .lw-maze .lw-end{fill:var(--lw-brass);opacity:0;animation:lw-fade .3s ease 1.9s forwards}
+  .lw-maze .lw-gate{stroke:var(--lw-brass);stroke-width:2;stroke-linecap:round;opacity:0;animation:lw-fade .4s ease .8s forwards}
+
+  .lw-notes{max-width:400px}
+  .lw-notes > *{opacity:0;animation:lw-fade .55s ease calc(1.3s + var(--i,0) * 70ms) forwards}
+  .lw-title{margin:0;font:400 clamp(34px,3.6vw,46px)/1.04 var(--lw-serif);letter-spacing:-.018em}
+  .lw-lede{margin:12px 0 0;font:italic 19px/1.4 var(--lw-serif);color:var(--lw-muted)}
+  .lw-list{list-style:none;margin:30px 0 0;padding:0;border-bottom:1px solid var(--lw-rule)}
+  .lw-list li{display:grid;grid-template-columns:30px minmax(0,1fr);align-content:start;gap:0 8px;padding:15px 0 16px;border-top:1px solid var(--lw-rule);
+              font-size:13.5px;line-height:1.55;color:var(--lw-muted)}
+  .lw-list b{color:var(--lw-text);font-weight:600}
+  .lw-num{font:italic 17px/1.3 var(--lw-serif);color:var(--lw-faint);padding-top:1px}
+  .lw-act{display:flex;align-items:center;gap:16px;margin-top:28px;flex-wrap:wrap}
+  .lw-go{appearance:none;-webkit-appearance:none;border:1px solid var(--lw-brass);background:var(--lw-brass);color:var(--lw-ink);
+         font:600 15px/1 -apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;letter-spacing:.005em;
+         padding:13px 20px 13px 22px;border-radius:3px;cursor:pointer;transition:background .15s ease,color .15s ease}
+  .lw-go span{display:inline-block;margin-left:6px;transition:transform .2s ease}
+  .lw-go:hover{background:#e0b25e}
+  .lw-go:hover span{transform:translateX(3px)}
+  .lw-go:active{background:#c4923f}
+  .lw-go:focus-visible{outline:2px solid var(--lw-text);outline-offset:3px}
+  .lw-go:disabled{cursor:default;background:transparent;color:var(--lw-brass)}
+  .lw-key{font:500 11px/1 var(--lw-mono);letter-spacing:.14em;text-transform:uppercase;color:var(--lw-faint)}
+  .lw-key kbd{font:inherit;border:1px solid var(--lw-rule);border-bottom-width:2px;border-radius:3px;padding:3px 6px;margin-left:4px;color:var(--lw-muted)}
+  .lw-fine{margin:14px 0 0;font-size:12.5px;color:var(--lw-faint)}
+
+  .lw-lead{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible}
+  .lw-lead path{fill:none;stroke:var(--lw-brass);stroke-opacity:.55;stroke-width:1;stroke-dasharray:2 4;opacity:0;animation:lw-fade .6s ease 1.85s forwards}
+  .lw-lead circle{fill:var(--lw-brass);opacity:0;animation:lw-fade .4s ease 2.1s forwards}
+
+  @keyframes lw-draw{0%{opacity:1;stroke-dashoffset:1}100%{opacity:1;stroke-dashoffset:0}}
+  @keyframes lw-fade{to{opacity:1}}
+
+  @media (max-width:980px){
+    .lw-grid{grid-template-columns:minmax(0,1fr);row-gap:16px;align-content:center;justify-items:center;padding:22px 36px 24px}
+    .lw-map{gap:10px;width:100%}
+    .lw-plate{width:min(38vh,340px,100%)}
+    .lw-cap{font-size:13px}
+    .lw-notes{max-width:600px;width:100%}
+    .lw-title{font-size:34px}
+    .lw-lede{margin-top:6px}
+    .lw-list{margin-top:16px}
+    .lw-act{margin-top:18px}
+    .lw-fine{margin-top:10px}
+    .lw-lead{display:none}
+  }
+  @media (max-width:980px) and (max-height:700px){
+    .lw-cap{display:none}
+  }
+  @media (max-width:980px) and (min-height:701px){
+    .lw-plate{width:min(44vh,380px,100%)}
+  }
+  @media (max-width:980px) and (min-width:760px){
+    .lw-list{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));column-gap:22px;border-bottom:0}
+    .lw-list li{grid-template-columns:1fr;border-top:1px solid var(--lw-rule);padding:10px 0 0;font-size:13px;line-height:1.5}
+    .lw-notes{max-width:840px}
+    .lw-num{margin-bottom:2px}
+  }
+  @media (prefers-reduced-motion:reduce){
+    .lw,.lw *,.lw-go span{animation:none!important;transition:none!important}
+    .lw-centre,.lw-cap,.lw-notes > *,.lw-maze *,.lw-lead *{opacity:1!important}
+    .lw-maze .lw-wall,.lw-maze .lw-path{stroke-dashoffset:0}
+  }
   .loading{display:flex;align-items:center;gap:14px;padding:26px 22px}
   .spinner{width:22px;height:22px;border-radius:50%;border:3px solid rgba(255,255,255,.12);border-top-color:var(--safe);animation:spin 0.9s linear infinite;flex:none}
   @keyframes spin{to{transform:rotate(360deg)}}
@@ -232,14 +326,32 @@
     <button class="x" id="bClose" aria-label="Dismiss">✕</button>
   </div>
 
-  <div class="card welcome" id="welcome" hidden>
-    <h2>Welcome to Labyrinth Cleaner</h2>
-    <p>It finds space you can get back: caches, old logs, developer build folders and old installers in Downloads. Nothing is deleted until you pick it and confirm.</p>
-    <p>macOS may ask once whether Labyrinth Cleaner can open your Downloads and Documents folders. It reads them to measure what's there. If you say no, those folders are skipped.</p>
-    <p>If you choose Empty Trash, macOS asks once whether it may control Finder. That's how the Trash gets emptied.</p>
-    <p>It never asks for Full Disk Access or your password.</p>
-    <button class="primary" id="welcomeGo" style="margin-left:0">Scan my Mac</button>
-  </div>
+  <section class="lw" id="welcome" hidden aria-labelledby="lwTitle">
+    <div class="lw-grid" id="lwGrid">
+      <figure class="lw-map">
+        <div class="lw-plate">
+          <svg class="lw-maze" id="lwMaze" viewBox="0 0 640 640" role="img" aria-label="Disk map"></svg>
+          <div class="lw-centre" aria-hidden="true"><div class="lw-free" id="lwFree"></div><div class="lw-of" id="lwOf"></div></div>
+        </div>
+        <figcaption class="lw-cap" id="lwCap">The walls are the space in use. The openings are what's free.</figcaption>
+      </figure>
+      <div class="lw-notes">
+        <h2 class="lw-title" id="lwTitle" style="--i:0">Labyrinth Cleaner</h2>
+        <p class="lw-lede" style="--i:1">Find space you can safely get back.</p>
+        <ol class="lw-list" style="--i:2">
+          <li><span class="lw-num" aria-hidden="true">i.</span><div><b>Downloads and Documents.</b> macOS may ask once whether Labyrinth Cleaner can open these folders. It reads them to measure what's there. If you say no, they're skipped.</div></li>
+          <li><span class="lw-num" aria-hidden="true">ii.</span><div><b>Finder, for Empty Trash.</b> If you choose Empty Trash, macOS asks once whether Labyrinth Cleaner may control Finder. That's how the Trash gets emptied.</div></li>
+          <li><span class="lw-num" aria-hidden="true">iii.</span><div><b>No Full Disk Access.</b> It never asks for Full Disk Access or your password.</div></li>
+        </ol>
+        <div class="lw-act" style="--i:3">
+          <button class="lw-go" id="welcomeGo">Begin scan<span aria-hidden="true">→</span></button>
+          <span class="lw-key" aria-hidden="true">or press<kbd>return</kbd></span>
+        </div>
+        <p class="lw-fine" style="--i:4">Nothing is deleted until you pick it and confirm.</p>
+      </div>
+      <svg class="lw-lead" id="lwLead" aria-hidden="true"><path id="lwLeadPath" d=""/><circle id="lwLeadDot" r="2.5" cx="-9" cy="-9"/></svg>
+    </div>
+  </section>
 
   <div class="card loading" id="loading" hidden>
     <div class="spinner"></div>
@@ -933,22 +1045,217 @@ for (const c of $("filters").querySelectorAll(".chip[data-f]")) c.addEventListen
 for (const t of $("tiers").children) t.addEventListener("click", () => setFilter(t.dataset.g));
 $("segchip").addEventListener("click", () => { S.seg = null; renderMap(); renderFilters(); renderGroups(); });
 
-// The first run in the Mac app shows a welcome card instead of scanning.
+// ---------------------------------------------------------------- welcome
+// The first run in the Mac app shows the welcome instead of scanning: a map of the disk
+// drawn as a circular labyrinth. The share of each ring that is wall follows used/total,
+// so a full disk is a tight maze and a roomy one is open. All browser-only calls
+// (matchMedia, createElementNS, resize) live in here: the page tests run without a DOM.
+const SVG_NS = "http://www.w3.org/2000/svg";
+function svgEl(parent, tag, attrs) {
+  const e = document.createElementNS(SVG_NS, tag);
+  for (const k in attrs) e.setAttribute(k, attrs[k]);
+  parent.append(e);
+  return e;
+}
+
+// Decimal units, one decimal, like Finder (the scan itself reports binary units).
+function finderSize(n, digits) {
+  const g = n / 1e9;
+  return g >= 1000 ? (g / 1000).toFixed(1) + " TB" : g.toFixed(digits) + " GB";
+}
+
+const LW = { C: 320, R: 272, CORE: 126, RINGS: 8, ENTRY: 104 };   // angles: degrees clockwise from 12 o'clock
+
+function lwPolar(r, deg) {
+  const a = (deg - 90) * Math.PI / 180;
+  return [+(LW.C + r * Math.cos(a)).toFixed(2), +(LW.C + r * Math.sin(a)).toFixed(2)];
+}
+function lwArc(r, from, to, dir) {      // a move along the ring, without the leading M
+  const [x, y] = lwPolar(r, to);
+  return `A${r} ${r} 0 ${Math.abs(to - from) > 180 ? 1 : 0} ${dir > 0 ? 1 : 0} ${x} ${y}`;
+}
+const lwNorm = a => ((a % 360) + 360) % 360;
+
+function drawMaze(svg, disk) {
+  const known = !!(disk && disk.total > 0 && disk.free >= 0 && disk.free <= disk.total);
+  const used = known ? 1 - disk.free / disk.total : 0.5;
+  let seed = known ? Math.round(disk.total / 1e9) * 7919 : 4242;   // one disk, one maze; used/total sets the walls
+  const rand = () => {                                // mulberry32: same numbers, same maze
+    seed = (seed + 0x6D2B79F5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  const { R, CORE, RINGS, ENTRY } = LW;
+  const step = (R - CORE) / (RINGS - 1);
+  const ring = k => CORE + k * step;                  // ring 0 is the core's wall, RINGS-1 the outside
+  const mid = j => ring(j) + step / 2;                // corridor j runs between ring j and ring j+1
+  while (svg.firstChild) svg.removeChild(svg.firstChild);
+
+  // Bezel: a hairline and a degree scale, as on a chart.
+  svgEl(svg, "circle", { class: "lw-bezel", cx: LW.C, cy: LW.C, r: R + 18 });
+  for (let a = 0; a < 360; a += 5) {
+    const major = a % 30 === 0;
+    const [x1, y1] = lwPolar(R + 18, a), [x2, y2] = lwPolar(R + (major ? 30 : 24), a);
+    svgEl(svg, "line", { class: "lw-tick" + (major ? " lw-major" : ""), x1, y1, x2, y2 });
+  }
+
+  // The way in: from the outside opening, along each corridor to the next ring's door.
+  const doors = new Array(RINGS);
+  doors[RINGS - 1] = ENTRY;
+  const runs = [];                                    // per corridor: [from, dir, length]
+  let cur = ENTRY, dir = rand() < 0.5 ? 1 : -1;
+  let [px, py] = lwPolar(R + 40, ENTRY);
+  let d = `M${px} ${py}`;
+  [px, py] = lwPolar(mid(RINGS - 2), ENTRY);
+  d += `L${px} ${py}`;
+  for (let j = RINGS - 2; j >= 0; j--) {
+    let len;
+    if (j === 0) {                                    // enter the core from above, clear of the figures
+      const target = (rand() - 0.5) * 50;
+      len = ((target - cur) * dir % 360 + 360) % 360;
+      if (len < 40) len += 360;
+      if (len > 300) { dir = -dir; len = 360 - len; }
+    } else {
+      len = 38 + rand() * 92;
+      if (rand() < 0.7) dir = -dir;
+    }
+    const to = cur + dir * len;
+    d += lwArc(mid(j), cur, to, dir);
+    runs[j] = [cur, dir, len];
+    [px, py] = lwPolar(j === 0 ? CORE - 18 : mid(j - 1), to);
+    d += `L${px} ${py}`;
+    doors[j] = lwNorm(to);
+    cur = to;
+  }
+
+  // Walls: each ring is wall for about used/total of its length, with some variation.
+  const clear = 20;                                   // px of opening the path needs
+  for (let k = RINGS - 1; k >= 0; k--) {
+    const r = ring(k);
+    const cover = Math.min(0.95, Math.max(0.3, used + (rand() - 0.5) * 0.14));
+    const doorW = clear / r * 180 / Math.PI;
+    const gaps = [[doors[k], doorW]];                 // [centre, width] in degrees
+    let budget = Math.max(0, (1 - cover) * 360 - doorW);
+    const n = Math.max(1, Math.round(budget / 34));
+    for (let g = 0, tries = 0; g < n && tries < 80; tries++) {
+      const w = Math.max(doorW * 0.8, budget / (n - g) * (0.6 + rand() * 0.8));
+      const c = rand() * 360;
+      const near = gaps.some(([gc, gw]) => {
+        const dd = Math.abs(lwNorm(c - gc + 180) - 180);
+        return dd < (w + gw) / 2 + 7;
+      });
+      if (near) continue;
+      gaps.push([c, w]); budget -= w; g++;
+    }
+    gaps.sort((a, b) => lwNorm(a[0]) - lwNorm(b[0]));
+    for (let i = 0; i < gaps.length; i++) {
+      const [c0, w0] = gaps[i], [c1, w1] = gaps[(i + 1) % gaps.length];
+      const from = lwNorm(c0) + w0 / 2;
+      let to = lwNorm(c1) - w1 / 2;
+      if (i === gaps.length - 1 || to <= from) to += 360;
+      if (to - from < 1.5) continue;
+      const [x0, y0] = lwPolar(r, from);
+      svgEl(svg, "path", { class: "lw-wall" + (k === 0 || k === RINGS - 1 ? " lw-edge" : ""),
+        d: `M${x0} ${y0}` + lwArc(r, from, to, 1), pathLength: 1,
+        style: `--d:${((RINGS - 1 - k) * 0.06).toFixed(2)}s` });
+    }
+  }
+
+  // Cross walls in the corridors, never across the way in.
+  for (let j = 0; j < RINGS - 1; j++) {
+    const [from, dr, len] = runs[j];
+    const count = 1 + Math.round(used * 3 + rand() * 1.4);
+    const margin = 9;
+    for (let s = 0, tries = 0; s < count && tries < 60; tries++) {
+      const a = rand() * 360;
+      const t = lwNorm((a - from) * dr);
+      if (t <= len + margin || t >= 360 - margin) continue;
+      const [x1, y1] = lwPolar(ring(j), a), [x2, y2] = lwPolar(ring(j + 1), a);
+      svgEl(svg, "path", { class: "lw-wall", d: `M${x1} ${y1}L${x2} ${y2}`, pathLength: 1,
+        style: `--d:${(0.5 + rand() * 0.3).toFixed(2)}s;--t:.35s` });
+      s++;
+    }
+  }
+
+  svgEl(svg, "path", { class: "lw-path", d, pathLength: 1 });
+  svgEl(svg, "circle", { class: "lw-end", cx: px, cy: py, r: 4.5 });
+  // Brass marks either side of the opening, like a gate on a plan.
+  for (const side of [-1, 1]) {
+    const a = ENTRY + side * (clear / R * 180 / Math.PI) / 2;
+    const [x1, y1] = lwPolar(R - 6, a), [x2, y2] = lwPolar(R + 6, a);
+    svgEl(svg, "line", { class: "lw-gate", x1, y1, x2, y2 });
+  }
+  return known;
+}
+
+// A dotted leader from the maze's opening to the button, as on a map. Wide layout only.
+function placeLeader() {
+  const grid = $("lwGrid"), maze = $("lwMaze"), go = $("welcomeGo"), path = $("lwLeadPath"), dot = $("lwLeadDot");
+  if ($("welcome").hidden || getComputedStyle($("lwLead")).display === "none") return;
+  const g = grid.getBoundingClientRect(), m = maze.getBoundingClientRect(), b = go.getBoundingClientRect();
+  const scale = m.width / 640;
+  const [ox, oy] = lwPolar(LW.R + 40, LW.ENTRY);
+  const x0 = m.left - g.left + ox * scale, y0 = m.top - g.top + oy * scale;
+  const x2 = b.left - g.left - 12, y2 = b.top - g.top + b.height / 2;
+  const xm = Math.max(x0 + 16, (m.right - g.left + (b.left - g.left)) / 2);
+  path.setAttribute("d", `M${x0.toFixed(1)} ${y0.toFixed(1)}H${xm.toFixed(1)}V${y2.toFixed(1)}H${x2.toFixed(1)}`);
+  dot.setAttribute("cx", x2.toFixed(1));
+  dot.setAttribute("cy", y2.toFixed(1));
+}
+
+function showWelcome(disk) {
+  const known = drawMaze($("lwMaze"), disk);
+  if (known) {
+    const free = finderSize(disk.free, 1);
+    const [num, unit] = free.split(" ");
+    $("lwFree").textContent = num;
+    const u = document.createElement("small");
+    u.textContent = unit;
+    $("lwFree").append(u);
+    $("lwOf").textContent = "Free of " + finderSize(disk.total, 0);
+    $("lwMaze").setAttribute("aria-label", `Disk map: ${free} free of ${finderSize(disk.total, 0)}`);
+  } else {
+    $("lwFree").textContent = "Your disk";
+    $("lwFree").classList.add("lw-plain");
+    $("lwCap").hidden = true;                         // drawn from a neutral 50%, not from the disk
+    $("lwMaze").setAttribute("aria-label", "Disk map");
+  }
+  $("welcome").hidden = false;
+  $("welcomeGo").focus({ preventScroll: true });
+  placeLeader();
+  window.addEventListener("resize", placeLeader);
+  document.addEventListener("keydown", welcomeKey);
+}
+
+// Return starts the scan from anywhere on the welcome; on the button itself it's a native click.
+function welcomeKey(e) {
+  if (e.key !== "Enter" || e.repeat || e.metaKey || e.ctrlKey || e.altKey) return;
+  if ($("welcome").hidden || $("welcomeGo").disabled || e.target === $("welcomeGo")) return;
+  e.preventDefault();
+  $("welcomeGo").click();
+}
+
 async function start() {
-  let welcome = false;
+  let welcome = false, disk = null;
   try {
     const res = await api("GET", "/api/settings");
     welcome = res.status === 200 && !!(res.data && res.data.welcome);
+    disk = res.data && res.data.disk;
   } catch (e) { /* no settings: just scan */ }
   if (!welcome) return scan();
   $("sub").textContent = "Welcome";
   $("rescan").hidden = true;
-  $("welcome").hidden = false;
-  $("welcomeGo").focus();
+  showWelcome(disk);
 }
 $("welcomeGo").addEventListener("click", async () => {
+  if ($("welcomeGo").disabled) return;
   $("welcomeGo").disabled = true;
   try { await api("POST", "/api/settings/welcome-done", {}); } catch (e) { /* shown again next time */ }
+  document.removeEventListener("keydown", welcomeKey);
+  window.removeEventListener("resize", placeLeader);
+  $("welcome").classList.add("lw-out");
+  if (!matchMedia("(prefers-reduced-motion: reduce)").matches) await new Promise(r => setTimeout(r, 220));
   $("welcome").hidden = true;
   $("rescan").hidden = false;
   scan();

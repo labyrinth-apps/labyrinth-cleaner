@@ -182,7 +182,18 @@ class UIServer:
         return {"project_folders": list(cfg.project_roots),
                 "auto_project_folders": report.auto_project_folders(cfg),
                 "fixed": self.fixed_roots,
-                "welcome": self.app_mode and not core.load_settings(cfg.home).get("welcome_done")}
+                "welcome": self.app_mode and not core.load_settings(cfg.home).get("welcome_done"),
+                "disk": self.disk(cfg)}
+
+    @staticmethod
+    def disk(cfg: core.Config):
+        """Free and total bytes of the volume holding home, as the scan reports them.
+        One statvfs call: nothing under home is read. None if it can't be measured."""
+        try:
+            du = shutil.disk_usage(cfg.home)
+        except OSError:
+            return None
+        return {"free": du.free, "total": du.total}
 
     def welcome_done(self) -> tuple:
         with self._lock:

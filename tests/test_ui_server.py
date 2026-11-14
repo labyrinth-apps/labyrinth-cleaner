@@ -388,8 +388,10 @@ class ApiTests(ServerTestCase):
         status, data, _ = self.req("GET", "/api/settings")
         self.assertEqual(status, 200, data)
         dev = os.path.join(self.home, "Developer")
+        disk = data.pop("disk")
         self.assertEqual(data, {"project_folders": [dev], "auto_project_folders": [dev],
                                 "fixed": False, "welcome": False})
+        self.assertEqual(set(disk), {"free", "total"})
         self.assertEqual(self.req("GET", "/api/settings", token=False)[0], 403)
 
     def test_add_project_folder_then_rescan_shows_it(self):
@@ -955,6 +957,14 @@ class AppModeTests(ServerTestCase):
         self.assertIs(saved["welcome_done"], True)
         self.assertEqual(saved["project_folders"], [self.home])   # other keys kept
         self.assertEqual(saved["other"], 1)
+
+    def test_settings_report_disk_free_and_total(self):
+        self.start(app_mode=True)
+        disk = self.req("GET", "/api/settings")[1]["disk"]
+        for k in ("free", "total"):
+            self.assertIs(type(disk[k]), int, k)
+            self.assertGreater(disk[k], 0, k)
+        self.assertLessEqual(disk["free"], disk["total"])
 
     def test_welcome_false_for_non_app_server(self):
         self.start()
