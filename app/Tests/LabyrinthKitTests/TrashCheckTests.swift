@@ -290,10 +290,87 @@ final class TrashCheckTests: XCTestCase {
         let path = base + "/" + nfc + "/Downloads/x.dmg"
         let homeNFD = base + "/" + nfd
         XCTAssertEqual(Array(path.utf8).count, Array((homeNFD + "/Downloads/x.dmg").utf8).count - 1)
-        switch checkTrashable(path: path, home: homeNFD) {
+        switch checkTrashable(path: path, home: homeNFD, isRealHome: false) {
         case .success: XCTFail("home with different bytes must not match")
         case .failure(let r): XCTAssertTrue(r.message.contains("inside"), r.message)
         }
         XCTAssertTrue(fm.fileExists(atPath: path))
+    }
+
+    // MARK: Applications
+
+    func check(_ path: String, isRealHome: Bool = false, uid: uid_t = getuid()) -> Result<TrashTarget, TrashRefusal> {
+        checkTrashable(path: path, home: home, isRealHome: isRealHome, uid: uid)
+    }
+
+    func assertFailure(_ r: Result<TrashTarget, TrashRefusal>, contains: String? = nil,
+                       file: StaticString = #filePath, line: UInt = #line) {
+        switch r {
+        case .success(let t): XCTFail("expected a refusal, got \(t)", file: file, line: line)
+        case .failure(let e):
+            if let c = contains { XCTAssertTrue(e.message.contains(c), e.message, file: file, line: line) }
+        }
+    }
+
+    func testApplicationInHomeApplications() throws {
+        try mkdir("Applications/Figma (v88.1).app")
+        XCTAssertEqual(try check(p("Applications/Figma (v88.1).app")).get(), .application)
+    }
+
+    func testApplicationOneFolderDeep() throws {
+        try mkdir("Applications/Vendor/Tool.app")
+        XCTAssertEqual(try check(p("Applications/Vendor/Tool.app")).get(), .application)
+    }
+
+    func testApplicationTwoFoldersDeepRefused() throws {
+        try mkdir("Applications/a/b/Tool.app")
+        assertFailure(check(p("Applications/a/b/Tool.app")), contains: "not an application bundle")
+    }
+
+    func testApplicationSymlinkRefused() throws {
+        try mkdir("Applications")
+        try mkdir("elsewhere/Real.app")
+        try fm.createSymbolicLink(atPath: p("Applications/Link.app"), withDestinationPath: p("elsewhere/Real.app"))
+        assertFailure(check(p("Applications/Link.app")), contains: "symlink")
+    }
+
+    func testApplicationInSymlinkedFolderRefused() throws {
+        try mkdir("Applications")
+        try mkdir("elsewhere/Real.app")
+        try fm.createSymbolicLink(atPath: p("Applications/Folder"), withDestinationPath: p("elsewhere"))
+        assertFailure(check(p("Applications/Folder/Real.app")), contains: "symlink")
+    }
+
+    func testApplicationNotDotAppRefused() throws {
+        try mkdir("Applications/Tool")
+        assertFailure(check(p("Applications/Tool")), contains: "not an application bundle")
+    }
+
+    func testApplicationFileRefused() throws {
+        try mkfile("Applications/X.app")
+        assertFailure(check(p("Applications/X.app")), contains: "not an application bundle")
+    }
+
+    func testApplicationOtherOwnerRefused() throws {
+        try mkdir("Applications/Tool.app")
+        assertFailure(check(p("Applications/Tool.app"), uid: getuid() + 1), contains: "not owned by you")
+    }
+
+    func testFixtureRootOnlyForFixtureHomes() throws {
+        try mkdir(".fixture-root/Applications/A.app")
+        let path = p(".fixture-root/Applications/A.app")
+        XCTAssertEqual(try check(path, isRealHome: false).get(), .application)
+        assertFailure(check(path, isRealHome: true))
+    }
+
+    func testSystemApplicationsOnlyForRealHome() {
+        assertFailure(check("/Applications/Nope.app", isRealHome: false))
+    }
+
+    func testApplicationMovesIntoFixtureTrash() throws {
+        try mkdir("Applications/Tool.app")
+        let r = run(p("Applications/Tool.app"))
+        XCTAssertEqual(r.code, 0, r.message)
+        XCTAssertTrue(fm.fileExists(atPath: p(".Trash/Tool.app")))
     }
 }

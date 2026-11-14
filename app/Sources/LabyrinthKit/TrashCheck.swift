@@ -1,7 +1,7 @@
 import Foundation
 import Darwin
 
-public enum TrashTarget: Equatable { case downloadsFile, archive }
+public enum TrashTarget: Equatable { case downloadsFile, archive, application }
 public struct TrashRefusal: Error, Equatable { public let message: String }
 
 /// `realpath(3)` as a String; nil if the path does not resolve.
@@ -19,6 +19,12 @@ private func lstatMode(_ bytes: [UInt8]) -> mode_t? {
     var st = stat()
     guard lstat(cstr(bytes), &st) == 0 else { return nil }
     return st.st_mode & S_IFMT
+}
+
+private func lstatOwner(_ bytes: [UInt8]) -> uid_t? {
+    var st = stat()
+    guard lstat(cstr(bytes), &st) == 0 else { return nil }
+    return st.st_uid
 }
 
 private func realpathBytes(_ bytes: [UInt8]) -> [UInt8]? {
@@ -40,23 +46,39 @@ private func cleanComponents(_ bytes: [UInt8]) -> [[UInt8]]? {
 
 private func b(_ s: String) -> [UInt8] { Array(s.utf8) }
 
-/// Mirrors devclean_core's REVIEW rules. lstat (no-follow) on every component below `home`.
+/// Mirrors devclean_core's REVIEW rules. lstat (no-follow) on every component below `home`
+/// (below `/` for the system Applications folder, which only the real home may use).
 /// Every comparison and every syscall uses the raw bytes of `path`.
-public func checkTrashable(path: String, home: String) -> Result<TrashTarget, TrashRefusal> {
+public func checkTrashable(path: String, home: String, isRealHome: Bool,
+                           uid: uid_t = getuid()) -> Result<TrashTarget, TrashRefusal> {
     func refuse(_ why: String) -> Result<TrashTarget, TrashRefusal> {
         .failure(TrashRefusal(message: why))
     }
     let pathBytes = b(path)
     guard let homeParts = cleanComponents(b(home)) else { return refuse("not a clean absolute home: \(home)") }
     guard let pathParts = cleanComponents(pathBytes) else { return refuse("not a clean absolute path: \(path)") }
-    guard pathParts.count > homeParts.count, Array(pathParts.prefix(homeParts.count)) == homeParts else {
-        return refuse("not inside the home folder: \(path)")
-    }
-    let rel = Array(pathParts.dropFirst(homeParts.count))
+    let systemApps = [b("Applications")]
+    let inSystemApps = isRealHome && pathParts.count > 1 && Array(pathParts.prefix(1)) == systemApps
+    let inHome = pathParts.count > homeParts.count && Array(pathParts.prefix(homeParts.count)) == homeParts
+    guard inSystemApps || inHome else { return refuse("not inside the home folder: \(path)") }
+    // Components that are lstat-ed, and the bytes of the folder they hang off.
+    let baseParts = inSystemApps ? [] : homeParts
+    let rel = Array(pathParts.dropFirst(baseParts.count))
+
+    // Application roots, relative to `/`: every root is checked against the full path.
+    var appRoots: [[[UInt8]]] = [homeParts + [b("Applications")]]
+    appRoots.append(isRealHome ? systemApps : homeParts + [b(".fixture-root"), b("Applications")])
 
     let target: TrashTarget
     let wantMode: mode_t
-    if rel[0] == b("Downloads") && (rel.count == 2 || rel.count == 3) {
+    if let root = appRoots.first(where: { pathParts.count > $0.count && Array(pathParts.prefix($0.count)) == $0 }) {
+        let depth = pathParts.count - root.count
+        guard depth == 1 || depth == 2, pathParts.last!.count > 4, pathParts.last!.suffix(4) == b(".app")[...] else {
+            return refuse("not an application bundle: \(path)")
+        }
+        target = .application
+        wantMode = S_IFDIR
+    } else if rel[0] == b("Downloads") && (rel.count == 2 || rel.count == 3) {
         target = .downloadsFile
         wantMode = S_IFREG
     } else if rel.count == 6, Array(rel.prefix(4)) == ["Library", "Developer", "Xcode", "Archives"].map(b),
@@ -64,11 +86,11 @@ public func checkTrashable(path: String, home: String) -> Result<TrashTarget, Tr
         target = .archive
         wantMode = S_IFDIR
     } else {
-        return refuse("not a Downloads file or an Xcode archive: \(path)")
+        return refuse("not a Downloads file, an Xcode archive or an application bundle: \(path)")
     }
 
     // Walk the path's own bytes: the string checked is the string acted on.
-    var cur = Array(pathBytes.prefix(1 + homeParts.reduce(0) { $0 + $1.count + 1 } - 1))
+    var cur = Array(pathBytes.prefix(baseParts.reduce(0) { $0 + $1.count + 1 }))
     for (i, comp) in rel.enumerated() {
         cur += [slash] + comp
         let shown = String(decoding: cur, as: UTF8.self)
@@ -77,9 +99,14 @@ public func checkTrashable(path: String, home: String) -> Result<TrashTarget, Tr
         if i < rel.count - 1 {
             if mode != S_IFDIR { return refuse("not a folder: \(shown)") }
         } else if mode != wantMode {
-            return refuse(target == .downloadsFile ? "not a regular file: \(shown)" : "not an .xcarchive folder: \(shown)")
+            switch target {
+            case .downloadsFile: return refuse("not a regular file: \(shown)")
+            case .archive: return refuse("not an .xcarchive folder: \(shown)")
+            case .application: return refuse("not an application bundle: \(shown)")
+            }
         }
     }
+    if target == .application, lstatOwner(pathBytes) != uid { return refuse("not owned by you: \(path)") }
     // Mirrors the core's `realpath(path) != path` refusal.
     guard let real = realpathBytes(pathBytes), real == pathBytes else {
         return refuse("resolves elsewhere: \(path)")
@@ -98,7 +125,7 @@ public func runTrashHelper(arguments: [String], realHome: String,
         return (2, "usage: --home does not resolve: \(arguments[1])")
     }
     let path = arguments[2]
-    if case .failure(let refusal) = checkTrashable(path: path, home: home) {
+    if case .failure(let refusal) = checkTrashable(path: path, home: home, isRealHome: home == realHome) {
         return (3, "REFUSED: \(refusal.message)")
     }
     if home == realHome {
