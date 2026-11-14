@@ -118,7 +118,19 @@ final class StatusMenu: NSObject, NSMenuDelegate, NSMenuItemValidation {
             switch service.status {
             case .enabled: try service.unregister()
             case .requiresApproval: SMAppService.openSystemSettingsLoginItems()
-            default: try service.register()
+            default:
+                // A login item registered from a DMG or a translocated copy points at a path that vanishes.
+                if let blocker = loginItemBlocker(bundlePath: AppLocation.bundlePath,
+                                                  volumeIsReadOnly: AppLocation.volumeIsReadOnly) {
+                    let alert = NSAlert()
+                    alert.messageText = "Can't turn on Open at Login yet"
+                    alert.informativeText = blocker
+                    NSApp.activate(ignoringOtherApps: true)
+                    alert.runModal()
+                    loginItem.state = .off
+                    return
+                }
+                try service.register()
             }
         } catch {
             let alert = NSAlert()

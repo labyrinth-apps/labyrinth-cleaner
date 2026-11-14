@@ -58,10 +58,13 @@ DMG="$BUILD_DIR/Labyrinth-Cleaner-$VERSION-macOS.dmg"
 VOLNAME="Labyrinth Cleaner"
 ENTITLEMENTS="$ROOT/app/LabyrinthCleaner.entitlements"
 SU_KEY_FILE="$ROOT/app/sparkle_public_key.txt"
+FEED_URL="https://github.com/$RELEASES_REPO/releases/latest/download/appcast.xml"
 
 # The Sparkle public key with all whitespace removed ("" when the file is missing).
 SU_KEY=""
 [ -f "$SU_KEY_FILE" ] && SU_KEY="$(tr -d '[:space:]' < "$SU_KEY_FILE")"
+# An Ed25519 public key is 32 bytes: 44 base64 characters ending in one '='.
+key_shape_ok() { [[ "$1" =~ ^[A-Za-z0-9+/]{43}=$ ]]; }
 
 # Everything --publish needs is checked before building, so it never fails after a notarization.
 if [ -n "$PUBLISH_TAG" ]; then
@@ -69,14 +72,24 @@ if [ -n "$PUBLISH_TAG" ]; then
   Create the key once with Sparkle's generate_keys (from the SwiftPM artifact's bin/), then:
     generate_keys -p > app/sparkle_public_key.txt
   and run this again. A release without it could never update."
-    # An Ed25519 public key is 32 bytes: 44 base64 characters ending in one '='.
-    [[ "$SU_KEY" =~ ^[A-Za-z0-9+/]{43}=$ ]] \
+    key_shape_ok "$SU_KEY" \
         || die "app/sparkle_public_key.txt does not hold a Sparkle EdDSA public key (expected 44 base64 characters from 'generate_keys -p')"
     [[ "$PUBLISH_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]] || die "--publish tag must look like vX.Y.Z, got '$PUBLISH_TAG'"
     [ "$PUBLISH_TAG" = "v$VERSION" ] || die "--publish $PUBLISH_TAG does not match VERSION ($VERSION)"
+    # The feed the app will be built with must be this repo's (a SKIP_BUILD publish checks the
+    # feed inside the DMG instead, in publish()).
+    if [ "$SKIP_BUILD" != 1 ]; then
+        template_feed="$(plutil -extract SUFeedURL raw -o - "$ROOT/app/Info.plist" 2>/dev/null || true)"
+        [ "$template_feed" = "$FEED_URL" ] || die "app/Info.plist's SUFeedURL ($template_feed) is not $FEED_URL.
+  The app would look for updates somewhere other than where --publish uploads them."
+    fi
     command -v gh >/dev/null || die "--publish needs the GitHub CLI (gh)"
-    [ "$RELEASES_REPO" = "$DEFAULT_RELEASES_REPO" ] \
-        || warn "publishing to $RELEASES_REPO, but the app's feed (SUFeedURL) points at $DEFAULT_RELEASES_REPO"
+    gh auth status >/dev/null 2>&1 || die "gh is not logged in: run 'gh auth login' first"
+    # Sparkle and the README's download link fetch release assets without logging in.
+    visibility="$(gh repo view "$RELEASES_REPO" --json visibility -q .visibility 2>&1)" \
+        || die "cannot read $RELEASES_REPO with gh: $visibility"
+    [ "$visibility" = PUBLIC ] || die "$RELEASES_REPO is $visibility, not PUBLIC. Updates and downloads need a public releases repo.
+  Make it public on GitHub yourself (this script never changes visibility), then run this again."
 fi
 [ "$SKIP_BUILD" != 1 ] || [ -n "$PUBLISH_TAG" ] || die "LABYRINTH_SKIP_BUILD=1 only goes with --publish"
 
@@ -101,6 +114,8 @@ attach_readonly() {
     local out
     out="$(hdiutil attach -readonly -nobrowse -noautoopen -mountpoint "$MOUNTED" "$1" 2>&1)" \
         || die "could not attach $1 read-only: $out"
+    # A DMG already open in Finder can attach without showing up here.
+    [ -d "$MOUNTED/$(basename "$APP")" ] || die "could not read the app inside $1 — eject it in Finder and try again"
 }
 
 # Signs with the Developer ID identity and the hardened runtime. Never --deep: callers sign inside-out.
@@ -131,9 +146,13 @@ build_bundle() {
     mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/core/ui"
     cp "$bin_dir/LabyrinthCleaner" "$bin_dir/labyrinth-trash" "$APP/Contents/MacOS/"
 
-    build="$(git rev-list --count HEAD)"
+    build="$("$ROOT/scripts/build_number.sh" "$VERSION")"
     su_key="$SU_KEY"
     [ -n "$su_key" ] || [ -z "$PUBLISH_TAG" ] || die "--publish needs the Sparkle public key in app/sparkle_public_key.txt"
+    if [ -n "$su_key" ] && ! key_shape_ok "$su_key"; then
+        warn "!!! app/sparkle_public_key.txt is not a Sparkle EdDSA public key (expected 44 base64 characters from 'generate_keys -p'). SUPublicEDKey is left out, so UPDATES ARE OFF in this build. !!!"
+        su_key=""
+    fi
     sed -e "s/@VERSION@/$VERSION/" -e "s/@BUILD@/$build/" -e "s|@SU_PUBLIC_KEY@|$su_key|" app/Info.plist > "$APP/Contents/Info.plist"
     if [ -z "$su_key" ]; then
         /usr/libexec/PlistBuddy -c "Delete :SUPublicEDKey" "$APP/Contents/Info.plist"
@@ -278,7 +297,7 @@ gatekeeper_checks() {
     # The app exactly as shipped: inside the quarantined DMG, with the Finder flags dmgbuild sets.
     attach_readonly "$qdmg"
     gatekeeper_accepts -t exec "$MOUNTED/$(basename "$APP")"
-    hdiutil detach "$MOUNTED" -quiet >/dev/null
+    hdiutil detach "$MOUNTED" -quiet >/dev/null || true   # the EXIT trap force-detaches if this fails
     rm -rf "$q"
 }
 
@@ -296,10 +315,13 @@ publish() {
 
     # The app inside the DMG must carry this exact Sparkle key, or the release could never update
     # (a DMG built before the key was added would otherwise slip through LABYRINTH_SKIP_BUILD=1).
-    local shipped_key
+    local shipped_key shipped_feed info
     attach_readonly "$DMG"
-    shipped_key="$(plutil -extract SUPublicEDKey raw -o - "$MOUNTED/$(basename "$APP")/Contents/Info.plist" 2>/dev/null || true)"
+    info="$MOUNTED/$(basename "$APP")/Contents/Info.plist"
+    shipped_key="$(plutil -extract SUPublicEDKey raw -o - "$info" 2>/dev/null || true)"
+    shipped_feed="$(plutil -extract SUFeedURL raw -o - "$info" 2>/dev/null || true)"
     hdiutil detach "$MOUNTED" -quiet >/dev/null || true
+    [ "$shipped_feed" = "$FEED_URL" ] || die "the app in $DMG looks for updates at '$shipped_feed', not $FEED_URL: rebuild it with the matching SUFeedURL"
     [ -n "$shipped_key" ] || die "the app in $DMG has no SUPublicEDKey (built without app/sparkle_public_key.txt): rebuild it"
     [ "$shipped_key" = "$SU_KEY" ] || die "the app in $DMG has a different SUPublicEDKey than app/sparkle_public_key.txt: rebuild it"
 
@@ -328,9 +350,12 @@ Requires macOS 13 or later, Apple Silicon or Intel. Verify the download with \`s
     else
         # gh tags the remote default branch's HEAD unless told otherwise; pin the built commit
         # when the remote has it.
-        local target=() head
+        local target=() head origin_repo
         head="$(git rev-parse HEAD 2>/dev/null || true)"
-        if [ -n "$head" ] && [ -n "$(git branch -r --contains HEAD 2>/dev/null)" ]; then
+        origin_repo="$(git remote get-url origin 2>/dev/null | sed -E 's#^(https://github\.com/|git@github\.com:|ssh://git@github\.com/)##; s#\.git$##; s#/$##' || true)"
+        if [ "$origin_repo" != "$RELEASES_REPO" ]; then
+            warn "$RELEASES_REPO is not this checkout's origin (${origin_repo:-none}): not pinning --target; $tag will tag that repo's default branch HEAD."
+        elif [ -n "$head" ] && [ -n "$(git branch -r --contains HEAD 2>/dev/null)" ]; then
             target=(--target "$head")
         else
             warn "HEAD (${head:-no git}) is not on the remote: $tag will tag the default branch's HEAD instead. Push first to tag the built commit."

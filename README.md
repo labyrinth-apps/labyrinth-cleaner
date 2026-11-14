@@ -62,22 +62,31 @@ scripts/build_app.sh --publish v0.1.0
 
 This does the full release, then publishes it. It generates `appcast.xml` with Sparkle's `generate_appcast`, signed with the key in your login keychain. Then it uploads the DMG, the `.sha256` and `appcast.xml` to the GitHub release `v0.1.0`, creating the release or replacing its files. The tag must match `VERSION`. It refuses to run without `app/sparkle_public_key.txt` and never runs with `--no-notarize`. It never creates the repository or changes its visibility. It needs `gh auth login` once.
 
-Before it uploads anything, `--publish` checks two things:
+**The releases repository must be public before you publish.** Sparkle and the Install link download the release files without logging in, so a private repository breaks both. Make it public on GitHub yourself: the script checks with `gh repo view` and refuses anything else.
+
+**`SUFeedURL` in `app/Info.plist` must point at the releases repository:** `https://github.com/<releases repo>/releases/latest/download/appcast.xml`. For the default that is `https://github.com/labyrinth-apps/labyrinth-cleaner/releases/latest/download/appcast.xml`.
+
+Before building, `--publish` checks:
+- that `gh` is logged in;
+- that the releases repository is public;
+- that the `app/Info.plist` feed points at it.
+
+Before it uploads anything, it checks the DMG:
 - the DMG is notarized and stapled;
-- the app inside the DMG carries exactly the key in `app/sparkle_public_key.txt`. A DMG built before you added the key is refused, so rebuild it.
+- the app inside it carries exactly the key in `app/sparkle_public_key.txt`;
+- the app inside it has the matching `SUFeedURL`.
 
-`gh release create` tags the HEAD of the remote's default branch, not your local commit. When the built commit is already on the remote (`git branch -r --contains HEAD` lists it), the script passes `--target <that commit>`. Otherwise it warns, and the tag lands on the default branch's HEAD. Push before publishing so the tag matches the build:
+A DMG that fails any of these is refused, so rebuild it.
 
-```sh
-git push
-scripts/build_app.sh --publish v0.1.0
-```
+`gh release create` tags the HEAD of the remote's default branch, not your local commit. When the releases repository is this checkout's `origin` and the built commit is already there (`git branch -r --contains HEAD` lists it), the script passes `--target <that commit>`. Otherwise it warns, and the tag lands on the default branch's HEAD. So push before publishing (see the step-by-step below).
+
+The app's build number (`CFBundleVersion`, which Sparkle uses to order updates) comes from `VERSION`: major × 10000 + minor × 100 + patch, so `0.1.0` is `100` and `1.2.3` is `10203`. Minor and patch must stay below 100. `scripts/build_number.sh` prints it.
 
 Environment variables:
 
 - `LABYRINTH_TEAM_ID`: the Apple team (default `X8BX4XM7S2`).
 - `LABYRINTH_NOTARY_PROFILE`: the notarytool keychain profile (default `labyrinth-notary`).
-- `LABYRINTH_RELEASES_REPO`: where `--publish` uploads (default `labyrinth-apps/labyrinth-cleaner`). The app's update feed always points at the default repository.
+- `LABYRINTH_RELEASES_REPO`: where `--publish` uploads (default `labyrinth-apps/labyrinth-cleaner`). If you change it, change `SUFeedURL` in `app/Info.plist` to match and rebuild.
 - `LABYRINTH_SKIP_BUILD=1`: with `--publish`, publishes the DMG already in `build/` without building it again.
 
 One-time setup on the build Mac:
@@ -95,7 +104,59 @@ One-time setup on the build Mac:
    ```
 
 3. **The DMG tool.** Install Homebrew Python 3.11 with `brew install python@3.11`. The script installs `dmgbuild` into `build/.dmgbuild-venv` by itself.
-4. **The Sparkle key**, for publishing. See "Back up the Sparkle key" below.
+4. **The Sparkle key**, for publishing. See the step-by-step below and "Back up the Sparkle key".
+
+### First release, step by step
+
+Run these from the repository root, in Terminal, with the Mac unlocked.
+
+1. Create the Sparkle key. It is stored in your login keychain. Then save its public half in the repository:
+
+   ```sh
+   app/.build/artifacts/sparkle/Sparkle/bin/generate_keys
+   ```
+
+   ```sh
+   app/.build/artifacts/sparkle/Sparkle/bin/generate_keys -p > app/sparkle_public_key.txt
+   ```
+
+   Commit `app/sparkle_public_key.txt`:
+
+   ```sh
+   git add app/sparkle_public_key.txt
+   ```
+
+   ```sh
+   git commit -m "app: Sparkle public key"
+   ```
+
+2. Back up the private key (see "Back up the Sparkle key"):
+
+   ```sh
+   app/.build/artifacts/sparkle/Sparkle/bin/generate_keys -x ~/Desktop/sparkle_private_key.txt
+   ```
+
+   Move `~/Desktop/sparkle_private_key.txt` into a password manager or onto an offline drive, then delete it from the Desktop. Never put it in the repository.
+
+3. Make `labyrinth-apps/labyrinth-cleaner` public on GitHub.
+
+4. Push the commit you are releasing, so the tag points at it. You can also merge it into `main` and push that.
+
+   ```sh
+   git push -u origin HEAD
+   ```
+
+5. Build the notarized release. Keep the Mac unlocked while it notarizes, because notarytool reads its password from the keychain.
+
+   ```sh
+   scripts/build_app.sh
+   ```
+
+6. Publish the DMG you just built, without building it again. The first time, `generate_appcast` may ask for access to the Sparkle key in your keychain. Choose **Always Allow**.
+
+   ```sh
+   LABYRINTH_SKIP_BUILD=1 scripts/build_app.sh --publish v0.1.0
+   ```
 
 ## Updates
 
@@ -103,15 +164,25 @@ The app checks for a new version once a day and asks before installing it. You c
 
 ## Back up the Sparkle key
 
-Updates are signed with a private key kept in the maintainer's login keychain. Create it once with `generate_keys` (from Sparkle's `bin/` folder in the SwiftPM artifact), then put the public half in the repo: `generate_keys -p > app/sparkle_public_key.txt`.
+Updates are signed with a private key kept in the maintainer's login keychain. Create it once, then put the public half in the repository and commit it (step 1 of "First release, step by step"):
 
-Back the private key up. From the folder the Sparkle tools are in, run:
-
-```
-./generate_keys -x sparkle_private_key.txt
+```sh
+app/.build/artifacts/sparkle/Sparkle/bin/generate_keys
 ```
 
-Keep `sparkle_private_key.txt` in a password manager or an encrypted drive, never in the repository. If the key is lost, installed copies can never update again: users would have to download a new app by hand.
+```sh
+app/.build/artifacts/sparkle/Sparkle/bin/generate_keys -p > app/sparkle_public_key.txt
+```
+
+The tools are in `app/.build/` once `cd app && swift build` or `scripts/build_app.sh` has run. A build whose `app/sparkle_public_key.txt` doesn't look like a key (44 base64 characters) warns and leaves updates off.
+
+Back the private key up:
+
+```sh
+app/.build/artifacts/sparkle/Sparkle/bin/generate_keys -x ~/Desktop/sparkle_private_key.txt
+```
+
+Then move `sparkle_private_key.txt` into a password manager or onto an offline or encrypted drive. Never put it in the repository. If the key is lost, installed copies can never update again: users would have to download a new app by hand.
 
 ## Command line
 

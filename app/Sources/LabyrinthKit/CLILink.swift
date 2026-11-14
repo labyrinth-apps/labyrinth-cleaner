@@ -41,15 +41,29 @@ public func cliDestinations(home: String, fixtureHome: String? = nil,
     return dirs
 }
 
-public let cliMoveToApplicationsMessage =
-    "Move Labyrinth Cleaner to your Applications folder first, then install the command line tool."
+/// True when this copy of the app lives somewhere that disappears or can't be registered:
+/// a mounted DMG (a read-only volume) or an App Translocation path. Anything that records the
+/// app's path (the command line link, the login item) must ask the user to move it first.
+public func mustMoveToApplications(bundlePath: String, volumeIsReadOnly: Bool) -> Bool {
+    volumeIsReadOnly || bundlePath.contains("/AppTranslocation/")
+}
 
-/// nil when the command line tool may link to this copy of the app. An app run from a mounted DMG
-/// (a read-only volume) or under App Translocation lives at a path that disappears, so the link
-/// would dangle: the user must move the app first.
+/// "Move Labyrinth Cleaner to your Applications folder first, then <then>."
+public func moveToApplicationsMessage(then: String) -> String {
+    "Move Labyrinth Cleaner to your Applications folder first, then \(then)."
+}
+
+public let cliMoveToApplicationsMessage = moveToApplicationsMessage(then: "install the command line tool")
+public let loginMoveToApplicationsMessage = moveToApplicationsMessage(then: "turn on Open at Login")
+
+/// nil when the command line tool may link to this copy of the app; the message otherwise.
 public func cliInstallBlocker(bundlePath: String, volumeIsReadOnly: Bool) -> String? {
-    if volumeIsReadOnly || bundlePath.contains("/AppTranslocation/") { return cliMoveToApplicationsMessage }
-    return nil
+    mustMoveToApplications(bundlePath: bundlePath, volumeIsReadOnly: volumeIsReadOnly) ? cliMoveToApplicationsMessage : nil
+}
+
+/// nil when Open at Login may register this copy of the app; the message otherwise.
+public func loginItemBlocker(bundlePath: String, volumeIsReadOnly: Bool) -> String? {
+    mustMoveToApplications(bundlePath: bundlePath, volumeIsReadOnly: volumeIsReadOnly) ? loginMoveToApplicationsMessage : nil
 }
 
 /// The open-at-login switch is off-limits in fixture runs.

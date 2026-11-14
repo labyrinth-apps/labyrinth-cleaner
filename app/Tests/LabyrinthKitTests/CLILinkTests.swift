@@ -29,6 +29,21 @@ final class CLILinkTests: XCTestCase {
                                          volumeIsReadOnly: true), msg)
     }
 
+    func testLoginItemBlockedWhenTranslocatedOrReadOnly() {
+        let msg = "Move Labyrinth Cleaner to your Applications folder first, then turn on Open at Login."
+        XCTAssertNil(loginItemBlocker(bundlePath: "/Applications/Labyrinth Cleaner.app", volumeIsReadOnly: false))
+        XCTAssertEqual(loginItemBlocker(bundlePath: "/private/var/folders/ab/T/AppTranslocation/1F2E/d/Labyrinth Cleaner.app",
+                                        volumeIsReadOnly: false), msg)
+        XCTAssertEqual(loginItemBlocker(bundlePath: "/Volumes/Labyrinth Cleaner/Labyrinth Cleaner.app",
+                                        volumeIsReadOnly: true), msg)
+    }
+
+    func testMustMoveToApplications() {
+        XCTAssertFalse(mustMoveToApplications(bundlePath: "/Applications/Labyrinth Cleaner.app", volumeIsReadOnly: false))
+        XCTAssertTrue(mustMoveToApplications(bundlePath: "/Applications/Labyrinth Cleaner.app", volumeIsReadOnly: true))
+        XCTAssertTrue(mustMoveToApplications(bundlePath: "/x/AppTranslocation/y/Labyrinth Cleaner.app", volumeIsReadOnly: false))
+    }
+
     func testDestinations() {
         let home = "/Users/x"
         XCTAssertEqual(cliDestinations(home: home, isWritable: { _ in true }, exists: { _ in true }),
