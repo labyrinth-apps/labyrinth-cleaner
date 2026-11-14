@@ -40,6 +40,7 @@ SPARKLE_FW="$BIN_DIR/Sparkle.framework"
 mkdir -p "$APP/Contents/Frameworks"
 ditto "$SPARKLE_FW" "$APP/Contents/Frameworks/Sparkle.framework"
 
+cp app/AppIcon.icns "$APP/Contents/Resources/"   # rendered by scripts/make_art.swift
 cp devclean devclean_*.py "$APP/Contents/Resources/core/"
 cp ui/index.html "$APP/Contents/Resources/core/ui/"
 cp devclean-launcher "$APP/Contents/Resources/core/"
