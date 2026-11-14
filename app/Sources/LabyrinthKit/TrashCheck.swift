@@ -76,6 +76,10 @@ public func checkTrashable(path: String, home: String, isRealHome: Bool,
         guard depth == 1 || depth == 2, pathParts.last!.count > 4, pathParts.last!.suffix(4) == b(".app")[...] else {
             return refuse("not an application bundle: \(path)")
         }
+        // Mirrors the core: never a bundle inside another bundle (Foo.app/Bar.app).
+        if depth == 2, pathParts[pathParts.count - 2].suffix(4) == b(".app")[...] {
+            return refuse("inside another application: \(path)")
+        }
         target = .application
         wantMode = S_IFDIR
     } else if rel[0] == b("Downloads") && (rel.count == 2 || rel.count == 3) {

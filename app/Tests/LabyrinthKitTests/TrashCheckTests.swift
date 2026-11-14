@@ -364,7 +364,40 @@ final class TrashCheckTests: XCTestCase {
     }
 
     func testSystemApplicationsOnlyForRealHome() {
-        assertFailure(check("/Applications/Nope.app", isRealHome: false))
+        // Refused before anything under /Applications is looked at.
+        assertFailure(check("/Applications/Nope.app", isRealHome: false), contains: "not inside the home folder")
+    }
+
+    // The real-home rules, on a temp home only (never the real /Applications).
+    func testHomeApplicationsAllowedForRealHome() throws {
+        try mkdir("Applications/X.app")
+        XCTAssertEqual(try check(p("Applications/X.app"), isRealHome: true).get(), .application)
+    }
+
+    func testApplicationNameWithQuoteAndNonASCII() throws {
+        // POSIX mkdir keeps these exact bytes on disk, as an installer would (FileManager
+        // would store the name decomposed). The scanner passes the on-disk bytes.
+        try mkdir("Applications")
+        let name = "Applications/Caf\u{E9} \"Beta\".app"
+        XCTAssertEqual(Darwin.mkdir(p(name), 0o755), 0)
+        XCTAssertEqual(try check(p(name)).get(), .application)
+        XCTAssertEqual(try check(p(name), isRealHome: true).get(), .application)
+        // The same name in the other normalization is not the string on disk: refused.
+        let nfd = p(name).decomposedStringWithCanonicalMapping
+        XCTAssertNotEqual(Array(nfd.utf8), Array(p(name).utf8))
+        assertFailure(check(nfd), contains: "resolves elsewhere")
+        let r = run(p(name))
+        XCTAssertEqual(r.code, 0, r.message)
+        XCTAssertTrue(fm.fileExists(atPath: p(".Trash/Caf\u{E9} \"Beta\".app")))
+        XCTAssertFalse(fm.fileExists(atPath: p(name)))
+    }
+
+    func testApplicationInsideAnotherApplicationRefused() throws {
+        try mkdir("Applications/Foo.app/Bar.app")
+        assertFailure(check(p("Applications/Foo.app/Bar.app")), contains: "inside another application")
+        assertFailure(check(p("Applications/Foo.app/Bar.app"), isRealHome: true), contains: "inside another application")
+        assertRefused(run(p("Applications/Foo.app/Bar.app")))
+        XCTAssertTrue(fm.fileExists(atPath: p("Applications/Foo.app/Bar.app")))
     }
 
     func testApplicationMovesIntoFixtureTrash() throws {
