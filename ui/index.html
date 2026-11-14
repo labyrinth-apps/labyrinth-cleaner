@@ -513,7 +513,7 @@ async function api(method, path, body) {
 }
 
 // ---------------------------------------------------------------- formatting
-// Must match devclean_core.human() exactly (binary units, like df -h).
+// Must match devclean_core.human() exactly (decimal units, like Finder and the menu bar).
 function human(n) {
   if (n === null || n === undefined) return "?";
   const units = ["B", "KB", "MB", "GB", "TB"];
@@ -521,7 +521,7 @@ function human(n) {
     if (Math.abs(n) < 1000 || u === "TB") {
       return (u === "B" || u === "KB") ? n.toFixed(0) + " " + u : n.toFixed(1) + " " + u;
     }
-    n /= 1024;
+    n /= 1000;
   }
 }
 

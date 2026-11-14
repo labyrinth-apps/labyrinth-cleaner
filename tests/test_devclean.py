@@ -935,7 +935,20 @@ class CostAndStaleTests(unittest.TestCase):
         self.assertEqual(core.human(None), "?")
         self.assertEqual(core.human(999), "999 B")
         self.assertEqual(core.human(1536), "2 KB")
-        self.assertEqual(core.human(int(9.9 * 1024 ** 3)), "9.9 GB")
+        self.assertEqual(core.human(58448367616), "58.4 GB")
+        self.assertEqual(core.human(int(9.9 * 1000 ** 3)), "9.9 GB")
+
+    def test_free_space_counts_like_finder(self):
+        # the menu bar's figure includes purgeable space, so it is never below statvfs
+        statvfs = shutil.disk_usage(self.home).free
+        self.assertGreaterEqual(core.free_space(self.home), statvfs - 10 ** 8)
+        self.assertIsNone(core._important_free(os.path.join(self.home, "no-such-dir")))
+
+    def test_free_space_falls_back_to_statvfs(self):
+        for fail in (mock.Mock(return_value=None), mock.Mock(side_effect=OSError)):
+            with mock.patch.object(core, "_important_free", fail), \
+                 mock.patch.object(core.shutil, "disk_usage", return_value=mock.Mock(free=123, total=456)):
+                self.assertEqual(core.free_space(self.home), 123)
 
     def test_unreadable_project_folder_becomes_warning(self):
         P = os.path.join(self.home, "Documents", "Projects", "web_app")

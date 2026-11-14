@@ -1171,16 +1171,69 @@ def scan_info(cfg: Config) -> list:
                  path=p, note="personal files: size only, never offered", kind="info")]
 
 
+# ---------------------------------------------------------------- free space
+
+def _important_free(path: str):
+    """Free bytes as Finder and the menu bar count them: includes space macOS can
+    purge by itself (NSURLVolumeAvailableCapacityForImportantUsageKey). None if
+    CoreFoundation can't answer."""
+    import ctypes
+    cf = ctypes.CDLL("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")
+    vp = ctypes.c_void_p
+    cf.CFURLCreateFromFileSystemRepresentation.restype = vp
+    cf.CFURLCreateFromFileSystemRepresentation.argtypes = [vp, ctypes.c_char_p, ctypes.c_long, ctypes.c_bool]
+    cf.CFURLCopyResourcePropertyForKey.restype = ctypes.c_bool
+    cf.CFURLCopyResourcePropertyForKey.argtypes = [vp, vp, ctypes.POINTER(vp), ctypes.POINTER(vp)]
+    cf.CFNumberGetValue.restype = ctypes.c_bool
+    cf.CFNumberGetValue.argtypes = [vp, ctypes.c_long, ctypes.POINTER(ctypes.c_int64)]
+    cf.CFGetTypeID.restype = ctypes.c_ulong
+    cf.CFGetTypeID.argtypes = [vp]
+    cf.CFNumberGetTypeID.restype = ctypes.c_ulong
+    cf.CFNumberGetTypeID.argtypes = []
+    cf.CFRelease.restype = None
+    cf.CFRelease.argtypes = [vp]
+    key = vp.in_dll(cf, "kCFURLVolumeAvailableCapacityForImportantUsageKey")
+    raw = os.fsencode(path)
+    url = cf.CFURLCreateFromFileSystemRepresentation(None, raw, len(raw), True)
+    if not url:
+        return None
+    try:
+        value = vp()
+        if not cf.CFURLCopyResourcePropertyForKey(url, key, ctypes.byref(value), None) or not value.value:
+            return None
+        try:
+            if cf.CFGetTypeID(value) != cf.CFNumberGetTypeID():
+                return None
+            out = ctypes.c_int64()
+            if not cf.CFNumberGetValue(value, 4, ctypes.byref(out)):    # kCFNumberSInt64Type
+                return None
+            return out.value if out.value > 0 else None
+        finally:
+            cf.CFRelease(value)
+    finally:
+        cf.CFRelease(url)
+
+
+def free_space(path: str) -> int:
+    """Free bytes of the volume holding path, matching the menu bar. Falls back to
+    statvfs, which leaves out purgeable space, if the Finder figure isn't available."""
+    try:
+        v = _important_free(path)
+    except (OSError, ValueError, AttributeError):
+        v = None
+    return v if v is not None else shutil.disk_usage(path).free
+
+
 # ---------------------------------------------------------------- cost & staleness
 
 def human(n) -> str:
-    """Binary units, matching `df -h`: 999 B, 2 KB, 145.0 MB, 9.9 GB."""
+    """Decimal units, like Finder and the menu bar: 999 B, 2 KB, 145.0 MB, 9.9 GB."""
     if n is None:
         return "?"
     for unit in ("B", "KB", "MB", "GB", "TB"):
         if abs(n) < 1000 or unit == "TB":
             return f"{n:.0f} {unit}" if unit in ("B", "KB") else f"{n:.1f} {unit}"
-        n /= 1024.0
+        n /= 1000.0
 
 
 STALE_AFTER_DAYS = 30
@@ -1472,7 +1525,7 @@ def scan(cfg: Config, sim: Optional[SimctlProvider] = None,
 
     items.sort(key=lambda i: (TIER_ORDER[i.tier], i.category, -(i.size or 0)))
     du = shutil.disk_usage(cfg.home)
-    return ScanResult(items=items, warnings=warnings, free_bytes=du.free,
+    return ScanResult(items=items, warnings=warnings, free_bytes=free_space(cfg.home),
                       total_bytes=du.total, xcode_running=xr, app_bytes=app_bytes)
 
 

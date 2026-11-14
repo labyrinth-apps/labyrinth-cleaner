@@ -191,9 +191,10 @@ class UIServer:
         One statvfs call: nothing under home is read. None if it can't be measured."""
         try:
             du = shutil.disk_usage(cfg.home)
+            free = core.free_space(cfg.home)
         except OSError:
             return None
-        return {"free": du.free, "total": du.total}
+        return {"free": free, "total": du.total}
 
     def welcome_done(self) -> tuple:
         with self._lock:
@@ -249,7 +250,7 @@ class UIServer:
             chosen = core.execution_order([items[k] for k in dict.fromkeys(keys)])
             job_id = secrets.token_hex(8)
             job = {"job_id": job_id, "state": "running",
-                   "free_before": shutil.disk_usage(self.cfg.home).free,
+                   "free_before": core.free_space(self.cfg.home),
                    "items": [{"key": it.key, "label": it.label, "size": it.size,
                               "status": "pending", "message": ""} for it in chosen]}
             self._jobs[job_id] = job
@@ -318,7 +319,7 @@ class UIServer:
             if job is None:
                 return None
             out = json.loads(json.dumps(job))
-        out["free_now"] = shutil.disk_usage(self.cfg.home).free
+        out["free_now"] = core.free_space(self.cfg.home)
         return out
 
 
