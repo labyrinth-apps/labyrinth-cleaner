@@ -626,6 +626,8 @@ function sum(rows) { return rows.reduce((a, r) => a + (r.size || 0), 0); }
 // Both kinds go to the Trash: "trash" through the helper, "finder-trash" through Finder.
 function isTrashMove(r) { return r.kind === "trash" || r.kind === "finder-trash"; }
 function freeable(rows) { return sum(rows.filter(r => !isTrashMove(r))); }
+// A group whose rows can be ticked. Rows without keys (suggested keepers, running copies)
+// never can, so a group of only those gets no "Select all" (see groupCard).
 function offerable(g) { return g.id !== "kept"; }
 
 // ---------------------------------------------------------------- scan
@@ -789,7 +791,7 @@ function groupCard(g, rows) {
       rows.forEach(r => r.stale ? S.sel.add(r.id) : S.sel.delete(r.id)); renderGroups(); updateSelection();
     } }));
   }
-  if (offerable(g)) {
+  if (offerable(g) && rows.some(r => r.keys.length)) {
     head.append(el("button", { class: "selall toggle", text: selAllText(rows), onclick: () => {
       const any = rows.some(r => S.sel.has(r.id));
       // Rows with no keys (suggested keepers, running copies) are shown but never ticked.

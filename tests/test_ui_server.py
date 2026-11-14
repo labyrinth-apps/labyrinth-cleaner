@@ -848,6 +848,7 @@ global.fetch = async (path, opt) => { if (opt.method === "POST") posts.push(JSON
   res.ver_cases = [["Figma (v88.1)", "88.1"], ["Figma 10", "1"], ["Tool 1.0", "1"], ["Tool 2", "2.0"],
     ["Plain", "2.0"], ["App 3.1 RC 2", "3.1 RC 2"]].map(([l, v]) => [l, verOf(l, v)]);
   if (sel) { sel.handlers.click(); res.selall_selected = [...S.sel].sort(); }
+  res.selall_keepers_only = find(cardOf([S.data.rows[4]]), x => x.className === "selall toggle").length;
   S.sel = new Set(["b"]); openModal(); $("mAck").checked = true; refreshDelete();
   await doDelete(); res.sent_acknowledged = take();
   console.log(JSON.stringify(res));
@@ -945,6 +946,7 @@ class PageTests(unittest.TestCase):
         self.assertEqual(r["gtotal"], [r["expect_total"]])           # keeper size left out
         self.assertTrue(r["selall_found"])
         self.assertEqual(r["selall_selected"], ["d"])
+        self.assertEqual(r["selall_keepers_only"], 0)    # nothing to tick, no "Select all"
 
     def test_version_chip_style_is_neutral(self):
         html = self.html()
