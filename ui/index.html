@@ -46,9 +46,27 @@
   .banner .x{margin-left:auto;cursor:pointer;color:var(--muted);background:none;border:0;font-size:15px;padding:2px 4px}
   .banner .x:hover{color:var(--text)}
   .loading{display:flex;align-items:center;gap:16px;padding:28px 24px}
-  .spinner{width:26px;height:26px;border-radius:50%;border:1.5px solid var(--line2);border-top-color:var(--brass);animation:spin 1.1s linear infinite;flex:none;position:relative}
-  .spinner::after{content:"";position:absolute;inset:5px;border-radius:50%;border:1.5px solid var(--line);border-bottom-color:var(--brass);animation:spin .8s linear infinite reverse}
   @keyframes spin{to{transform:rotate(360deg)}}
+  /* Scanning: a brass thread finds its way into the ring maze, is drawn in, and the
+     maze turns a third to offer a new way in. One 7.2 s loop of three 2.4 s tries. */
+  .threadmaze{width:56px;height:56px;flex:none;display:block;overflow:visible}
+  .threadmaze .tm-turn{transform-origin:50px 50px;animation:tm-turn 7.2s cubic-bezier(.65,0,.35,1) infinite}
+  .threadmaze .tm-bezel{fill:none;stroke:var(--line);stroke-width:1}
+  .threadmaze .tm-wall{fill:none;stroke:rgba(236,229,216,.55);stroke-width:2.2;stroke-linecap:round}
+  .threadmaze .tm-thread{fill:none;stroke:var(--brass);stroke-width:2.6;stroke-linecap:round;stroke-linejoin:round;
+                         stroke-dasharray:1 1.02;stroke-dashoffset:1;animation:tm-thread 2.4s cubic-bezier(.45,0,.25,1) infinite}
+  .threadmaze .tm-core{fill:var(--brass);transform-origin:50px 50px;animation:tm-core 2.4s ease-in-out infinite}
+  @keyframes tm-thread{0%{stroke-dashoffset:1}50%,58%{stroke-dashoffset:0}80%,100%{stroke-dashoffset:-1}}
+  @keyframes tm-core{0%,40%{transform:scale(1);opacity:.45}52%{transform:scale(1.9);opacity:1}72%,100%{transform:scale(1);opacity:.45}}
+  @keyframes tm-turn{0%,27%{transform:rotate(0)}33%,60%{transform:rotate(120deg)}66%,93%{transform:rotate(240deg)}100%{transform:rotate(360deg)}}
+  .scanveil{position:fixed;inset:0;z-index:8;display:grid;place-items:center;pointer-events:none;
+            opacity:0;animation:lw-fade .25s ease .15s forwards}
+  .scanveil .card{display:flex;flex-direction:column;align-items:center;gap:16px;width:min(330px,calc(100vw - 40px));
+                  padding:30px 30px 26px;text-align:center;pointer-events:auto;
+                  background:rgba(23,22,20,.96);border-color:var(--line2);box-shadow:0 22px 50px rgba(0,0,0,.5)}
+  .scanveil .threadmaze{width:104px;height:104px}
+  .scanveil b{display:block;font:400 21px/1.25 var(--serif)}
+  .scanveil span{display:block;margin-top:5px;color:var(--muted);font-size:12.5px;line-height:1.5}
   .loading b{display:block;font:400 19px/1.25 var(--serif)}
   .loading span{color:var(--muted);font-size:12.5px}
   .card.errorbox{border-left:2px solid var(--check)}
@@ -246,7 +264,11 @@
     .top .sub{font-size:11px}
   }
   @media (prefers-reduced-motion:reduce){
-    .spinner,.spinner::after,.st.running{animation-duration:3s}
+    .st.running{animation-duration:3s}
+    .threadmaze *{animation:none!important}
+    .threadmaze .tm-thread{stroke-dashoffset:0}
+    .threadmaze .tm-core{opacity:1}
+    .scanveil{animation:none;opacity:1}
     .tier,.chev,.seg,.ghost,.primary{transition:none}
   }
 
@@ -392,8 +414,15 @@
   </section>
 
   <div class="card loading" id="loading" hidden>
-    <div class="spinner"></div>
-    <div><b>Scanning… (about 15 s)</b><span>Measuring caches, build folders, simulators and Android images.</span></div>
+    <!-- The scanning maze (also in #scanveil): the logo's three rings, each with one opening, a few cross walls, and the one
+         path (the thread) that runs through the openings to the centre. -->
+    <svg class="threadmaze" viewBox="0 0 100 100" aria-hidden="true"><circle class="tm-bezel" cx="50" cy="50" r="49"/><g class="tm-turn"><path class="tm-wall" d="M59.45 9.08A42 42 0 1 1 40.55 9.08M42.24 78.98A30 30 0 1 1 57.76 78.98M66.69 56.74A18 18 0 1 1 66.69 43.26M8 50H20M28.79 28.79L37.27 37.27M28.79 71.21L37.27 62.73"/><path class="tm-thread" pathLength="1" d="M50 3V14A36 36 0 0 1 50 86V74A24 24 0 0 0 74 50H50"/><circle class="tm-core" cx="50" cy="50" r="3.2"/></g></svg>
+    <div><b>Scanning… (about 15 s)</b><span>Measuring caches, build folders, simulators, Android images and apps.</span></div>
+  </div>
+
+  <div class="scanveil" id="scanveil" role="status" aria-live="polite" hidden>
+    <div class="card"><svg class="threadmaze" viewBox="0 0 100 100" aria-hidden="true"><circle class="tm-bezel" cx="50" cy="50" r="49"/><g class="tm-turn"><path class="tm-wall" d="M59.45 9.08A42 42 0 1 1 40.55 9.08M42.24 78.98A30 30 0 1 1 57.76 78.98M66.69 56.74A18 18 0 1 1 66.69 43.26M8 50H20M28.79 28.79L37.27 37.27M28.79 71.21L37.27 62.73"/><path class="tm-thread" pathLength="1" d="M50 3V14A36 36 0 0 1 50 86V74A24 24 0 0 0 74 50H50"/><circle class="tm-core" cx="50" cy="50" r="3.2"/></g></svg>
+      <div><b>Scanning again…</b><span>Measuring caches, build folders, simulators, Android images and apps.</span></div></div>
   </div>
 
   <div class="card errorbox" id="error" hidden>
@@ -606,7 +635,7 @@ async function scan() {
   $("rescan").disabled = true;
   $("rescan").textContent = "Scanning…";
   $("error").hidden = true;
-  if (S.data) $("main").classList.add("busy"); else $("loading").hidden = false;
+  if (S.data) { $("main").classList.add("busy"); $("scanveil").hidden = false; } else $("loading").hidden = false;
   try {
     const { status, data } = await api("GET", "/api/scan");
     if (status !== 200 || !data) throw new Error((data && data.error) || ("HTTP " + status + (status === 403 ? (BRIDGE ? ": close this window and open it again from the menu bar" : ": reopen the link devclean ui printed") : "")));
@@ -625,6 +654,7 @@ async function scan() {
   } finally {
     S.scanning = false;
     $("loading").hidden = true;
+    $("scanveil").hidden = true;
     $("main").classList.remove("busy");
     $("rescan").disabled = false;
     $("rescan").textContent = "↻ Scan again";
