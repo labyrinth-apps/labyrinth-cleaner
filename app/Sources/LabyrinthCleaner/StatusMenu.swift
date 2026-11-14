@@ -3,7 +3,7 @@ import ServiceManagement
 import LabyrinthKit
 
 /// The menu-bar item: the free-space number and its menu.
-final class StatusMenu: NSObject, NSMenuDelegate {
+final class StatusMenu: NSObject, NSMenuDelegate, NSMenuItemValidation {
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let menu = NSMenu()
     private let infoItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
@@ -46,9 +46,13 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in self?.refresh() }
     }
 
+    /// autoenablesItems would re-enable any item whose target responds to its action, so decide here.
+    func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        item === updatesItem ? canCheckForUpdates() : true
+    }
+
     func menuWillOpen(_ menu: NSMenu) {
         refresh()
-        updatesItem.isEnabled = canCheckForUpdates()
         loginItem.state = fixture == nil && SMAppService.mainApp.status == .enabled ? .on : .off
     }
 
