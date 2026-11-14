@@ -25,6 +25,12 @@ final class CLILinkTests: XCTestCase {
                        ["/Users/x/.local/bin"])
     }
 
+    func testFixtureDestinationsStayInFixtureHome() {
+        XCTAssertEqual(cliDestinations(home: "/Users/real", fixtureHome: "/tmp/fx",
+                                       isWritable: { _ in true }, exists: { _ in true }),
+                       ["/tmp/fx/.local/bin"])
+    }
+
     func testLinkState() throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("cli-link-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)

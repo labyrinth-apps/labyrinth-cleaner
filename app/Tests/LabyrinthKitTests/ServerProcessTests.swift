@@ -115,6 +115,22 @@ final class ServerProcessTests: XCTestCase {
         }
     }
 
+    func testStartDuringStopIsRefusedNotTheDyingHandshake() throws {
+        let s = makeServer()
+        guard case .success = startSync(s) else { return XCTFail("start failed") }
+        let stopped = expectation(description: "stop")
+        s.stop(grace: 10) { stopped.fulfill() }
+        // Asked at once, before the child has exited: must not get the old handshake back.
+        switch startSync(s) {
+        case .success: XCTFail("start during stop returned the dying server's handshake")
+        case .failure(.noHandshake(let tail)): XCTAssertTrue(tail.contains("still stopping"), tail)
+        case .failure(let f): XCTFail("unexpected \(f)")
+        }
+        wait(for: [stopped], timeout: 20)
+        // Once it is gone, a fresh start works again.
+        guard case .success = startSync(s) else { return XCTFail("restart after stop failed") }
+    }
+
     func testStopWithoutStartCompletes() {
         let s = makeServer()
         let e = expectation(description: "stop")

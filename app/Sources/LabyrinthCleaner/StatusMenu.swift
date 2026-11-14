@@ -10,6 +10,8 @@ final class StatusMenu: NSObject, NSMenuDelegate {
     private let loginItem = NSMenuItem(title: "Open at Login", action: nil, keyEquivalent: "")
     private var timer: Timer?
 
+    /// Set in fixture runs: nothing here may touch the real login items, folders or notifications.
+    var fixture: FixtureOptions?
     var onOpen: () -> Void = {}
     var onQuit: () -> Void = {}
     /// Called with every reading so the notifier can decide.
@@ -40,7 +42,7 @@ final class StatusMenu: NSObject, NSMenuDelegate {
 
     func menuWillOpen(_ menu: NSMenu) {
         refresh()
-        loginItem.state = SMAppService.mainApp.status == .enabled ? .on : .off
+        loginItem.state = fixture == nil && SMAppService.mainApp.status == .enabled ? .on : .off
     }
 
     /// Free space as Finder reports it (includes space macOS can purge by itself).
@@ -76,9 +78,17 @@ final class StatusMenu: NSObject, NSMenuDelegate {
 
     @objc private func openTapped() { onOpen() }
     @objc private func quitTapped() { onQuit() }
-    @objc private func cliTapped() { CLIInstaller.run() }
+    @objc private func cliTapped() { CLIInstaller.run(fixture: fixture) }
 
     @objc private func toggleLogin() {
+        if fixture != nil {
+            let alert = NSAlert()
+            alert.messageText = fixtureLoginMessage
+            NSApp.activate(ignoringOtherApps: true)
+            alert.runModal()
+            loginItem.state = .off
+            return
+        }
         let service = SMAppService.mainApp
         do {
             switch service.status {

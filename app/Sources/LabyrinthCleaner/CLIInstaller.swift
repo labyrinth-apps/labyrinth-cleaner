@@ -3,12 +3,12 @@ import LabyrinthKit
 
 /// "Install Command Line Tool…": links `devclean` to the launcher inside the app.
 enum CLIInstaller {
-    static func run() {
+    static func run(fixture: FixtureOptions? = nil) {
         guard let resources = Bundle.main.resourceURL else { return }
         let target = resources.appendingPathComponent("core/devclean-launcher").path
         let fm = FileManager.default
-        let home = NSHomeDirectory()
-        let dirs = cliDestinations(home: home,
+        let home = fixture?.home ?? NSHomeDirectory()
+        let dirs = cliDestinations(home: home, fixtureHome: fixture?.home,
                                    isWritable: { fm.isWritableFile(atPath: $0) },
                                    exists: { fm.fileExists(atPath: $0) })
 

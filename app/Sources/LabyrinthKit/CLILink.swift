@@ -31,9 +31,15 @@ public func linkState(at path: String) -> LinkState {
     return .notALink
 }
 
-/// Always `<home>/.local/bin`; `/usr/local/bin` only when it exists and is writable.
-public func cliDestinations(home: String, isWritable: (String) -> Bool, exists: (String) -> Bool) -> [String] {
+/// Always `<home>/.local/bin`; `/usr/local/bin` only when it exists and is writable, and never in a
+/// fixture run (`fixtureHome` set): that one stays inside the fixture home.
+public func cliDestinations(home: String, fixtureHome: String? = nil,
+                            isWritable: (String) -> Bool, exists: (String) -> Bool) -> [String] {
+    if let fixtureHome { return [fixtureHome + "/.local/bin"] }
     var dirs = [home + "/.local/bin"]
     if exists("/usr/local/bin") && isWritable("/usr/local/bin") { dirs.append("/usr/local/bin") }
     return dirs
 }
+
+/// The open-at-login switch is off-limits in fixture runs.
+public let fixtureLoginMessage = "Open at Login isn't available in fixture runs."

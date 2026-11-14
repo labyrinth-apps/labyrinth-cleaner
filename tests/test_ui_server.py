@@ -885,6 +885,21 @@ class AppModeTests(ServerTestCase):
         finally:
             signal.signal(signal.SIGTERM, old)
 
+    def test_sigterm_handler_ignores_sigterm_before_raising(self):
+        import signal
+        old = signal.getsignal(signal.SIGTERM)
+        try:
+            signal.signal(signal.SIGTERM, ui._raise_interrupt)
+            with self.assertRaises(KeyboardInterrupt):
+                ui._raise_interrupt(signal.SIGTERM, None)
+            self.assertEqual(signal.getsignal(signal.SIGTERM), signal.SIG_IGN)
+            signal.signal(signal.SIGTERM, ui._raise_interrupt)
+            with self.assertRaises(KeyboardInterrupt):
+                ui._raise_interrupt(signal.SIGINT, None)
+            self.assertEqual(signal.getsignal(signal.SIGTERM), ui._raise_interrupt)
+        finally:
+            signal.signal(signal.SIGTERM, old)
+
     def test_app_mode_handshake_and_stdin_eof_exit(self):
         p, hs = self.start_app_server()
         self.assertEqual(set(hs), {"labyrinth_server", "url"})
@@ -996,6 +1011,74 @@ class AppModeTests(ServerTestCase):
         p.stdin.close()
         self.assertEqual(p.wait(timeout=10), 0)
 
+
+    def test_quit_mid_clean_finishes_current_item_only(self):
+        """Closing stdin (the app quitting) during a clean: the item being removed finishes,
+        the rest are never started, and the server exits 0."""
+        bindir = os.path.join(self.tmp, "fakebin")
+        os.makedirs(bindir)
+        mark = os.path.join(self.tmp, "mark.txt")
+        fake = os.path.join(bindir, "rm")
+        with open(fake, "w") as f:
+            f.write('#!/bin/sh\necho "START $*" >> "$E2E_MARK"\nsleep 2\n/bin/rm "$@"\n'
+                    'rc=$?\necho "END $*" >> "$E2E_MARK"\nexit $rc\n')
+        os.chmod(fake, 0o755)
+        env = {k: v for k, v in os.environ.items() if not k.startswith("PYTHON")}
+        env.update(PATH=bindir + ":/usr/bin:/bin", HOME=self.home, E2E_MARK=mark)
+        p = subprocess.Popen([sys.executable, "-E", "-s", "-X", "utf8", DEVCLEAN, "ui", "--app",
+                              "--home", self.home], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE, env=env, cwd="/")
+        self.procs.append(p)
+        hs = json.loads(p.stdout.readline())
+        u = urlsplit(hs["url"])
+        tok = parse_qs(u.query)["t"][0]
+
+        def req(method, path, body=None):
+            headers = {"Host": f"127.0.0.1:{u.port}", "X-Devclean-Token": tok}
+            if body is not None:
+                headers["Content-Type"] = "application/json"
+                body = json.dumps(body)
+            conn = http.client.HTTPConnection("127.0.0.1", u.port, timeout=30)
+            try:
+                conn.request(method, path, body=body, headers=headers)
+                r = conn.getresponse()
+                return r.status, json.loads(r.read())
+            finally:
+                conn.close()
+
+        def tree():
+            return {os.path.join(d, n) for d, ds, fs in os.walk(self.home) for n in ds + fs}
+
+        status, scan = req("GET", "/api/scan")
+        self.assertEqual(status, 200)
+        before = tree()
+        keys = [k for r in scan["rows"] if r["group"] == "safe" for k in r["keys"]][:3]
+        self.assertEqual(len(keys), 3)
+        status, _ = req("POST", "/api/clean", {"scan_id": scan["scan_id"], "keys": keys})
+        self.assertIn(status, (200, 202))
+        deadline = time.time() + 30
+        while time.time() < deadline:
+            if os.path.exists(mark):
+                with open(mark) as f:
+                    if "START" in f.read():
+                        break
+            time.sleep(0.05)
+        else:
+            self.fail("the first removal never started")
+        p.stdin.close()
+        self.assertEqual(p.wait(timeout=30), 0, p.stderr.read())
+        with open(mark) as f:
+            log = f.read().splitlines()
+        starts = [l for l in log if l.startswith("START")]
+        self.assertEqual(len(starts), 1, log)
+        self.assertEqual(len([l for l in log if l.startswith("END")]), 1, log)
+        first = starts[0].split(" -- ", 1)[1]
+        self.assertFalse(os.path.lexists(first), "item 1 should be removed")
+        removed = before - tree()
+        self.assertTrue(removed)
+        self.assertTrue(all(r == first or r.startswith(first + os.sep) for r in removed),
+                        "only item 1 may be removed: %r" % sorted(removed)[:5])
+        self.assertEqual(len(keys), 3)   # items 2 and 3 were requested but never started
 
 if __name__ == "__main__":
     unittest.main()

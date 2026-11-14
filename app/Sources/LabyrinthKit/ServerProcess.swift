@@ -217,6 +217,7 @@ public final class ServerProcess {
             }
             if self.stopping { return }
             self.stopping = true
+            if case .running = self.state { self.state = .idle }   // a start() now sees "still stopping", not the dying server
             let gen = self.generation
             try? self.stdinHandle?.close()   // EOF: the server finishes its current delete, then exits
             self.q.asyncAfter(deadline: .now() + grace) { [weak self] in

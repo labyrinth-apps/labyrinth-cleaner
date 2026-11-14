@@ -1237,25 +1237,32 @@ function placeLeader() {
 }
 
 function showWelcome(disk) {
-  const known = drawMaze($("lwMaze"), disk);
-  if (known) {
-    const free = human(disk.free);                    // same units as the rest of the page
-    const [num, unit] = free.split(" ");
-    $("lwFree").textContent = num;
-    const u = document.createElement("small");
-    u.textContent = unit;
-    $("lwFree").append(u);
-    $("lwOf").textContent = "Free of " + human(disk.total);
-    $("lwMaze").setAttribute("aria-label", `Disk map: ${free} free of ${human(disk.total)}`);
-  } else {
+  // The way forward comes first: whatever the drawing does, the button is visible and focused.
+  $("welcome").hidden = false;
+  $("welcomeGo").focus({ preventScroll: true });
+  let known = false;
+  try {
+    known = drawMaze($("lwMaze"), disk);
+    if (known) {
+      const free = human(disk.free);                    // same units as the rest of the page
+      const [num, unit] = free.split(" ");
+      $("lwFree").textContent = num;
+      const u = document.createElement("small");
+      u.textContent = unit;
+      $("lwFree").append(u);
+      $("lwOf").textContent = "Free of " + human(disk.total);
+      $("lwMaze").setAttribute("aria-label", `Disk map: ${free} free of ${human(disk.total)}`);
+    }
+  } catch (e) {
+    known = false;
+  }
+  if (!known) {
     $("lwFree").textContent = "Your disk";
     $("lwFree").classList.add("lw-plain");
     $("lwCap").hidden = true;                         // drawn from a neutral 50%, not from the disk
     $("lwMaze").setAttribute("aria-label", "Disk map");
   }
-  $("welcome").hidden = false;
-  $("welcomeGo").focus({ preventScroll: true });
-  placeLeader();
+  try { placeLeader(); } catch (e) { /* the leader line is decoration */ }
   window.addEventListener("resize", placeLeader);
   document.addEventListener("keydown", welcomeKey);
 }

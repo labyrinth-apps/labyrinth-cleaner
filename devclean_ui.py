@@ -450,6 +450,9 @@ def _write_private(path: str, text: str):
 
 
 def _raise_interrupt(signum, frame):
+    if signum == signal.SIGTERM:
+        # Close the window before anything else: a second SIGTERM must not cut a delete short.
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
     raise KeyboardInterrupt
 
 

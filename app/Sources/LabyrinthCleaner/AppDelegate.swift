@@ -20,6 +20,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         #if DEBUG
         fixture = parseFixtureOptions(CommandLine.arguments)
         #endif
+        notifier.disabled = fixture != nil          // fixture runs never ask for or post notifications
+        statusMenu.fixture = fixture
         notifier.onClick = { [weak self] in self?.openWindow() }
         notifier.install()
         statusMenu.onOpen = { [weak self] in self?.openWindow() }
@@ -66,7 +68,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self else { return }
             switch result {
             case .success(let h):
-                let w = self.window ?? MainWindowController()
+                let w = self.window ?? MainWindowController(startFolder: self.fixture?.home ?? NSHomeDirectory())
                 self.window = w
                 w.show(handshake: h)
             case .failure(let f): self.show(f, title: "Labyrinth Cleaner couldn't start its scanner")

@@ -1143,7 +1143,7 @@ class CliTests(unittest.TestCase):
         code, out = self.run_cli("--dry-run", "--select", "all")
         self.assertEqual(code, 0, out)
         self.assertIn("(moves to Trash)", out)
-        self.assertIn("Moved to Trash (needs the app):", out)
+        self.assertIn("Moved to Trash (needs the app's command line tool):", out)
         self.assertFalse([l for l in out.splitlines() if l.startswith("rm ") and "Archives" in l])
         # Executing it: the CLI has no helper, so the core refuses.
         import importlib.machinery, importlib.util, io, contextlib
@@ -1181,7 +1181,7 @@ class CliTests(unittest.TestCase):
                             "--select", "1"], capture_output=True, text=True,
                            stdin=subprocess.DEVNULL, env={**os.environ, "NO_COLOR": "1"})
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn("Moved to Trash (needs the app):", r.stdout)
+        self.assertIn("Moved to Trash (needs the app's command line tool):", r.stdout)
         self.assertNotIn("Commands:", r.stdout)
 
     def test_bad_selection(self):

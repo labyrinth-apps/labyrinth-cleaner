@@ -16,7 +16,11 @@ final class MainWindowController: NSObject, NSWindowDelegate, WKNavigationDelega
 
     var isVisible: Bool { window.isVisible }
 
-    override init() {
+    private let startFolder: String
+
+    /// `startFolder` is where the folder picker opens: the real home, or a fixture home.
+    init(startFolder: String = NSHomeDirectory()) {
+        self.startFolder = startFolder
         let config = WKWebViewConfiguration()
         let userContent = WKUserContentController()
         userContent.addUserScript(WKUserScript(source: Self.hardening, injectionTime: .atDocumentStart, forMainFrameOnly: true))
@@ -103,7 +107,7 @@ final class MainWindowController: NSObject, NSWindowDelegate, WKNavigationDelega
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
         panel.prompt = "Add Folder"
-        panel.directoryURL = URL(fileURLWithPath: NSHomeDirectory())
+        panel.directoryURL = URL(fileURLWithPath: startFolder)
         panel.beginSheetModal(for: window) { [weak self] response in
             guard response == .OK, let url = panel.url else { return }
             self?.webView.evaluateJavaScript(addedFolderScript(path: url.path), completionHandler: nil)

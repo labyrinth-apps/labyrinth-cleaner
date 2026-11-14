@@ -5,6 +5,7 @@ import LabyrinthKit
 /// "Disk almost full" notification. Permission is requested only the first time one is due.
 final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     var state = NotifyState()
+    var disabled = false
     var onClick: () -> Void = {}
 
     private var center: UNUserNotificationCenter? {
@@ -18,7 +19,7 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     }
 
     func check(freeBytes: Int64, freeText: String) {
-        guard step(&state, freeBytes: freeBytes), let center else { return }
+        guard !disabled, step(&state, freeBytes: freeBytes), let center else { return }
         center.requestAuthorization(options: [.alert]) { granted, _ in
             guard granted else { return }
             let c = UNMutableNotificationContent()
