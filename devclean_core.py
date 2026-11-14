@@ -1215,7 +1215,7 @@ def cost_for(it: Item) -> tuple:
         return "NO COST", "These simulators already can't run."
     if it.kind == "simdevice":
         return "~1 MIN", "Deletes its installed apps and data. Xcode can create a fresh one."
-    if it.kind == "trash":
+    if it.kind in ("trash", "finder-trash"):
         return "TRASH", "Moved to the Trash. You can Put Back."
     if it.key.startswith("appcache:"):
         g = _general()
@@ -1245,9 +1245,10 @@ def explain_for(it: Item, home: Optional[str] = None) -> tuple:
     if not it.offerable:
         return "", ""
     home = home or os.path.realpath(os.path.expanduser("~"))
-    deletes = tilde(it.path, home) if it.kind in ("path", "trash") else (it.command or "")
-    if it.kind == "trash":
-        restore = DOWNLOAD_RESTORE if it.key.startswith("download:") else TRASH_RESTORE
+    deletes = tilde(it.path, home) if it.kind in ("path", "trash", "finder-trash") else (it.command or "")
+    if it.kind in ("trash", "finder-trash"):
+        restore = (DOWNLOAD_RESTORE if it.key.startswith(("download:", "app:"))
+                   else TRASH_RESTORE)
     elif it.kind == "runtime":
         restore = "Re-download the runtime in Xcode › Settings › Components."
     elif it.kind == "simdevice":
@@ -1368,6 +1369,7 @@ class ScanResult:
     free_bytes: int
     total_bytes: int
     xcode_running: bool
+    app_bytes: int = 0
 
     @property
     def offerable(self):
@@ -1402,6 +1404,8 @@ def scan(cfg: Config, sim: Optional[SimctlProvider] = None,
     items += scan_downloads(cfg, env, now)
     g = _general()
     items += g.scan_app_caches(cfg, env, warnings)
+    app_items, app_bytes = _apps().scan_apps(cfg, env, now, warnings)
+    items += app_items
     items += g.scan_logs(cfg, now)
     items += g.scan_trash(cfg)
     items += g.scan_backups(cfg)
@@ -1447,7 +1451,7 @@ def scan(cfg: Config, sim: Optional[SimctlProvider] = None,
     items.sort(key=lambda i: (TIER_ORDER[i.tier], i.category, -(i.size or 0)))
     du = shutil.disk_usage(cfg.home)
     return ScanResult(items=items, warnings=warnings, free_bytes=du.free,
-                      total_bytes=du.total, xcode_running=xr)
+                      total_bytes=du.total, xcode_running=xr, app_bytes=app_bytes)
 
 
 # ---------------------------------------------------------------- safety gate
@@ -1577,6 +1581,7 @@ RESCANNERS = {
     "download:": _rescan_download,
     "archive:": lambda key, cfg, sim, env, now: scan_archives(cfg),
     "appcache:": lambda key, cfg, sim, env, now: _general().scan_app_caches(cfg, env),
+    "app:": lambda key, cfg, sim, env, now: _apps().scan_apps(cfg, env, now)[0],
     "log:": lambda key, cfg, sim, env, now: _general().scan_logs(cfg, now),
     "empty-trash": lambda key, cfg, sim, env, now: _general().scan_trash(cfg),
     "docker:": lambda key, cfg, sim, env, now: _general().scan_docker(cfg, env),

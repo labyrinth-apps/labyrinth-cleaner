@@ -13,6 +13,12 @@ import devclean_core as core
 # Never listed, whatever their folder: the system browser and this app itself.
 NEVER_LISTED = {"com.apple.Safari", "com.labyrinth-apps.cleaner"}
 
+# "Not opened in a long time" (days), and the note on Intel-only apps.
+APP_UNUSED_DAYS = 180
+INTEL_NOTE = "Intel only, stops working in macOS 28"
+RUNNING_APPS_WARNING = "couldn't list running apps; applications are not offered"
+MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+
 MDLS_NAMES = ("kMDItemLastUsedDate", "kMDItemPhysicalSize", "kMDItemExecutableArchitectures")
 
 
@@ -167,3 +173,92 @@ def mdls_metadata(paths: list) -> dict:
         return parse_mdls(r.stdout, list(paths))
     except Exception:
         return {}
+
+
+def pick_keeper(group: list, running_paths: set, root: Optional[str] = None) -> AppInfo:
+    """The copy to keep, by the first rule that separates them: running now, highest version,
+    highest build, a name without a " (" suffix, directly in `root` (/Applications), newest
+    last_used."""
+    def rank(a: AppInfo):
+        return (a.path in running_paths, core.version_key(a.version),
+                core.version_key(a.build), " (" not in a.name,
+                root is not None and os.path.dirname(a.path) == root, a.last_used or 0)
+    return max(group, key=rank)
+
+
+def _month_year(ts: float) -> str:
+    d = datetime.fromtimestamp(ts)
+    return f"{MONTHS[d.month - 1]} {d.year}"
+
+
+def _age_reason(a: AppInfo, now: float) -> Optional[str]:
+    if a.last_used is not None:
+        if (now - a.last_used) / 86400 > APP_UNUSED_DAYS:
+            return f"last opened {_month_year(a.last_used)}"
+        return None
+    if (now - a.mtime) / 86400 > APP_UNUSED_DAYS:
+        return "no record of being opened"
+    return None
+
+
+def scan_apps(cfg: "core.Config", env: "core.Env", now: float,
+              warnings: Optional[list] = None) -> tuple:
+    """(items, total bytes of every app found). Duplicates (same bundle ID) keep one copy and
+    offer the rest; single apps are offered when not opened for APP_UNUSED_DAYS. Everything
+    offered is REVIEW, never preselected. Fails closed when running apps can't be listed."""
+    found = find_apps(cfg, env)
+    total = sum(a.size or 0 for a in found)
+    if not found:
+        return [], 0
+    try:
+        running = set(env.running_app_paths())
+    except Exception:
+        if warnings is not None:
+            warnings.append(RUNNING_APPS_WARNING)
+        return [], total
+    silicon = env.apple_silicon()
+    uid = env.user_uid()
+    groups = {}
+    for a in found:
+        groups.setdefault(a.bundle_id, []).append(a)
+    root = cfg.app_roots[0] if cfg.app_roots else None
+
+    def make(a: AppInfo, note: str, offered: bool) -> "core.Item":
+        return core.Item(
+            key="app:" + a.path, category="Applications", label=a.name,
+            tier=core.REVIEW if offered else core.PROTECTED, note=note, path=a.path,
+            size=a.size, mtime=a.last_used or a.mtime, preselect=False,
+            kind=("trash" if a.uid == uid else "finder-trash") if offered else "info",
+            meta={"bundle_id": a.bundle_id, "version": a.version, "uid": a.uid, "ino": a.ino})
+
+    items = []
+    for group in groups.values():
+        keeper = pick_keeper(group, running, root)
+        keeper_running = keeper.path in running
+        if len(group) > 1:
+            items.append(make(keeper, "Keep: running now" if keeper_running
+                              else "Keep: newest version", False))
+        for a in group:
+            if len(group) > 1 and a is keeper:
+                continue
+            parts = []
+            if len(group) > 1:
+                if core.version_key(keeper.version) > core.version_key(a.version):
+                    parts.append(f"older copy \u00b7 keep {keeper.name} {keeper.version}")
+                elif keeper_running:
+                    parts.append(f"copy of {keeper.name} \u00b7 keep the running one")
+                else:
+                    parts.append(f"second copy of {keeper.name} \u00b7 keep "
+                                 + core.tilde(keeper.path, cfg.home))
+            age = _age_reason(a, now)
+            if age:
+                parts.append(age)
+            if not parts:
+                continue
+            if silicon and a.archs and "x86_64" in a.archs and "arm64" not in a.archs:
+                parts.append(INTEL_NOTE)
+            if a.path in running:
+                items.append(make(a, f"Quit {a.name} first", False))
+            else:
+                items.append(make(a, " \u00b7 ".join(parts), True))
+    return items, total
