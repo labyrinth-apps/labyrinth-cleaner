@@ -1096,12 +1096,6 @@ function svgEl(parent, tag, attrs) {
   return e;
 }
 
-// Decimal units, one decimal, like Finder (the scan itself reports binary units).
-function finderSize(n, digits) {
-  const g = n / 1e9;
-  return g >= 1000 ? (g / 1000).toFixed(1) + " TB" : g.toFixed(digits) + " GB";
-}
-
 const LW = { C: 320, R: 272, CORE: 126, RINGS: 8, ENTRY: 104 };   // angles: degrees clockwise from 12 o'clock
 
 function lwPolar(r, deg) {
@@ -1245,14 +1239,14 @@ function placeLeader() {
 function showWelcome(disk) {
   const known = drawMaze($("lwMaze"), disk);
   if (known) {
-    const free = finderSize(disk.free, 1);
+    const free = human(disk.free);                    // same units as the rest of the page
     const [num, unit] = free.split(" ");
     $("lwFree").textContent = num;
     const u = document.createElement("small");
     u.textContent = unit;
     $("lwFree").append(u);
-    $("lwOf").textContent = "Free of " + finderSize(disk.total, 0);
-    $("lwMaze").setAttribute("aria-label", `Disk map: ${free} free of ${finderSize(disk.total, 0)}`);
+    $("lwOf").textContent = "Free of " + human(disk.total);
+    $("lwMaze").setAttribute("aria-label", `Disk map: ${free} free of ${human(disk.total)}`);
   } else {
     $("lwFree").textContent = "Your disk";
     $("lwFree").classList.add("lw-plain");
