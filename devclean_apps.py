@@ -4,6 +4,7 @@ import os
 import plistlib
 import re
 import subprocess
+import unicodedata
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
@@ -35,6 +36,8 @@ class AppInfo:
     last_used: Optional[float]
     size: Optional[int]
     archs: Optional[list]
+    # True when Spotlight answered for this path (so last_used None means a real (null)).
+    spotlight: bool = False
 
 
 def _bundle_candidates(root: str):
@@ -101,9 +104,13 @@ def find_apps(cfg: "core.Config", env: "core.Env") -> list:
                 found.append(info)
     if not found:
         return []
-    meta = env.app_metadata([a.path for a in found]) or {}
+    try:
+        meta = env.app_metadata([a.path for a in found]) or {}
+    except Exception:
+        meta = {}
     for a in found:
         m = meta.get(a.path) or {}
+        a.spotlight = isinstance(meta.get(a.path), dict)
         a.last_used = m.get("last_used")
         a.archs = m.get("archs")
         a.size = m.get("size")
@@ -186,6 +193,10 @@ def pick_keeper(group: list, running_paths: set, root: Optional[str] = None) -> 
     return max(group, key=rank)
 
 
+def _nfd(p: str) -> str:
+    return unicodedata.normalize("NFD", p)
+
+
 def _month_year(ts: float) -> str:
     d = datetime.fromtimestamp(ts)
     return f"{MONTHS[d.month - 1]} {d.year}"
@@ -196,7 +207,7 @@ def _age_reason(a: AppInfo, now: float) -> Optional[str]:
         if (now - a.last_used) / 86400 > APP_UNUSED_DAYS:
             return f"last opened {_month_year(a.last_used)}"
         return None
-    if (now - a.mtime) / 86400 > APP_UNUSED_DAYS:
+    if a.spotlight and (now - a.mtime) / 86400 > APP_UNUSED_DAYS:
         return "no record of being opened"
     return None
 
@@ -211,7 +222,8 @@ def scan_apps(cfg: "core.Config", env: "core.Env", now: float,
     if not found:
         return [], 0
     try:
-        running = set(env.running_app_paths())
+        running_norm = {_nfd(p) for p in env.running_app_paths()}
+        running_ids = {b for b, _ in env.running_apps()}
     except Exception:
         if warnings is not None:
             warnings.append(RUNNING_APPS_WARNING)
@@ -222,6 +234,12 @@ def scan_apps(cfg: "core.Config", env: "core.Env", now: float,
     for a in found:
         groups.setdefault(a.bundle_id, []).append(a)
     root = cfg.app_roots[0] if cfg.app_roots else None
+    # A copy is running when lsappinfo named its path (unicode-normalized). A bundle ID that is
+    # running but matched none of its copies (say a translocated launch) makes every copy running.
+    running = set()
+    for bid, group in groups.items():
+        hit = {a.path for a in group if _nfd(a.path) in running_norm}
+        running |= hit or ({a.path for a in group} if bid in running_ids else set())
 
     def make(a: AppInfo, note: str, offered: bool) -> "core.Item":
         return core.Item(
@@ -243,10 +261,10 @@ def scan_apps(cfg: "core.Config", env: "core.Env", now: float,
                 continue
             parts = []
             if len(group) > 1:
-                if core.version_key(keeper.version) > core.version_key(a.version):
-                    parts.append(f"older copy \u00b7 keep {keeper.name} {keeper.version}")
-                elif keeper_running:
+                if keeper_running:
                     parts.append(f"copy of {keeper.name} \u00b7 keep the running one")
+                elif core.version_key(keeper.version) > core.version_key(a.version):
+                    parts.append(f"older copy \u00b7 keep {keeper.name} {keeper.version}")
                 else:
                     parts.append(f"second copy of {keeper.name} \u00b7 keep "
                                  + core.tilde(keeper.path, cfg.home))

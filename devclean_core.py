@@ -1415,6 +1415,7 @@ def scan(cfg: Config, sim: Optional[SimctlProvider] = None,
     if measure:
         def size_of(it: Item):
             if (it.kind in ("path", "info", "simdevice", "trash") and it.path and it.size is None
+                    and not it.key.startswith("app:")
                     and os.path.isdir(it.path)):
                 it.size = du_bytes(it.path)
                 if it.mtime is None:

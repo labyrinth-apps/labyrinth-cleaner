@@ -244,7 +244,9 @@ class ScanApps(AppsTestBase):
         os.utime(d, (NOW - 400 * DAY, NOW - 400 * DAY))
         os.utime(c, (NOW - 10 * DAY, NOW - 10 * DAY))
         meta = {a: {"last_used": self.used(181), "size": 1, "archs": None},
-                b: {"last_used": self.used(179), "size": 1, "archs": None}}
+                b: {"last_used": self.used(179), "size": 1, "archs": None},
+                c: {"last_used": None, "size": 1, "archs": None},
+                d: {"last_used": None, "size": 1, "archs": None}}
         items, _ = self.run_scan(meta)
         by = self.by_name(items)
         self.assertEqual(set(by), {"Old181", "NullOld"})
@@ -316,6 +318,58 @@ class ScanApps(AppsTestBase):
         self.assertEqual(apps.pick_keeper([mk("A", "/h/A.app", version="9"),
                                            mk("B", "/h/B.app", version="1")],
                                           {"/h/B.app"}, root).name, "B")
+
+    def test_missing_spotlight_data_never_lists_for_age(self):
+        a = make_app(self.R, "OldBundle.app", "com.a")
+        os.utime(a, (NOW - 900 * DAY, NOW - 900 * DAY))
+        self.assertEqual(self.run_scan({})[0], [])
+
+        def boom(paths):
+            raise OSError("mdls exploded")
+        items, total = self.run_scan(app_metadata=boom)
+        self.assertEqual(items, [])
+
+    def test_running_copy_with_higher_version_keeps_running_note(self):
+        old = make_app(self.R, "Old.app", "com.x", CFBundleShortVersionString="1.0")
+        new = make_app(self.R, "New.app", "com.x", CFBundleShortVersionString="2.0")
+        meta = {p: {"last_used": self.used(1), "size": 1, "archs": None} for p in (old, new)}
+        by = self.by_name(self.run_scan(meta, running_app_paths=lambda: {new})[0])
+        self.assertEqual(by["New"].note, "Keep: running now")
+        self.assertEqual(by["Old"].note, "copy of New \u00b7 keep the running one")
+
+    def test_scan_does_not_resize_app_rows(self):
+        a = make_app(self.R, "A.app", "com.a", CFBundleShortVersionString="2")
+        b = make_app(self.R, "B.app", "com.a", CFBundleShortVersionString="1")
+        meta = {p: {"last_used": self.used(1), "size": None, "archs": None} for p in (a, b)}
+        env = core.Env.fake(app_metadata=lambda paths: meta)
+        with mock.patch.object(core, "du_bytes", return_value=7) as du:
+            res = core.scan(self.cfg, env=env, now=NOW)
+        mine = [i for i in res.items if i.category == "Applications"]
+        self.assertEqual([i.size for i in mine], [7, 7])
+        self.assertEqual(res.app_bytes, 14)
+        self.assertEqual([c for c in du.call_args_list if "Applications" in str(c)].__len__(), 2)
+
+    def test_nfc_nfd_mismatch_still_running(self):
+        import unicodedata
+        old = make_app(self.R, "Caf\u00e9.app", "com.x", CFBundleShortVersionString="1")
+        new = make_app(self.R, "Other.app", "com.x", CFBundleShortVersionString="2")
+        meta = {p: {"last_used": self.used(1), "size": 1, "archs": None} for p in (old, new)}
+        nfd = unicodedata.normalize("NFD", old)
+        self.assertNotEqual(nfd, old)
+        by = self.by_name(self.run_scan(meta, running_app_paths=lambda: {nfd})[0])
+        self.assertEqual(by["Caf\u00e9"].note, "Keep: running now")
+
+    def test_running_bundle_from_unmatched_path_offers_no_copy(self):
+        old = make_app(self.R, "Old.app", "com.x", CFBundleShortVersionString="1")
+        new = make_app(self.R, "New.app", "com.x", CFBundleShortVersionString="2")
+        meta = {p: {"last_used": self.used(900), "size": 1, "archs": None} for p in (old, new)}
+        items, _ = self.run_scan(meta, running_apps=lambda: [("com.x", "X")],
+                                 running_app_paths=lambda: {"/private/var/AppTranslocation/X.app"})
+        self.assertEqual([i for i in items if i.tier == core.REVIEW], [])
+        warnings = []
+        items, _ = self.run_scan(meta, warnings, running_apps=raising)
+        self.assertEqual(items, [])
+        self.assertIn("couldn't list running apps; applications are not offered", warnings)
 
     def test_app_bytes_counts_every_grouped_app(self):
         a = make_app(self.R, "A.app", "com.a", CFBundleShortVersionString="2")
