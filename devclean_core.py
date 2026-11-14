@@ -79,6 +79,19 @@ class UnsafeTarget(Exception):
 
 # ---------------------------------------------------------------- config
 
+def is_real_home(home: str) -> bool:
+    """True for this account's own home ($HOME, or the account's home if $HOME points
+    elsewhere): the one place fixture runs must never change."""
+    import pwd
+    h = os.path.realpath(os.path.expanduser(home))
+    real = {os.path.realpath(os.path.expanduser("~"))}
+    try:
+        real.add(os.path.realpath(pwd.getpwuid(os.getuid()).pw_dir))
+    except KeyError:
+        pass
+    return h in real
+
+
 @dataclass
 class Config:
     home: str
@@ -90,7 +103,7 @@ class Config:
         self.home = os.path.realpath(os.path.expanduser(self.home))
         if self.app_roots is None:
             # Only the real home sees the real /Applications; fixture homes stay inside.
-            if self.home == os.path.realpath(os.path.expanduser("~")):
+            if is_real_home(self.home):
                 self.app_roots = ("/Applications", self.p("Applications"))
             else:
                 self.app_roots = (self.p(".fixture-root/Applications"), self.p("Applications"))
@@ -1877,13 +1890,21 @@ FINDER_APPS_DENIED = ("macOS didn't let Labyrinth Cleaner ask Finder to move app
                       "then try again.")
 FINDER_TIMED_OUT = "Finder took too long. Scan again to see what moved."
 FIXTURE_APP_REFUSAL = "REFUSED: fixture mode never moves apps outside the fixture home"
+FIXTURE_REAL_HOME_REFUSAL = "REFUSED: fixture mode never moves anything from your real home to the Trash"
 
 
-def _fixture_app_outside_home(it: Item, cfg: Config, runner: Callable) -> bool:
-    """Development never moves a real app: fixture runs only move apps inside cfg.home."""
-    return (runner is fixture_runner and it.key.startswith("app:")
-            and not (it.path and is_within(os.path.normpath(it.path), cfg.home)
-                     and it.path != cfg.home))
+def _fixture_refusal(it: Item, cfg: Config, runner: Callable) -> Optional[str]:
+    """Development never moves a real app or file to the Trash. Fixture runs only move apps
+    inside cfg.home, and nothing at all when cfg.home is the real home (`--simctl-fixture`
+    without `--home`)."""
+    if runner is not fixture_runner:
+        return None
+    if it.kind in ("trash", "finder-trash") and is_real_home(cfg.home):
+        return FIXTURE_REAL_HOME_REFUSAL
+    if it.key.startswith("app:") and not (it.path and is_within(os.path.normpath(it.path), cfg.home)
+                                          and it.path != cfg.home):
+        return FIXTURE_APP_REFUSAL
+    return None
 
 
 def trash_helper() -> Optional[str]:
@@ -1906,8 +1927,9 @@ def execute_item(it: Item, cfg: Config, sim: Optional[SimctlProvider] = None,
     LABYRINTH_TRASH_HELPER, and are refused when there is none.
     Items of kind "finder-trash" go to Finder through execute_finder_batch.
     """
-    if _fixture_app_outside_home(it, cfg, runner):
-        return False, FIXTURE_APP_REFUSAL
+    refusal = _fixture_refusal(it, cfg, runner)
+    if refusal:
+        return False, refusal
     if it.kind == "finder-trash":
         return execute_finder_batch([it], cfg, runner=runner, env=env, now=now, sim=sim)[0]
     if it.kind == "trash":
@@ -1964,7 +1986,7 @@ def execute_finder_batch(items: list, cfg: Config, runner: Callable = subprocess
     item, in order. Each item is validated first; refused ones are left out of the request.
     An app counts as moved only when it is gone from its path after the request."""
     if runner is fixture_runner:
-        return [(False, FIXTURE_APP_REFUSAL) if _fixture_app_outside_home(it, cfg, runner)
+        return [(False, _fixture_refusal(it, cfg, runner)) if _fixture_refusal(it, cfg, runner)
                 else (False, TRASH_REFUSAL) if trash_helper() is None
                 else (False, "REFUSED: fixture mode never runs osascript") for it in items]
     if trash_helper() is None:

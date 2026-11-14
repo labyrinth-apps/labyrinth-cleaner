@@ -258,6 +258,29 @@ class ScanApps(AppsTestBase):
         self.assertEqual(by["NullOld"].note, "no record of being opened")
         self.assertEqual(by["Old181"].tier, core.REVIEW)
 
+    def test_background_and_menu_bar_apps_without_a_date_are_not_listed_for_age(self):
+        # Started at login or by another app, they're used without ever being "opened",
+        # so a missing date says nothing. A date they do have still counts.
+        old = NOW - 400 * DAY
+        handler = make_app(self.R, "URL Handler.app", "com.h", LSBackgroundOnly=True)
+        menubar = make_app(self.R, "Ice.app", "com.i", LSUIElement=True)
+        as_text = make_app(self.R, "Bar.app", "com.t", LSUIElement="1")
+        dated = make_app(self.R, "OldBar.app", "com.d", LSUIElement=True)
+        for p in (handler, menubar, as_text, dated):
+            os.utime(p, (old, old))
+        meta = {p: {"last_used": None, "size": 1, "archs": None} for p in (handler, menubar, as_text)}
+        meta[dated] = {"last_used": self.used(300), "size": 1, "archs": None}
+        items, _ = self.run_scan(meta)
+        self.assertEqual(set(self.by_name(items)), {"OldBar"})
+
+    def test_background_app_copies_are_still_listed(self):
+        old = make_app(self.R, "Helper.app", "com.h", LSBackgroundOnly=True, CFBundleShortVersionString="1.0")
+        new = make_app(self.H, "Helper.app", "com.h", LSBackgroundOnly=True, CFBundleShortVersionString="2.0")
+        meta = {p: {"last_used": None, "size": 1, "archs": None} for p in (old, new)}
+        items, _ = self.run_scan(meta)
+        offered = [i for i in items if i.tier == core.REVIEW]
+        self.assertEqual([i.path for i in offered], [old])
+
     def test_intel_note_only_on_apple_silicon_and_listed_rows(self):
         old = make_app(self.R, "OldIntel.app", "com.a")
         new = make_app(self.R, "NewIntel.app", "com.b")
@@ -828,6 +851,29 @@ class AppGate(AppsTestBase):
         it = next(i for i in items if i.key == "app:" + mine)
         self.assertEqual(core.execute_item(it, cfg, runner=core.fixture_runner, env=self.env(),
                                            now=NOW), (True, "ok"))
+
+    def test_fixture_mode_never_moves_anything_from_the_real_home(self):
+        # `--simctl-fixture` without `--home`: fixture runner, real home. Pretend this
+        # temp home is the real one; nothing may reach the helper or Finder.
+        mine = self.old_app(self.H, "Mine.app", "com.mine")
+        items, _ = apps.scan_apps(self.cfg, self.env(), NOW)
+        it = next(i for i in items if i.key == "app:" + mine)
+        dl = core.Item(key="download:x", category="Downloads", label="x", tier=core.REVIEW,
+                       path=os.path.join(self.home, "Downloads", "x.dmg"), kind="trash")
+        finder = core.Item(**{**it.__dict__, "kind": "finder-trash"})
+        refusal = core.FIXTURE_REAL_HOME_REFUSAL
+        with mock.patch.object(core, "is_real_home", return_value=True):
+            for item in (it, dl, finder):
+                self.assertEqual(core.execute_item(item, self.cfg, runner=core.fixture_runner,
+                                                   env=self.env(), now=NOW), (False, refusal))
+            self.assertEqual(core.execute_finder_batch([finder], self.cfg, runner=core.fixture_runner,
+                                                       env=self.env(), now=NOW), [(False, refusal)])
+        self.assertFalse(os.path.exists(self.helper_log))
+        self.assertTrue(os.path.isdir(mine))
+
+    def test_is_real_home(self):
+        self.assertTrue(core.is_real_home("~"))
+        self.assertFalse(core.is_real_home(self.home))
 
     def test_finder_trash_needs_app_key(self):
         a = self.old_app(self.R, "A.app", "com.a")

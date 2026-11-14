@@ -39,6 +39,9 @@ class AppInfo:
     archs: Optional[list]
     # True when Spotlight answered for this path (so last_used None means a real (null)).
     spotlight: bool = False
+    # A menu bar or background-only app (LSUIElement / LSBackgroundOnly): started at login
+    # or by another app, so macOS may never record it as opened.
+    background: bool = False
 
 
 def _bundle_candidates(root: str):
@@ -87,10 +90,16 @@ def _read_app(path: str):
         v = plist.get(key)
         return v if isinstance(v, str) and v else None
 
+    def flag(key):
+        v = plist.get(key)
+        return v is True or (isinstance(v, int) and v == 1) or \
+            (isinstance(v, str) and v.strip().lower() in ("1", "yes", "true"))
+
     return AppInfo(path=path, name=os.path.basename(path)[:-4], bundle_id=bundle_id,
                    version=text("CFBundleShortVersionString"), build=text("CFBundleVersion"),
                    uid=st.st_uid, ino=st.st_ino, mtime=st.st_mtime,
-                   last_used=None, size=None, archs=None)
+                   last_used=None, size=None, archs=None,
+                   background=flag("LSUIElement") or flag("LSBackgroundOnly"))
 
 
 def find_apps(cfg: "core.Config", env: "core.Env", sizes: bool = True) -> list:
@@ -234,7 +243,8 @@ def _age_reason(a: AppInfo, now: float) -> Optional[str]:
         if (now - a.last_used) / 86400 > APP_UNUSED_DAYS:
             return f"last opened {_month_year(a.last_used)}"
         return None
-    if a.spotlight and (now - a.mtime) / 86400 > APP_UNUSED_DAYS:
+    # No date: only a normal app's silence means it's unused (see AppInfo.background).
+    if a.spotlight and not a.background and (now - a.mtime) / 86400 > APP_UNUSED_DAYS:
         return "no record of being opened"
     return None
 
