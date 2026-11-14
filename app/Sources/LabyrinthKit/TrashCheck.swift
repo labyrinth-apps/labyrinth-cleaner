@@ -15,16 +15,18 @@ private let slash = UInt8(ascii: "/")
 
 private func cstr(_ bytes: [UInt8]) -> [CChar] { bytes.map { CChar(bitPattern: $0) } + [0] }
 
-private func lstatMode(_ bytes: [UInt8]) -> mode_t? {
+/// File type and owner from one lstat (never follows a symlink).
+private func lstatInfo(_ bytes: [UInt8]) -> (mode: mode_t, uid: uid_t)? {
     var st = stat()
     guard lstat(cstr(bytes), &st) == 0 else { return nil }
-    return st.st_mode & S_IFMT
+    return (st.st_mode & S_IFMT, st.st_uid)
 }
 
-private func lstatOwner(_ bytes: [UInt8]) -> uid_t? {
-    var st = stat()
-    guard lstat(cstr(bytes), &st) == 0 else { return nil }
-    return st.st_uid
+private func lstatMode(_ bytes: [UInt8]) -> mode_t? { lstatInfo(bytes)?.mode }
+
+/// `parts` starts with all of `prefix` and has at least one more component.
+private func isBelow(_ parts: [[UInt8]], _ prefix: [[UInt8]]) -> Bool {
+    parts.count > prefix.count && Array(parts.prefix(prefix.count)) == prefix
 }
 
 private func realpathBytes(_ bytes: [UInt8]) -> [UInt8]? {
@@ -54,12 +56,14 @@ public func checkTrashable(path: String, home: String, isRealHome: Bool,
     func refuse(_ why: String) -> Result<TrashTarget, TrashRefusal> {
         .failure(TrashRefusal(message: why))
     }
+    // Moving a root-owned app is Finder's job (with its own password prompt), never this one's.
+    guard uid != 0 else { return refuse("never runs as root") }
     let pathBytes = b(path)
     guard let homeParts = cleanComponents(b(home)) else { return refuse("not a clean absolute home: \(home)") }
     guard let pathParts = cleanComponents(pathBytes) else { return refuse("not a clean absolute path: \(path)") }
     let systemApps = [b("Applications")]
-    let inSystemApps = isRealHome && pathParts.count > 1 && Array(pathParts.prefix(1)) == systemApps
-    let inHome = pathParts.count > homeParts.count && Array(pathParts.prefix(homeParts.count)) == homeParts
+    let inSystemApps = isRealHome && isBelow(pathParts, systemApps)
+    let inHome = isBelow(pathParts, homeParts)
     guard inSystemApps || inHome else { return refuse("not inside the home folder: \(path)") }
     // Components that are lstat-ed, and the bytes of the folder they hang off.
     let baseParts = inSystemApps ? [] : homeParts
@@ -71,7 +75,7 @@ public func checkTrashable(path: String, home: String, isRealHome: Bool,
 
     let target: TrashTarget
     let wantMode: mode_t
-    if let root = appRoots.first(where: { pathParts.count > $0.count && Array(pathParts.prefix($0.count)) == $0 }) {
+    if let root = appRoots.first(where: { isBelow(pathParts, $0) }) {
         let depth = pathParts.count - root.count
         guard depth == 1 || depth == 2, pathParts.last!.count > 4, pathParts.last!.suffix(4) == b(".app")[...] else {
             return refuse("not an application bundle: \(path)")
@@ -95,10 +99,13 @@ public func checkTrashable(path: String, home: String, isRealHome: Bool,
 
     // Walk the path's own bytes: the string checked is the string acted on.
     var cur = Array(pathBytes.prefix(baseParts.reduce(0) { $0 + $1.count + 1 }))
+    var owner: uid_t? = nil
     for (i, comp) in rel.enumerated() {
         cur += [slash] + comp
         let shown = String(decoding: cur, as: UTF8.self)
-        guard let mode = lstatMode(cur) else { return refuse("\(shown) is gone") }
+        guard let info = lstatInfo(cur) else { return refuse("\(shown) is gone") }
+        let mode = info.mode
+        owner = info.uid
         if mode == S_IFLNK { return refuse("is a symlink: \(shown)") }
         if i < rel.count - 1 {
             if mode != S_IFDIR { return refuse("not a folder: \(shown)") }
@@ -110,7 +117,7 @@ public func checkTrashable(path: String, home: String, isRealHome: Bool,
             }
         }
     }
-    if target == .application, lstatOwner(pathBytes) != uid { return refuse("not owned by you: \(path)") }
+    if target == .application, owner != uid { return refuse("not owned by you: \(path)") }
     // Mirrors the core's `realpath(path) != path` refusal.
     guard let real = realpathBytes(pathBytes), real == pathBytes else {
         return refuse("resolves elsewhere: \(path)")

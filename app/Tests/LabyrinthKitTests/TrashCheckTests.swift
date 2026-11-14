@@ -356,6 +356,14 @@ final class TrashCheckTests: XCTestCase {
         assertFailure(check(p("Applications/Tool.app"), uid: getuid() + 1), contains: "not owned by you")
     }
 
+    func testNeverAsRoot() throws {
+        try mkdir("Applications/Tool.app")
+        assertFailure(check(p("Applications/Tool.app"), uid: 0), contains: "never runs as root")
+        try mkfile("Downloads/a.zip")
+        assertFailure(checkTrashable(path: p("Downloads/a.zip"), home: home, isRealHome: false, uid: 0),
+                      contains: "never runs as root")
+    }
+
     func testFixtureRootOnlyForFixtureHomes() throws {
         try mkdir(".fixture-root/Applications/A.app")
         let path = p(".fixture-root/Applications/A.app")

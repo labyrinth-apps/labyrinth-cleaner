@@ -485,6 +485,11 @@ class ScanApps(AppsTestBase):
         self.assertEqual(k(None), k(""))
         self.assertLess(k(None), k("0.1"))
 
+    def test_month_year(self):
+        ts = core.datetime(2020, 1, 15, 12).timestamp()
+        self.assertEqual(apps._month_year(ts), "Jan 2020")
+        self.assertEqual(apps._month_year(core.datetime(2026, 9, 30, 12).timestamp()), "Sep 2026")
+
     def test_build_key(self):
         b = apps.build_key
         self.assertLess(b("16A242d"), b("16B100"))
