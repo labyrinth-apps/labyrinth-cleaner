@@ -434,7 +434,7 @@
     <div class="map">
       <div class="maphead"><h3 id="mapTitle"></h3><span class="muted">Click a block to filter · striped = can be cleaned</span></div>
       <div class="segs" id="segs"></div>
-      <div class="mapnote" id="mapnote" hidden>devclean doesn't analyse system, app or personal files.</div>
+      <div class="mapnote" id="mapnote" hidden>Labyrinth Cleaner doesn't analyse system, app or personal files.</div>
       <div class="legend" id="legend"></div>
     </div>
 
@@ -452,10 +452,10 @@
 
     <div class="card folders" id="folders" hidden>
       <h3>Project folders</h3>
-      <div class="gdesc">devclean looks for build folders and node_modules in these folders. It never deletes them.</div>
+      <div class="gdesc">Labyrinth Cleaner looks for build folders and node_modules in these folders. It never deletes the folders you add here.</div>
       <div id="flist"></div>
       <div class="fnote" id="fFixed" hidden>Set with devclean ui --projects for this run.</div>
-      <div class="fnote" id="fNote" hidden>Add folders in the app, or run devclean ui --projects DIR.</div>
+      <div class="fnote" id="fNote" hidden>Add folders in the Labyrinth Cleaner app, or run devclean ui --projects DIR.</div>
       <button class="ghost" id="fAdd" style="margin-top:12px" hidden>Add project folder…</button>
       <div class="ferr" id="fErr" hidden></div>
     </div>
@@ -566,7 +566,7 @@ const GROUPS = [
   { id: "time", title: "Costs you some time", desc: "Safe, but you need to reinstall before working on the project again.", color: "var(--time)", tier: "Costs reinstall time" },
   { id: "check", title: "Check first", desc: "Removes something you might still use. Getting it back means a big download.", color: "var(--check)", tier: "Check first" },
   { id: "review", title: "Review: moves to Trash", desc: "Your own files and shipped builds. They go to the Trash, so you can Put Back.", color: "var(--review)", tier: "Moves to Trash" },
-  { id: "kept", title: "Kept on purpose", desc: "Big, but devclean never deletes these. Here's why.", color: "var(--kept)", tier: "" },
+  { id: "kept", title: "Kept on purpose", desc: "Big, but Labyrinth Cleaner never deletes these. Here's why.", color: "var(--kept)", tier: "" },
 ];
 const GROUP = Object.fromEntries(GROUPS.map(g => [g.id, g]));
 const SEG_COLOR = { sim: "var(--sim)", android: "var(--android)", xcode: "var(--xcode)", web: "var(--node)", caches: "var(--cache)",
@@ -576,6 +576,11 @@ const ICON = { Flutter: "Fl", Web: "Js", Cache: "Ca", Gradle: "Gr", DeviceSuppor
   "App cache": "Ap", Logs: "Lg", Trash: "Tr", "iOS backups": "Bk", Docker: "Dk", Downloads: "Dl", "Xcode Archives": "Xa" };
 // The native app (plan 2) injects this bridge; a plain browser doesn't have it.
 const BRIDGE = (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.labyrinth) || null;
+// How to get going again after the server stops: the app restarts it on relaunch, a browser
+// page needs the command run again.
+const RESTART_HINT = BRIDGE
+  ? "Quit Labyrinth Cleaner from the menu bar and open it again to see where things stand."
+  : "Start it again with devclean ui to see where things stand.";
 const RING = 2 * Math.PI * 54;
 
 // ---------------------------------------------------------------- state
@@ -599,7 +604,7 @@ async function scan() {
   if (S.data) $("main").classList.add("busy"); else $("loading").hidden = false;
   try {
     const { status, data } = await api("GET", "/api/scan");
-    if (status !== 200 || !data) throw new Error((data && data.error) || ("HTTP " + status + (status === 403 ? ": reopen the link devclean printed" : "")));
+    if (status !== 200 || !data) throw new Error((data && data.error) || ("HTTP " + status + (status === 403 ? (BRIDGE ? ": close this window and open it again from the menu bar" : ": reopen the link devclean ui printed") : "")));
     S.data = data;
     S.sel = new Set();          // nothing is ticked for you
     S.expanded.clear();
@@ -956,7 +961,7 @@ async function doDelete() {
   try {
     res = await api("POST", "/api/clean", { scan_id: S.modal.scan_id, keys });
   } catch (e) {
-    return showModalError("Could not reach devclean: " + e.message + ". Is it still running? Start it again with devclean ui.");
+    return showModalError("Could not reach Labyrinth Cleaner: " + e.message + ". " + RESTART_HINT);
   }
   if (res.status === 409 && res.data && res.data.error === "stale scan") {
     $("mwarn").textContent = "The scan is out of date. Scanning again…";
@@ -1014,9 +1019,8 @@ async function pollJob() {
 function lostContact() {
   // The server stopped (Ctrl-C, idle exit, crash). Let the user out of the dialog.
   S.job = null;
-  $("mTitle").textContent = "Lost contact with devclean";
-  $("mSub").textContent = "It may have stopped. Anything already deleted stays deleted. " +
-    "Start it again (devclean ui, or Clean up… in the menu bar) to see where things stand.";
+  $("mTitle").textContent = "Lost contact with Labyrinth Cleaner";
+  $("mSub").textContent = "It may have stopped. Anything already deleted stays deleted. " + RESTART_HINT;
   $("mCancel").textContent = "Close";
   $("mCancel").hidden = false;
 }
@@ -1085,7 +1089,7 @@ async function changeFolders(body) {
   $("fErr").hidden = true;
   let res;
   try { res = await api("POST", "/api/settings/project-folders", body); }
-  catch (e) { res = { status: 0, data: { error: "Could not reach devclean: " + e.message } }; }
+  catch (e) { res = { status: 0, data: { error: "Could not reach Labyrinth Cleaner: " + e.message } }; }
   if (res.status !== 200) {
     $("fErr").textContent = (res.data && res.data.error) || ("HTTP " + res.status);
     $("fErr").hidden = false;

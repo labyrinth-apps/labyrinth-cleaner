@@ -766,14 +766,23 @@ class PageTests(unittest.TestCase):
                        "sessionStorage", "replaceState", "Nothing goes to the Trash",
                        "Select stale", "Review &amp; clean", "Menu bar turns amber below 30 GB",
                        "The scan is out of date", "small item",
-                       "devclean doesn't analyse system, app or personal files."):
+                       "Labyrinth Cleaner doesn't analyse system, app or personal files."):
             self.assertIn(needle, html)
 
     def test_page_handles_lost_server_and_cancelled_items(self):
         html = self.html()
-        self.assertIn("Lost contact with devclean", html)
+        self.assertIn("Lost contact with Labyrinth Cleaner", html)
         self.assertIn("cancelled:", html)                 # status icon for cancelled items
         self.assertNotIn("terminal still running", html)  # also started from the menu bar
+
+    def test_page_names_the_app_not_devclean(self):
+        # The page calls itself Labyrinth Cleaner; "devclean" only appears as the Terminal
+        # command (devclean ui), the token header, storage keys and code comments.
+        import re
+        html = self.html()
+        html = re.sub(r"//[^\n]*", "", html)
+        stray = [m.start() for m in re.finditer(r"(?i)devclean(?! ui)(?!-Token)(?!\.t\b)", html)]
+        self.assertEqual(stray, [], [html[i - 40:i + 30] for i in stray])
 
     def test_page_has_new_copy(self):
         html = self.html()
@@ -783,7 +792,7 @@ class PageTests(unittest.TestCase):
                        "Moving to the Trash needs the Labyrinth Cleaner app.",
                        "Select all", "Select none", "Deletes", "Costs you", "To get it back",
                        "Moves to Trash", "found automatically", "Add project folder…",
-                       "Add folders in the app, or run devclean ui --projects DIR.",
+                       "Add folders in the Labyrinth Cleaner app, or run devclean ui --projects DIR.",
                        "Moved to Trash: ", "aria-expanded", "/api/settings"):
             self.assertIn(needle, html)
         self.assertIn("S.sel = new Set()", html)

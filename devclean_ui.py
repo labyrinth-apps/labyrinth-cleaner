@@ -267,7 +267,7 @@ class UIServer:
                 with self._lock:
                     if self._cancel.is_set():
                         entry["status"] = "cancelled"
-                        entry["message"] = "devclean was stopped before this one started"
+                        entry["message"] = "Stopped before this one started"
                         continue
                     entry["status"] = "running"
                 try:
