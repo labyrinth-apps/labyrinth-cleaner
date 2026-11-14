@@ -100,7 +100,8 @@
   .seg.est{background-image:repeating-linear-gradient(135deg,rgba(236,229,216,.07) 0 1px,transparent 1px 7px)!important;color:var(--muted)}
   .seg.free{background:transparent!important;color:var(--dim);cursor:default;font:500 10px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase}
   .seg .reclaim{position:absolute;right:0;top:0;bottom:0;background:repeating-linear-gradient(135deg,rgba(18,17,16,.55) 0 1.5px,transparent 1.5px 5px);border-left:1px solid rgba(18,17,16,.7)}
-  .seg .lbl{position:relative}
+  .seg .lbl{position:relative;padding:3px 5px;margin-left:-5px;border-radius:2px}
+  .seg.free .lbl{padding:0;margin:0}
   .legend{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:0 32px;margin-top:18px}
   .legend div{display:grid;grid-template-columns:9px minmax(0,1fr) auto;column-gap:10px;align-items:baseline;font-size:12.5px;color:var(--muted);cursor:pointer;padding:7px 0 8px;border-top:1px solid var(--line)}
   .legend div:hover{color:var(--text)}
@@ -660,14 +661,34 @@ function renderMap() {
     const title = s.label + ": " + human(s.bytes) + (s.reclaimable ? " · " + human(s.reclaimable) + " can be cleaned" : "");
     segs.append(el("div", { class: cls, style: "flex:" + s.bytes + " 1 0;background:" + SEG_COLOR[s.id], title, onclick: () => pickSeg(s.id) },
       pct > 0 ? el("div", { class: "reclaim", style: "width:" + pct.toFixed(1) + "%" }) : null,
-      el("span", { class: "lbl", text: s.label + " " + human(s.bytes) })));
+      el("span", { class: "lbl", style: s.id === "free" ? "" : "background:" + SEG_COLOR[s.id], text: s.label + " " + human(s.bytes),
+                   "data-full": s.label + " " + human(s.bytes), "data-short": human(s.bytes) })));
     if (s.id !== "free") {
       legend.append(el("div", { onclick: () => pickSeg(s.id) },
         el("i", { style: "background:" + SEG_COLOR[s.id] }), s.label + " ", el("b", { text: human(s.bytes) }),
         s.reclaimable ? el("em", { text: " · " + human(s.reclaimable) + " can go" }) : null));
     }
   }
+  fitMapLabels();
 }
+
+// A block's label shows in full, or just its size, or not at all: never cut off. The legend
+// under the bar always has every figure. Needs layout, so it does nothing in the page tests.
+function fitMapLabels() {
+  const segs = $("segs");
+  if (!segs.querySelectorAll) return;
+  for (const lbl of segs.querySelectorAll(".lbl")) {
+    const seg = lbl.parentNode;
+    if (typeof seg.clientWidth !== "number" || !seg.clientWidth) continue;
+    const room = seg.clientWidth - 6;
+    lbl.style.display = "";
+    lbl.textContent = lbl.getAttribute("data-full");
+    if (lbl.offsetWidth <= room) continue;
+    lbl.textContent = lbl.getAttribute("data-short");
+    if (lbl.offsetWidth > room) lbl.style.display = "none";
+  }
+}
+if (typeof window !== "undefined" && window.addEventListener) window.addEventListener("resize", fitMapLabels);
 
 function pickSeg(id) {
   if (id === "free") return;
