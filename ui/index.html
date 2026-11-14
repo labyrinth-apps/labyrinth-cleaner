@@ -141,6 +141,7 @@
   .size small{display:block;color:var(--dim);font-weight:400;font-size:11px;margin-top:4px}
   .cost{display:block;font-size:12.5px;color:var(--muted);overflow-wrap:anywhere}
   .cost .tag{display:inline-block;margin-right:8px;font:500 10px/1 var(--mono);letter-spacing:.1em;padding:3px 6px;border:1px solid currentColor;border-radius:2px;white-space:nowrap;vertical-align:1px}
+  .ver{white-space:nowrap;display:inline-block;font:400 11px/1 var(--mono);color:var(--dim);margin-left:8px;vertical-align:1px}
   .stale{white-space:nowrap;display:inline-block;font:500 9.5px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--time);border:1px solid currentColor;padding:2px 5px;border-radius:2px;margin-left:8px;vertical-align:2px}
   .more{padding:11px 12px 12px 78px;color:var(--muted);font-size:12.5px;cursor:pointer;background:none;border:0;border-top:1px solid var(--line);text-align:left;width:100%}
   .more:hover{color:var(--text)}
@@ -807,7 +808,8 @@ function rowEl(g, r, max) {
     lead,
     el("div", { class: "ico", "aria-hidden": "true", text: ICON[r.category] || "··" }),
     el("div", {},
-      el("div", { class: "name" }, r.label, r.version ? el("span", { class: "stale", text: "v" + r.version }) : null,
+      el("div", { class: "name" }, r.label,
+        r.version && !labelHasVersion(r.label, r.version) ? el("span", { class: "ver", text: "v" + r.version }) : null,
         r.stale ? el("span", { class: "stale", text: r.stale }) : null, chev),
       r.warning ? el("div", { class: "warn", text: "⚠ " + r.warning }) : null,
       el("div", { class: "path", title: r.path, text: r.path })),
@@ -819,6 +821,13 @@ function rowEl(g, r, max) {
     row.append(panel);
   }
   return row;
+}
+
+// True when the label already shows the version as a whole number ("Figma (v88.1)" for 88.1,
+// not "Figma 10" for 1), so the row doesn't repeat it.
+function labelHasVersion(label, version) {
+  const v = String(version).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp("(^|[^0-9.])" + v + "(?![0-9]|\\.[0-9])").test(label || "");
 }
 
 // "What happens": all three lines come from the core, shown as text.

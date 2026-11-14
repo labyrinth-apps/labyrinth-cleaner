@@ -87,7 +87,8 @@ macOS's own Storage Management view lists these, but it is buried in System Sett
   - running apps, which appear as kept with "Quit <name> first"
 - **Listing an app with no recorded "last opened" date:** it is listed as unused only when its bundle mtime is also over 180 days old. The row then says "no record of being opened". Otherwise it isn't listed for age.
 - **Intel only:** the architectures include `x86_64` and not `arm64`. The note appears only on Apple Silicon Macs, and only on rows that are listed anyway; an Intel-only app is not listed for that alone.
-- **Duplicate groups** are by bundle ID. The suggested keeper is a kept row ("Keep: newest version"). The others are Review items whose note names the keeper's version and path.
+- **Duplicate groups** are by bundle ID. The suggested keeper is a kept row: "Keep: newest version" when its version is strictly the highest, otherwise "Keep: suggested copy". The others are Review items whose note names the keeper's version and path. Versions compare with trailing zeros ignored ("1" equals "1.0") and pre-releases ("1.0b2", "2.0-beta.1", "3.1 RC 2") below their release.
+- **The Xcode in use for command-line builds** (the app holding `xcode-select -p`) is treated like a running copy: it is the keeper and is never offered. Its row says "Keep: used for command-line builds".
 
 ### Items
 

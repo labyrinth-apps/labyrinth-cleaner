@@ -841,6 +841,12 @@ global.fetch = async (path, opt) => { if (opt.method === "POST") posts.push(JSON
   res.lock = find(card, x => x.className === "lock").map(x => [x.textContent, x.attrs.title]);
   res.gtotal = find(card, x => x.className === "gtotal").map(x => x.textContent);
   res.expect_total = human(10);
+  res.stale_chips = find(card, x => x.className === "stale").map(x => x.textContent);
+  res.ver_chips = find(card, x => x.className === "ver").map(x => x.textContent);
+  const verOf = (label, version) => find(cardOf([Object.assign({}, S.data.rows[3], { id: "v:" + label, label, version })]),
+    x => x.className === "ver").map(x => x.textContent);
+  res.ver_cases = [["Figma (v88.1)", "88.1"], ["Figma 10", "1"], ["Tool 1.0", "1"], ["Tool 2", "2.0"],
+    ["Plain", "2.0"], ["App 3.1 RC 2", "3.1 RC 2"]].map(([l, v]) => [l, verOf(l, v)]);
   if (sel) { sel.handlers.click(); res.selall_selected = [...S.sel].sort(); }
   S.sel = new Set(["b"]); openModal(); $("mAck").checked = true; refreshDelete();
   await doDelete(); res.sent_acknowledged = take();
@@ -929,10 +935,25 @@ class PageTests(unittest.TestCase):
         self.assertEqual(r["cb_count"], 1)          # the keeper row has no checkbox
         self.assertIn("older copy · keep Figma 101.6", r["texts"])   # the reason is on the row
         self.assertIn("v88.1", r["texts"])                           # the version
+        # Its own neutral chip, not the amber "stale" one, and only when the label lacks it.
+        self.assertEqual(r["ver_chips"], ["v88.1"])
+        self.assertNotIn("v88.1", r["stale_chips"])
+        self.assertEqual(dict(r["ver_cases"]), {
+            "Figma (v88.1)": [], "Figma 10": ["v1"], "Tool 1.0": ["v1"], "Tool 2": ["v2.0"],
+            "Plain": ["v2.0"], "App 3.1 RC 2": []})
         self.assertEqual(r["lock"], [["Keep", "Keep: newest version"]])
         self.assertEqual(r["gtotal"], [r["expect_total"]])           # keeper size left out
         self.assertTrue(r["selall_found"])
         self.assertEqual(r["selall_selected"], ["d"])
+
+    def test_version_chip_style_is_neutral(self):
+        html = self.html()
+        rule = re.search(r"\.ver\{([^}]*)\}", html)
+        self.assertIsNotNone(rule)
+        self.assertNotIn("uppercase", rule.group(1))
+        self.assertNotIn("border", rule.group(1))
+        self.assertNotIn("--time", rule.group(1))
+        self.assertIn("var(--dim)", rule.group(1))
 
     def test_page_has_applications_group(self):
         html = self.html()
