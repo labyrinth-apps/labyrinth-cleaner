@@ -179,19 +179,26 @@ def parse_mdls(text: str, paths: list) -> dict:
 
 
 def mdls_metadata(paths: list) -> dict:
-    """The real provider: one mdls call for all paths. {} on any failure."""
-    if not paths:
-        return {}
+    """The real provider: one mdls call for all paths. {} on any failure. An app removed
+    during the scan makes mdls fail for the whole batch, so a failed call is retried once
+    with only the paths still there."""
     cmd = ["mdls"]
     for n in MDLS_NAMES:
         cmd += ["-name", n]
-    try:
-        r = subprocess.run(cmd + list(paths), capture_output=True, text=True, timeout=60)
-        if r.returncode != 0:
+
+    def once(ps):
+        try:
+            r = subprocess.run(cmd + ps, capture_output=True, text=True, timeout=60)
+            return parse_mdls(r.stdout, ps) if r.returncode == 0 else {}
+        except Exception:
             return {}
-        return parse_mdls(r.stdout, list(paths))
-    except Exception:
-        return {}
+    paths = list(paths)
+    out = once(paths) if paths else {}
+    if not out and paths:
+        still = [p for p in paths if os.path.lexists(p)]
+        if still and len(still) < len(paths):
+            out = once(still)
+    return out
 
 
 # Pre-release markers, longest first so "alpha" isn't read as "a". Rank: dev < alpha < beta
@@ -204,6 +211,8 @@ def app_version_key(v: Optional[str]) -> tuple:
     """Sort key for app versions: "1" == "1.0", and "1.0b2", "2.0-beta.1" or "3.1 RC 2" rank
     below the release they lead to. (core.version_key stays as it is for Gradle/runtimes.)"""
     text = (v or "").lower()
+    if not re.search(r"\d", text):
+        return ((), -1)          # no version at all ranks below every real one, "0.0b1" too
     m = _PRE_RE.search(text)
     release = text[:m.start()] if m else text
 
@@ -218,15 +227,23 @@ def app_version_key(v: Optional[str]) -> tuple:
                                                          re.findall(r"\d+", text[m.end():])))
 
 
+def build_key(b: Optional[str]) -> tuple:
+    """Natural sort key for CFBundleVersion: "16A242d" < "16B100", "9" < "10". Build strings
+    have no pre-release words, so app_version_key would read the "A" in "16A242d" as alpha."""
+    parts = re.findall(r"\d+|[a-z]+", (b or "").lower())
+    return tuple((0, int(x), "") if x.isdigit() else (1, 0, x) for x in parts)
+
+
 def pick_keeper(group: list, running_paths: set, root: Optional[str] = None) -> AppInfo:
     """The copy to keep, by the first rule that separates them: running now (or otherwise
     pinned, see scan_apps), highest version, highest build, a name without a " (" suffix,
-    directly in `root` (/Applications), newest last_used."""
+    directly in `root` (/Applications), newest last_used, then the first path in sort order
+    (so a full tie picks the same copy on every scan)."""
     def rank(a: AppInfo):
         return (a.path in running_paths, app_version_key(a.version),
-                app_version_key(a.build), " (" not in a.name,
+                build_key(a.build), " (" not in a.name,
                 root is not None and os.path.dirname(a.path) == root, a.last_used or 0)
-    return max(group, key=rank)
+    return max(sorted(group, key=lambda a: a.path), key=rank)
 
 
 def _nfd(p: str) -> str:
@@ -322,12 +339,12 @@ def scan_apps(cfg: "core.Config", env: "core.Env", now: float,
                 continue
             parts = []
             if len(group) > 1:
-                if keeper_running:
-                    parts.append(f"copy of {keeper.name} \u00b7 keep the running one")
-                elif keeper_dev:
+                if keeper_dev:           # same order as the keeper's own note
                     parts.append(f"copy of {keeper.name} \u00b7 keep the one used for "
                                  "command-line builds")
-                elif app_version_key(keeper.version) > app_version_key(a.version):
+                elif keeper_running:
+                    parts.append(f"copy of {keeper.name} \u00b7 keep the running one")
+                elif keeper.version and app_version_key(keeper.version) > app_version_key(a.version):
                     parts.append(f"older copy \u00b7 keep {keeper.name} {keeper.version}")
                 else:
                     parts.append(f"second copy of {keeper.name} \u00b7 keep "

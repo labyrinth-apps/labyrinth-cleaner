@@ -1907,6 +1907,25 @@ def _fixture_refusal(it: Item, cfg: Config, runner: Callable) -> Optional[str]:
     return None
 
 
+def execute_items(items: list, cfg: Config, sim: Optional[SimctlProvider] = None,
+                  runner: Callable = subprocess.run, env: Optional[Env] = None,
+                  now: Optional[float] = None):
+    """Yields (item, ok, message) in order, like execute_item, except that every
+    `finder-trash` item goes to Finder in ONE request (one password prompt), sent when the
+    first of them comes up."""
+    finder = None
+    for it in items:
+        if it.kind == "finder-trash":
+            if finder is None:
+                batch = [i for i in items if i.kind == "finder-trash"]
+                finder = dict(zip((i.key for i in batch), execute_finder_batch(
+                    batch, cfg, runner=runner, env=env, now=now, sim=sim)))
+            ok, msg = finder[it.key]
+        else:
+            ok, msg = execute_item(it, cfg, sim, runner=runner, env=env, now=now)
+        yield it, ok, msg
+
+
 def trash_helper() -> Optional[str]:
     """The helper named by LABYRINTH_TRASH_HELPER when it is an absolute path to an
     executable file, else None (then nothing can be moved to the Trash)."""

@@ -269,14 +269,15 @@ def main(argv=None):
             print("Aborted. Nothing deleted.")
             return 1
 
-    before = core.shutil.disk_usage(cfg.home).free
+    before = core.free_space(cfg.home)
     failures = 0
+    results = core.execute_items(chosen, cfg, sim, runner=runner, env=env)
     for it in chosen:
         print(f"  deleting {it.label} ({human(it.size)}) ...", end="", flush=True)
-        ok, msg = core.execute_item(it, cfg, sim, runner=runner, env=env)
+        _, ok, msg = next(results)
         print(c(" done", "32") if ok else c(f" {msg}", "31"))
         failures += not ok
-    after = core.shutil.disk_usage(cfg.home).free
+    after = core.free_space(cfg.home)
     print(f"\nDisk free: {human(before)} -> {human(after)} (+{human(max(after - before, 0))})")
     if after - before < total * 0.5:
         print(c("Freed less than expected: APFS may release space lazily or a Time Machine "

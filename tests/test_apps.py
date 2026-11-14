@@ -147,6 +147,35 @@ class Metadata(unittest.TestCase):
             self.assertEqual(apps.mdls_metadata(["/a/A.app"]), {})
         self.assertEqual(apps.mdls_metadata([]), {})
 
+    def test_mdls_retries_without_an_app_removed_mid_scan(self):
+        base = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, base, ignore_errors=True)
+        here = [os.path.join(base, n) for n in ("A.app", "B.app", "C.app")]
+        for p in here:
+            os.makedirs(p)
+        gone = os.path.join(base, "Gone.app")
+        calls = []
+
+        def fake(argv, **kw):
+            calls.append(argv)
+            if gone in argv:
+                return mock.Mock(returncode=1, stdout="")
+            return mock.Mock(returncode=0, stdout=MDLS)
+        with mock.patch("subprocess.run", side_effect=fake):
+            out = apps.mdls_metadata(here[:2] + [gone] + here[2:])
+        self.assertEqual(len(calls), 2)
+        self.assertNotIn(gone, calls[1])
+        self.assertEqual(sorted(out), sorted(here))
+        # Nothing vanished: no second call, still all-or-nothing.
+        calls.clear()
+        with mock.patch("subprocess.run", side_effect=lambda a, **k: calls.append(a) or
+                        mock.Mock(returncode=1, stdout="")):
+            self.assertEqual(apps.mdls_metadata(here), {})
+        self.assertEqual(len(calls), 1)
+
+    def test_mdls_block_count_mismatch_is_empty(self):
+        self.assertEqual(apps.parse_mdls(MDLS, ["/a/A.app", "/a/B.app"]), {})
+
     def test_apple_silicon_wrapper(self):
         with mock.patch("subprocess.run", return_value=mock.Mock(returncode=0, stdout="1\n")):
             self.assertTrue(core._real_apple_silicon())
@@ -184,8 +213,12 @@ class FixtureConfig(unittest.TestCase):
             self.assertTrue(root.startswith(tmp + os.sep), root)
 
     def test_real_home_includes_system_applications(self):
-        cfg = core.Config(home="~")
-        self.assertEqual(cfg.app_roots, ("/Applications", cfg.p("Applications")))
+        # Pretend a temp folder is the real home: no real settings file is read.
+        home = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, home, ignore_errors=True)
+        with mock.patch.object(core, "is_real_home", return_value=True):
+            cfg = core.Config(home=home)
+        self.assertEqual(cfg.app_roots, ("/Applications", os.path.join(home, "Applications")))
 
 
 NOW = 1_800_000_000.0
@@ -448,8 +481,35 @@ class ScanApps(AppsTestBase):
         self.assertGreater(k("1.0b2"), k("0.9"))
         self.assertGreater(k("101.6"), k("88.1"))
         self.assertGreater(k("1.0.1"), k("1.0"))
+        self.assertLess(k(None), k("0.0b1"))
         self.assertEqual(k(None), k(""))
         self.assertLess(k(None), k("0.1"))
+
+    def test_build_key(self):
+        b = apps.build_key
+        self.assertLess(b("16A242d"), b("16B100"))
+        self.assertLess(b("16A242"), b("16A242d"))
+        self.assertLess(b("9"), b("10"))
+        self.assertLess(b(None), b("1"))
+        self.assertEqual(b("1.2"), b("1.2"))
+
+    def test_full_keeper_tie_is_stable(self):
+        def mk(path):
+            return apps.AppInfo(path=path, name="A", bundle_id="x", version="1", build="1", uid=0,
+                                ino=1, mtime=0.0, last_used=1.0, size=1, archs=None)
+        group = [mk("/h/b/A.app"), mk("/h/a/A.app")]
+        self.assertEqual(apps.pick_keeper(group, set(), "/Applications").path, "/h/a/A.app")
+        self.assertEqual(apps.pick_keeper(group[::-1], set(), "/Applications").path, "/h/a/A.app")
+
+    def test_copy_without_a_version_never_names_the_keeper_version_none(self):
+        a = make_app(self.R, "A.app", "com.a")
+        b = make_app(self.H, "A.app", "com.a", CFBundleShortVersionString="0.0b1")
+        meta = {p: {"last_used": self.used(1), "size": 1, "archs": None} for p in (a, b)}
+        items, _ = self.run_scan(meta)
+        offered = [i for i in items if i.tier == core.REVIEW]
+        self.assertEqual([i.path for i in offered], [a])
+        self.assertTrue(offered[0].note.startswith("older copy \u00b7 keep A 0.0b1"), offered[0].note)
+        self.assertNotIn("None", " ".join(i.note for i in items))
 
     def test_equal_versions_are_a_second_copy(self):
         a = make_app(self.R, "A.app", "com.x", CFBundleShortVersionString="1")
@@ -549,7 +609,8 @@ class ScanApps(AppsTestBase):
         by = self.xcodes(active_developer_dir=lambda: self.X + "/Contents/Developer",
                          running_app_paths=lambda: {self.X})
         self.assertEqual(by["Xcode"].note, "Keep: used for command-line builds")
-        self.assertEqual(by["Xcode-beta"].note, "copy of Xcode \u00b7 keep the running one")
+        self.assertEqual(by["Xcode-beta"].note,
+                         "copy of Xcode \u00b7 keep the one used for command-line builds")
 
     def test_developer_dir_failure_is_none(self):
         by = self.xcodes(active_developer_dir=raising)
@@ -917,6 +978,20 @@ class AppGate(AppsTestBase):
         self.assertIn('tell application "Finder" to delete', head)
         self.assertIn("with timeout of 3600 seconds", head)
         self.assertIn("on run argv", head)
+
+    def test_execute_items_sends_finder_items_in_one_request(self):
+        a, b, items = self.finder_pair()
+        own = core.Item(key="cache:x", category="Caches", label="x", tier=core.SAFE,
+                        path=os.path.join(self.home, "x"), kind="path")
+        run = FinderRunner()
+        with mock.patch.object(core, "execute_item", return_value=(True, "ok")) as single:
+            out = list(core.execute_items([items[0], own, items[1]], self.cfg, runner=run,
+                                          env=self.env(), now=NOW))
+        self.assertEqual([c.args[0] for c in single.call_args_list], [own])
+        self.assertEqual([(i.key, ok) for i, ok, _ in out],
+                         [(items[0].key, True), (own.key, True), (items[1].key, True)])
+        self.assertEqual(len(run.calls), 1)
+        self.assertEqual(run.calls[0][-2:], [a, b])
 
     def test_finder_batch_cancelled_maps_message(self):
         a, b, items = self.finder_pair()
