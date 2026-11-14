@@ -535,7 +535,8 @@ class ScanApps(AppsTestBase):
     def test_real_developer_dir_wrapper(self):
         self.assertIs(core.Env.real().active_developer_dir, core._real_active_developer_dir)
         self.assertIsNone(core.Env.fake().active_developer_dir())
-        dev = "/Applications/Xcode.app/Contents/Developer"
+        dev = os.path.join(self.home, "Xcode.app", "Contents", "Developer")   # temp home only
+        os.makedirs(dev)
         ok = mock.Mock(returncode=0, stdout=dev + "\n")
         with mock.patch("subprocess.run", return_value=ok) as run:
             self.assertEqual(core._real_active_developer_dir(), dev)
@@ -547,6 +548,24 @@ class ScanApps(AppsTestBase):
                 self.assertIsNone(core._real_active_developer_dir())
         with mock.patch("subprocess.run", side_effect=OSError):
             self.assertIsNone(core._real_active_developer_dir())
+
+    def test_symlinked_developer_dir_pins_the_real_bundle(self):
+        # xcode-select -s /Applications/Xcode.app where Xcode.app links to Xcode-16.0.app:
+        # the scanner lists only the real bundle, so the dev dir is resolved first.
+        real = make_app(self.R, "Xcode-16.0.app", "com.apple.dt.Xcode",
+                        CFBundleShortVersionString="16.0")
+        beta = make_app(self.R, "Xcode-beta.app", "com.apple.dt.Xcode",
+                        CFBundleShortVersionString="26.0")
+        os.makedirs(os.path.join(real, "Contents", "Developer"))
+        link = os.path.join(self.home, "Xcode.app")
+        os.symlink(real, link)
+        out = mock.Mock(returncode=0, stdout=link + "/Contents/Developer\n")
+        meta = {p: {"last_used": self.used(1), "size": 1, "archs": None} for p in (real, beta)}
+        with mock.patch("subprocess.run", return_value=out):
+            by = self.by_name(self.run_scan(
+                meta, active_developer_dir=core._real_active_developer_dir)[0])
+        self.assertEqual(by["Xcode-16.0"].note, "Keep: used for command-line builds")
+        self.assertEqual(by["Xcode-beta"].tier, core.REVIEW)
 
     def test_rescan_finds_app_by_key(self):
         env, res = self.scan_pair()

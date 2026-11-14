@@ -535,7 +535,10 @@ def _real_active_developer_dir() -> Optional[str]:
     except Exception:
         return None
     path = (r.stdout or "").strip()
-    return path if r.returncode == 0 and os.path.isabs(path) else None
+    if r.returncode != 0 or not os.path.isabs(path):
+        return None
+    # `xcode-select -s` may name a symlinked Xcode.app; the scanner lists the real bundle.
+    return os.path.realpath(path)
 
 
 @dataclass
