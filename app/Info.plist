@@ -22,6 +22,16 @@
 	<true/>
 	<key>LSMultipleInstancesProhibited</key>
 	<true/>
+	<key>SUFeedURL</key>
+	<string>https://github.com/labyrinth-apps/labyrinth-cleaner/releases/latest/download/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>@SU_PUBLIC_KEY@</string>
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
+	<key>SUScheduledCheckInterval</key>
+	<integer>86400</integer>
+	<key>SUAutomaticallyUpdate</key>
+	<false/>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsLocalNetworking</key>

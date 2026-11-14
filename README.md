@@ -16,6 +16,22 @@ This creates `build/Labyrinth Cleaner.app`. Add `--debug` for a faster, single-a
 
 The menu bar shows Finder's "available" number, in decimal GB. That number includes purgeable space macOS can free by itself. The window and the command line show strict free space in binary units, the same as `df -h`. So the menu bar usually reads a few GB higher.
 
+## Updates
+
+The app checks for a new version once a day and asks before installing it. You can also choose **Check for Updates…** from the menu-bar menu or the app menu. Updates are signed with a key only the maintainer holds, and the app refuses anything not signed with it. A build made without `app/sparkle_public_key.txt` has updates turned off, and so does any run with `--fixture-home`.
+
+## Back up the Sparkle key
+
+Updates are signed with a private key kept in the maintainer's login keychain. Create it once with `generate_keys` (from Sparkle's `bin/` folder in the SwiftPM artifact), then put the public half in the repo: `generate_keys -p > app/sparkle_public_key.txt`.
+
+Back the private key up. From the folder the Sparkle tools are in, run:
+
+```
+./generate_keys -x sparkle_private_key.txt
+```
+
+Keep `sparkle_private_key.txt` in a password manager or an encrypted drive, never in the repository. If the key is lost, installed copies can never update again: users would have to download a new app by hand.
+
 ## Command line
 
 The same engine runs without the app: `devclean ui` opens the page in your browser, and `devclean` is the command-line version. It needs only Python 3 and has no dependencies. From the app, choose **Install Command Line Tool…** in the menu-bar menu. It links `devclean` into `~/.local/bin` (or `/usr/local/bin` when that is writable) and runs through the app's own Python. If Terminal says `devclean` isn't found, add this line to `~/.zshrc`:

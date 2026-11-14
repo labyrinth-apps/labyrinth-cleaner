@@ -6,6 +6,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let notifier = Notifier()
     private var server: ServerProcess?
     private var fixture: FixtureOptions?
+    private var updater = Updater(enabled: false)
     private var window: MainWindowController?
     private var launchedAsLoginItem = false
 
@@ -22,13 +23,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         #endif
         notifier.disabled = fixture != nil          // fixture runs never ask for or post notifications
         statusMenu.fixture = fixture
+        let key = Bundle.main.object(forInfoDictionaryKey: "SUPublicEDKey") as? String
+        updater = Updater(enabled: updaterEnabled(publicKey: key, fixture: fixture != nil))
+        statusMenu.onCheckForUpdates = { [updater] in updater.checkForUpdates() }
+        statusMenu.canCheckForUpdates = { [updater] in updater.canCheck }
         notifier.onClick = { [weak self] in self?.openWindow() }
         notifier.install()
         statusMenu.onOpen = { [weak self] in self?.openWindow() }
         statusMenu.onQuit = { NSApp.terminate(nil) }
         statusMenu.onReading = { [weak self] free, text in self?.notifier.check(freeBytes: free, freeText: text) }
         statusMenu.install()
-        installMainMenu()
+        installMainMenu(updater: updater)
         if fixture == nil { warnAboutLegacyBarOnce() }   // fixture runs must not touch real defaults
         if !launchedAsLoginItem { openWindow() }
     }

@@ -24,7 +24,21 @@ cp "$BIN_DIR/LabyrinthCleaner" "$BIN_DIR/labyrinth-trash" "$APP/Contents/MacOS/"
 
 VERSION="$(tr -d '[:space:]' < VERSION)"
 BUILD="$(git rev-list --count HEAD)"
-sed -e "s/@VERSION@/$VERSION/" -e "s/@BUILD@/$BUILD/" app/Info.plist > "$APP/Contents/Info.plist"
+SU_KEY_FILE="$ROOT/app/sparkle_public_key.txt"
+SU_KEY=""
+[ -f "$SU_KEY_FILE" ] && SU_KEY="$(tr -d '[:space:]' < "$SU_KEY_FILE")"
+sed -e "s/@VERSION@/$VERSION/" -e "s/@BUILD@/$BUILD/" -e "s|@SU_PUBLIC_KEY@|$SU_KEY|" app/Info.plist > "$APP/Contents/Info.plist"
+if [ -z "$SU_KEY" ]; then
+    /usr/libexec/PlistBuddy -c "Delete :SUPublicEDKey" "$APP/Contents/Info.plist"
+    echo "warning: No Sparkle key: updates are disabled in this build (put the public key in app/sparkle_public_key.txt)" >&2
+fi
+
+# Sparkle.framework from the SwiftPM build products (ditto keeps the symlinks and XPC services).
+SPARKLE_FW="$BIN_DIR/Sparkle.framework"
+[ -d "$SPARKLE_FW" ] || SPARKLE_FW="$(find "$BIN_DIR/.." -maxdepth 3 -name Sparkle.framework -type d -print -quit)"
+[ -d "$SPARKLE_FW" ] || { echo "error: Sparkle.framework not found near $BIN_DIR" >&2; exit 1; }
+mkdir -p "$APP/Contents/Frameworks"
+ditto "$SPARKLE_FW" "$APP/Contents/Frameworks/Sparkle.framework"
 
 cp devclean devclean_*.py "$APP/Contents/Resources/core/"
 cp ui/index.html "$APP/Contents/Resources/core/ui/"

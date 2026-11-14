@@ -14,6 +14,9 @@ final class StatusMenu: NSObject, NSMenuDelegate {
     var fixture: FixtureOptions?
     var onOpen: () -> Void = {}
     var onQuit: () -> Void = {}
+    var onCheckForUpdates: () -> Void = {}
+    var canCheckForUpdates: () -> Bool = { false }
+    private let updatesItem = NSMenuItem(title: "Check for Updates…", action: nil, keyEquivalent: "")
     /// Called with every reading so the notifier can decide.
     var onReading: (_ free: Int64, _ text: String) -> Void = { _, _ in }
 
@@ -27,6 +30,9 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         loginItem.action = #selector(toggleLogin)
         loginItem.target = self
         menu.addItem(loginItem)
+        updatesItem.action = #selector(updatesTapped)
+        updatesItem.target = self
+        menu.addItem(updatesItem)
         let cli = NSMenuItem(title: "Install Command Line Tool…", action: #selector(cliTapped), keyEquivalent: "")
         cli.target = self
         menu.addItem(cli)
@@ -42,6 +48,7 @@ final class StatusMenu: NSObject, NSMenuDelegate {
 
     func menuWillOpen(_ menu: NSMenu) {
         refresh()
+        updatesItem.isEnabled = canCheckForUpdates()
         loginItem.state = fixture == nil && SMAppService.mainApp.status == .enabled ? .on : .off
     }
 
@@ -78,6 +85,7 @@ final class StatusMenu: NSObject, NSMenuDelegate {
 
     @objc private func openTapped() { onOpen() }
     @objc private func quitTapped() { onQuit() }
+    @objc private func updatesTapped() { onCheckForUpdates() }
     @objc private func cliTapped() { CLIInstaller.run(fixture: fixture) }
 
     @objc private func toggleLogin() {
