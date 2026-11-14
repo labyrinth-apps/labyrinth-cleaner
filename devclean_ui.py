@@ -295,7 +295,7 @@ class UIServer:
                         results = [core.execute_item(it, cfg, self.sim, runner=self.runner,
                                                      env=self.env)]
                 except Exception as e:
-                    results = [(False, str(e))] * len(batch)
+                    results = [(False, str(e) or type(e).__name__)] * len(batch)
                 with self._lock:
                     for (e, i), (ok, msg) in zip(batch, results):
                         self._finish(e, i, ok, msg)

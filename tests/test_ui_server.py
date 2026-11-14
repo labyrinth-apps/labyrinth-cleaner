@@ -538,6 +538,17 @@ class ApiTests(ServerTestCase):
         self.assertTrue(os.path.isfile(dmg))
 
 
+    def test_job_exception_without_message_names_its_type(self):
+        self.start()
+        p = self.scan()
+        key = self.safe_keys(p)[0]
+        with mock.patch.object(core, "execute_item", side_effect=RuntimeError()):
+            status, data = self.clean(p["scan_id"], [key])
+            self.assertEqual(status, 200, data)
+            job = self.wait_job(data["job_id"])
+        self.assertEqual((job["items"][0]["status"], job["items"][0]["message"]),
+                         ("failed", "RuntimeError"))
+
     def test_job_batches_finder_items_and_keeps_helper_results(self):
         import dataclasses
         import plistlib

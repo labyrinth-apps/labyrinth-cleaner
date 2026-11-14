@@ -1,7 +1,9 @@
 """Application bundle discovery and metadata (never the real /Applications or mdls)."""
 
+import dataclasses
 import os
 import plistlib
+import re
 import shutil
 import sys
 import tempfile
@@ -213,8 +215,9 @@ class ScanApps(AppsTestBase):
         items, total = self.run_scan(meta)
         by = self.by_name(items)
         keeper = by["Figma"]
+        # Figma and Figma (v101.6) tie on version: the keeper isn't strictly the newest.
         self.assertEqual((keeper.tier, keeper.kind, keeper.note),
-                         (core.PROTECTED, "info", "Keep: newest version"))
+                         (core.PROTECTED, "info", "Keep: suggested copy"))
         self.assertEqual(by["Figma (v88.1)"].note, "older copy \u00b7 keep Figma 101.6")
         self.assertEqual(by["Figma (v101.6)"].note,
                          "second copy of Figma \u00b7 keep ~/.fixture-root/Applications/Figma.app")
@@ -407,6 +410,144 @@ class ScanApps(AppsTestBase):
         self.assertEqual(offered.deletes, "~/.fixture-root/Applications/B.app")
         self.assertEqual(offered.restore, core.DOWNLOAD_RESTORE)
 
+    def test_app_version_key(self):
+        k = apps.app_version_key
+        self.assertEqual(k("1"), k("1.0"))
+        self.assertEqual(k("2.0.0"), k("2"))
+        self.assertLess(k("1.0b2"), k("1.0"))
+        self.assertLess(k("2.0-beta.1"), k("2.0"))
+        self.assertLess(k("3.1 RC 2"), k("3.1"))
+        self.assertLess(k("3.1 beta 5"), k("3.1 rc 2"))
+        self.assertLess(k("1.0a1"), k("1.0b1"))
+        self.assertLess(k("1.0 alpha 3"), k("1.0 Beta 1"))
+        self.assertLess(k("1.0dev"), k("1.0a1"))
+        self.assertLess(k("1.0b2"), k("1.0b10"))
+        self.assertGreater(k("1.0b2"), k("0.9"))
+        self.assertGreater(k("101.6"), k("88.1"))
+        self.assertGreater(k("1.0.1"), k("1.0"))
+        self.assertEqual(k(None), k(""))
+        self.assertLess(k(None), k("0.1"))
+
+    def test_equal_versions_are_a_second_copy(self):
+        a = make_app(self.R, "A.app", "com.x", CFBundleShortVersionString="1")
+        b = make_app(self.R, "B.app", "com.x", CFBundleShortVersionString="1.0")
+        meta = {a: {"last_used": self.used(1), "size": 1, "archs": None},
+                b: {"last_used": self.used(2), "size": 1, "archs": None}}
+        by = self.by_name(self.run_scan(meta)[0])
+        self.assertEqual(by["A"].note, "Keep: suggested copy")
+        self.assertEqual(by["B"].note,
+                         "second copy of A \u00b7 keep ~/.fixture-root/Applications/A.app")
+
+    def test_beta_is_older_than_release(self):
+        beta = make_app(self.R, "Beta.app", "com.x", CFBundleShortVersionString="1.0b2")
+        rel = make_app(self.R, "Rel.app", "com.x", CFBundleShortVersionString="1.0")
+        meta = {p: {"last_used": self.used(1), "size": 1, "archs": None} for p in (beta, rel)}
+        by = self.by_name(self.run_scan(meta)[0])
+        self.assertEqual((by["Rel"].tier, by["Rel"].note), (core.PROTECTED, "Keep: newest version"))
+        self.assertEqual(by["Beta"].note, "older copy \u00b7 keep Rel 1.0")
+        self.assertEqual(by["Beta"].tier, core.REVIEW)
+
+    def test_rescan_never_runs_du(self):
+        a = make_app(self.R, "A.app", "com.a", CFBundleShortVersionString="2")
+        b = make_app(self.R, "B.app", "com.a", CFBundleShortVersionString="1")
+        meta = {p: {"last_used": self.used(1), "size": None, "archs": None} for p in (a, b)}
+        env = core.Env.fake(app_metadata=lambda paths: meta)
+        with mock.patch.object(core, "du_bytes", return_value=7):
+            items, _ = apps.scan_apps(self.cfg, env, NOW)
+        offered = next(i for i in items if i.label == "B")
+        self.assertEqual(offered.size, 7)
+        with mock.patch.object(core, "du_bytes", side_effect=AssertionError("du ran")) as du:
+            items, _ = apps.scan_apps(self.cfg, env, NOW, sizes=False)
+            self.assertEqual(sorted(i.label for i in items), ["A", "B"])
+            fresh = core.RESCANNERS["app:"](offered.key, self.cfg, None, env, NOW)
+            self.assertIn(offered.key, [i.key for i in fresh])
+            core.validate_item(offered, self.cfg, env=env, now=NOW)
+        du.assert_not_called()
+
+    # The Xcode holding the active developer directory (xcode-select -p).
+    def xcodes(self, **env):
+        x = make_app(self.R, "Xcode.app", "com.apple.dt.Xcode", CFBundleShortVersionString="16.0")
+        beta = make_app(self.R, "Xcode-beta.app", "com.apple.dt.Xcode",
+                        CFBundleShortVersionString="26.0")
+        meta = {p: {"last_used": self.used(1), "size": 1, "archs": None} for p in (x, beta)}
+        return self.by_name(self.run_scan(meta, **env)[0])
+
+    @property
+    def X(self):
+        return os.path.join(self.R, "Xcode.app")
+
+    @property
+    def BETA(self):
+        return os.path.join(self.R, "Xcode-beta.app")
+
+    def test_developer_dir_xcode_is_the_keeper(self):
+        by = self.xcodes(active_developer_dir=lambda: self.X + "/Contents/Developer")
+        self.assertEqual((by["Xcode"].tier, by["Xcode"].kind, by["Xcode"].note),
+                         (core.PROTECTED, "info", "Keep: used for command-line builds"))
+        self.assertEqual(by["Xcode-beta"].tier, core.REVIEW)
+        self.assertEqual(by["Xcode-beta"].note,
+                         "copy of Xcode \u00b7 keep the one used for command-line builds")
+        # Without it, the newer beta is kept.
+        by = self.xcodes()
+        self.assertEqual(by["Xcode-beta"].note, "Keep: newest version")
+        self.assertEqual(by["Xcode"].tier, core.REVIEW)
+
+    def test_developer_dir_match_is_by_bundle_prefix(self):
+        by = self.xcodes(active_developer_dir=lambda: self.X + "-old/Contents/Developer")
+        self.assertEqual(by["Xcode-beta"].note, "Keep: newest version")
+        by = self.xcodes(active_developer_dir=lambda: self.X + "/")
+        self.assertEqual(by["Xcode"].note, "Keep: used for command-line builds")
+
+    def test_developer_dir_nfd(self):
+        import unicodedata
+        a = make_app(self.R, "Caf\u00e9.app", "com.x", CFBundleShortVersionString="1")
+        b = make_app(self.R, "Other.app", "com.x", CFBundleShortVersionString="2")
+        meta = {p: {"last_used": self.used(1), "size": 1, "archs": None} for p in (a, b)}
+        dev = unicodedata.normalize("NFD", a) + "/Contents/Developer"
+        by = self.by_name(self.run_scan(meta, active_developer_dir=lambda: dev)[0])
+        self.assertEqual(by["Caf\u00e9"].note, "Keep: used for command-line builds")
+
+    def test_developer_dir_app_listed_for_age_is_never_offered(self):
+        x = make_app(self.R, "Xcode.app", "com.apple.dt.Xcode")
+        meta = {x: {"last_used": self.used(900), "size": 1, "archs": None}}
+        (it,) = self.run_scan(meta, active_developer_dir=lambda: x + "/Contents/Developer")[0]
+        self.assertEqual((it.tier, it.kind, it.note),
+                         (core.PROTECTED, "info", "Keep: used for command-line builds"))
+        self.assertFalse(it.offerable)
+
+    def test_developer_dir_copy_is_never_offered_when_another_copy_runs(self):
+        by = self.xcodes(active_developer_dir=lambda: self.X + "/Contents/Developer",
+                         running_app_paths=lambda: {self.BETA})
+        self.assertEqual(by["Xcode-beta"].note, "Keep: running now")
+        self.assertEqual((by["Xcode"].tier, by["Xcode"].kind, by["Xcode"].note),
+                         (core.PROTECTED, "info", "Keep: used for command-line builds"))
+
+    def test_developer_dir_note_wins_over_running(self):
+        by = self.xcodes(active_developer_dir=lambda: self.X + "/Contents/Developer",
+                         running_app_paths=lambda: {self.X})
+        self.assertEqual(by["Xcode"].note, "Keep: used for command-line builds")
+        self.assertEqual(by["Xcode-beta"].note, "copy of Xcode \u00b7 keep the running one")
+
+    def test_developer_dir_failure_is_none(self):
+        by = self.xcodes(active_developer_dir=raising)
+        self.assertEqual(by["Xcode-beta"].note, "Keep: newest version")
+
+    def test_real_developer_dir_wrapper(self):
+        self.assertIs(core.Env.real().active_developer_dir, core._real_active_developer_dir)
+        self.assertIsNone(core.Env.fake().active_developer_dir())
+        dev = "/Applications/Xcode.app/Contents/Developer"
+        ok = mock.Mock(returncode=0, stdout=dev + "\n")
+        with mock.patch("subprocess.run", return_value=ok) as run:
+            self.assertEqual(core._real_active_developer_dir(), dev)
+        self.assertEqual(run.call_args[0][0], ["xcode-select", "-p"])
+        self.assertIn("timeout", run.call_args[1])
+        for result in (mock.Mock(returncode=2, stdout=dev), mock.Mock(returncode=0, stdout="\n"),
+                       mock.Mock(returncode=0, stdout="relative/path")):
+            with mock.patch("subprocess.run", return_value=result):
+                self.assertIsNone(core._real_active_developer_dir())
+        with mock.patch("subprocess.run", side_effect=OSError):
+            self.assertIsNone(core._real_active_developer_dir())
+
     def test_rescan_finds_app_by_key(self):
         env, res = self.scan_pair()
         it = next(i for i in res.items if i.label == "B")
@@ -454,6 +595,7 @@ class AppGate(AppsTestBase):
         self.addCleanup(shutil.rmtree, self.base, ignore_errors=True)
         self.meta = {}
         self.uid = os.getuid()
+        self.running = set()
         self.trash = os.path.join(self.home, ".Trash")
         self.helper_log = os.path.join(self.base, "helper.log")
         self.helper = os.path.join(self.base, "fake-trash-helper")
@@ -469,7 +611,8 @@ class AppGate(AppsTestBase):
     def env(self):
         return core.Env.fake(app_metadata=lambda paths: {
             p: self.meta.get(p, {"last_used": NOW - 300 * DAY, "size": 10, "archs": None})
-            for p in paths}, user_uid=lambda: self.uid)
+            for p in paths}, user_uid=lambda: self.uid,
+            running_app_paths=lambda: set(self.running))
 
     def old_app(self, parent, name, bundle_id, version="1"):
         return make_app(parent, name, bundle_id, CFBundleShortVersionString=version)
@@ -540,8 +683,16 @@ class AppGate(AppsTestBase):
         outside = self.old_app(self.home, "Out.app", "com.out")
         not_app = os.path.join(self.R, "Folder")
         os.makedirs(not_app)
-        for path, st_path in ((link, real), (via_link, in_vendor), (deep, deep),
-                              (outside, outside), (not_app, not_app)):
+        outer = self.old_app(self.R, "Foo.app", "com.foo")
+        nested = self.old_app(outer, "Bar.app", "com.bar")
+        # Each case fails on the gate's own check, not on the rescan that follows it.
+        cases = ((link, real, "is a symlink or resolves elsewhere"),
+                 (via_link, in_vendor, "is a symlink or resolves elsewhere"),
+                 (deep, deep, "too deep inside"),
+                 (outside, outside, "not in an Applications folder"),
+                 (not_app, not_app, "not an .app bundle"),
+                 (nested, nested, "inside another application"))
+        for path, st_path, reason in cases:
             st = os.lstat(st_path)
             for kind in ("trash", "finder-trash"):
                 it = core.Item(key="app:" + path, category="Applications", label="x",
@@ -549,11 +700,115 @@ class AppGate(AppsTestBase):
                                meta={"bundle_id": "com.x", "version": "1",
                                      "uid": st.st_uid, "ino": st.st_ino})
                 with self.subTest(path=path, kind=kind):
-                    with self.assertRaises(core.UnsafeTarget):
+                    with self.assertRaisesRegex(core.UnsafeTarget, re.escape(reason)):
                         core.validate_trash(it, self.cfg, self.env(), NOW)
-                    with self.assertRaises(core.UnsafeTarget):
+                    # Through validate_item the rescan refuses first: never listed.
+                    with self.assertRaisesRegex(core.UnsafeTarget,
+                                                "^" + re.escape(core.SITUATION_CHANGED) + "$"):
                         self.validate(it)
-        self.assertTrue(all(os.path.isdir(p) for p in (real, in_vendor, deep, outside)))
+        self.assertTrue(all(os.path.isdir(p) for p in (real, in_vendor, deep, outside, nested)))
+
+    # The anti-goal "a running app or the keeper is offered", checked again at delete time.
+    def test_gate_refuses_copy_that_started_running(self):
+        a = self.old_app(self.R, "A.app", "com.a")
+        it = self.item(a)
+        self.assertEqual(it.tier, core.REVIEW)
+        self.running = {a}
+        with self.assertRaisesRegex(core.UnsafeTarget, "^A: Quit A first$"):
+            self.validate(it)
+        res = core.execute_item(it, self.cfg, runner=core.subprocess.run, env=self.env(), now=NOW)
+        self.assertEqual(res, (False, "REFUSED: A: Quit A first"))
+        self.assertFalse(os.path.exists(self.helper_log))
+        # The Finder route too: nothing reaches osascript.
+        self.running = set()
+        self.uid = OTHER_UID
+        it = self.item(a)
+        self.assertEqual(it.kind, "finder-trash")
+        self.running = {a}
+        run = FinderRunner()
+        res = core.execute_finder_batch([it], self.cfg, runner=run, env=self.env(), now=NOW)
+        self.assertEqual(res, [(False, "REFUSED: A: Quit A first")])
+        self.assertEqual(run.calls, [])
+        self.assertTrue(os.path.isdir(a))
+
+    def test_gate_refuses_copy_that_became_the_keeper(self):
+        for p in ("A.app", "B.app", "C.app"):
+            self.meta[os.path.join(self.R, p)] = {"last_used": NOW - DAY, "size": 1, "archs": None}
+        a = self.old_app(self.R, "A.app", "com.x", version="3")
+        b = self.old_app(self.R, "B.app", "com.x", version="2")
+        self.old_app(self.R, "C.app", "com.x", version="1")
+        it = self.item(b)
+        self.assertEqual((it.tier, it.note), (core.REVIEW, "older copy \u00b7 keep A 3"))
+        os.rename(a, os.path.join(self.base, "A.app"))      # the old keeper is removed
+        with self.assertRaisesRegex(core.UnsafeTarget, "^B: Keep: newest version$"):
+            self.validate(it)
+        run = FinderRunner()
+        self.uid = OTHER_UID
+        finder_item = core.Item(**{**it.__dict__, "kind": "finder-trash"})
+        res = core.execute_finder_batch([finder_item], self.cfg, runner=run, env=self.env(),
+                                        now=NOW)
+        self.assertFalse(res[0][0])
+        self.assertEqual(run.calls, [])
+        self.assertTrue(os.path.isdir(b))
+
+    def test_gate_refuses_copy_whose_reason_changed(self):
+        # Two old copies: B is offered as the older copy. Once A is gone, B is offered only
+        # for its age, which the user never saw: scan again.
+        a = self.old_app(self.R, "A.app", "com.x", version="2")
+        b = self.old_app(self.R, "B.app", "com.x", version="1")
+        it = self.item(b)
+        self.assertTrue(it.note.startswith("older copy"))
+        os.rename(a, os.path.join(self.base, "A.app"))
+        self.assertTrue(self.item(b).offerable)
+        self.assert_changed(it)
+
+    def test_gate_refuses_developer_dir_app(self):
+        a = self.old_app(self.R, "Xcode.app", "com.apple.dt.Xcode")
+        it = self.item(a)
+        env = dataclasses.replace(self.env(), active_developer_dir=lambda: a + "/Contents/Developer")
+        with self.assertRaisesRegex(core.UnsafeTarget, "command-line builds"):
+            core.validate_item(it, self.cfg, env=env, now=NOW)
+
+    def test_unreadable_running_apps_is_situation_changed_not_gone(self):
+        a = self.old_app(self.R, "A.app", "com.a")
+        it = self.item(a)
+        env = dataclasses.replace(self.env(), running_app_paths=raising)
+        with self.assertRaises(core.UnsafeTarget) as cm:
+            core.validate_item(it, self.cfg, env=env, now=NOW)
+        self.assertEqual(str(cm.exception), core.SITUATION_CHANGED)
+        with self.assertRaises(core.UnsafeTarget) as cm:
+            core.validate_trash(it, self.cfg, env, NOW)
+        self.assertEqual(str(cm.exception), core.SITUATION_CHANGED)
+        # Really gone: still says so.
+        os.rename(a, os.path.join(self.base, "A.app"))
+        with self.assertRaisesRegex(core.UnsafeTarget, "is gone$"):
+            self.validate(it)
+
+    def test_fixture_mode_never_moves_apps_outside_the_fixture_home(self):
+        outside = os.path.join(self.base, "Applications")
+        os.makedirs(outside)
+        cfg = core.Config(home=self.home, app_roots=(outside, self.H))
+        a = self.old_app(outside, "Real.app", "com.real")
+        items, _ = apps.scan_apps(cfg, self.env(), NOW)
+        it = next(i for i in items if i.key == "app:" + a)
+        self.assertEqual(it.kind, "trash")
+        core.validate_item(it, cfg, env=self.env(), now=NOW)   # otherwise fine
+        refusal = "REFUSED: fixture mode never moves apps outside the fixture home"
+        self.assertEqual(core.execute_item(it, cfg, runner=core.fixture_runner, env=self.env(),
+                                           now=NOW), (False, refusal))
+        finder = core.Item(**{**it.__dict__, "kind": "finder-trash"})
+        self.assertEqual(core.execute_item(finder, cfg, runner=core.fixture_runner,
+                                           env=self.env(), now=NOW), (False, refusal))
+        self.assertEqual(core.execute_finder_batch([finder], cfg, runner=core.fixture_runner,
+                                                   env=self.env(), now=NOW), [(False, refusal)])
+        self.assertFalse(os.path.exists(self.helper_log))
+        self.assertTrue(os.path.isdir(a))
+        # Inside the fixture home the helper still runs in fixture mode.
+        mine = self.old_app(self.H, "Mine.app", "com.mine")
+        items, _ = apps.scan_apps(cfg, self.env(), NOW)
+        it = next(i for i in items if i.key == "app:" + mine)
+        self.assertEqual(core.execute_item(it, cfg, runner=core.fixture_runner, env=self.env(),
+                                           now=NOW), (True, "ok"))
 
     def test_finder_trash_needs_app_key(self):
         a = self.old_app(self.R, "A.app", "com.a")

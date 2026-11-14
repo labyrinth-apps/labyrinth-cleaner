@@ -528,6 +528,16 @@ def _real_apple_silicon() -> bool:
         return False
 
 
+def _real_active_developer_dir() -> Optional[str]:
+    """`xcode-select -p`: the developer directory command-line builds use, else None."""
+    try:
+        r = subprocess.run(["xcode-select", "-p"], capture_output=True, text=True, timeout=10)
+    except Exception:
+        return None
+    path = (r.stdout or "").strip()
+    return path if r.returncode == 0 and os.path.isabs(path) else None
+
+
 @dataclass
 class Env:
     """What the scan may ask the real Mac. Tests use `Env.fake()`."""
@@ -544,6 +554,8 @@ class Env:
     user_uid: Callable[[], int] = os.getuid
     # Outermost .app paths of running processes; raises when they can't be listed.
     running_app_paths: Callable[[], set] = lambda: set()
+    # `xcode-select -p`, or None when unknown.
+    active_developer_dir: Callable[[], Optional[str]] = lambda: None
 
     @classmethod
     def real(cls) -> "Env":
@@ -551,6 +563,7 @@ class Env:
                    last_used=_last_used, running_apps=_real_running_apps,
                    app_metadata=_real_app_metadata, apple_silicon=_real_apple_silicon,
                    running_app_paths=_real_running_app_paths, user_uid=os.getuid,
+                   active_developer_dir=_real_active_developer_dir,
                    docker=subprocess.run if shutil.which("docker") else None)
 
     @classmethod
@@ -1587,7 +1600,8 @@ RESCANNERS = {
     "download:": _rescan_download,
     "archive:": lambda key, cfg, sim, env, now: scan_archives(cfg),
     "appcache:": lambda key, cfg, sim, env, now: _general().scan_app_caches(cfg, env),
-    "app:": lambda key, cfg, sim, env, now: _apps().scan_apps(cfg, env, now)[0],
+    # The gate never uses sizes: no du for every app on each ticked app.
+    "app:": lambda key, cfg, sim, env, now: _apps().scan_apps(cfg, env, now, sizes=False)[0],
     "log:": lambda key, cfg, sim, env, now: _general().scan_logs(cfg, now),
     "empty-trash": lambda key, cfg, sim, env, now: _general().scan_trash(cfg),
     "docker:": lambda key, cfg, sim, env, now: _general().scan_docker(cfg, env),
@@ -1685,6 +1699,8 @@ def _validate_app(it: Item, cfg: Config, env: Env, now: float, fresh: Optional[I
         parts = os.path.relpath(path, root).split(os.sep)
         if len(parts) > 2:
             raise UnsafeTarget(f"too deep inside {root}: {path}")
+        if len(parts) == 2 and parts[0].endswith(".app"):
+            raise UnsafeTarget(f"inside another application: {path}")
         if os.path.realpath(root) != root:
             raise UnsafeTarget(f"{root} is a symlink")
         # Each level below the root: no symlinks (realpath == path also covers it).
@@ -1706,9 +1722,15 @@ def _validate_app(it: Item, cfg: Config, env: Env, now: float, fresh: Optional[I
     if fresh is None:
         fresh = rescan_item(it, cfg, None, env, now)
         if fresh is None:
-            raise UnsafeTarget(f"{it.label} is gone")
+            raise UnsafeTarget(SITUATION_CHANGED)   # it is here (lstat above), but not listed
+    if not fresh.offerable or fresh.kind != it.kind:
+        raise UnsafeTarget(SITUATION_CHANGED)
     keys = ("bundle_id", "version", "uid", "ino")
     if any(fresh.meta.get(k) != it.meta.get(k) for k in keys):
+        raise UnsafeTarget(SITUATION_CHANGED)
+    # Offered for another reason than the one the user saw (say the keeper was removed and
+    # it is now offered for its age only).
+    if fresh.note != it.note:
         raise UnsafeTarget(SITUATION_CHANGED)
 
 
@@ -1728,6 +1750,10 @@ def validate_item(it: Item, cfg: Config, sim: Optional[SimctlProvider] = None,
     now = time.time() if now is None else now
     fresh = rescan_item(it, cfg, sim, env, now)
     if fresh is None:
+        # An app that is still there but no longer listed (running apps unreadable, or now
+        # kept): the situation changed, it isn't gone.
+        if it.key.startswith("app:") and it.path and os.path.lexists(it.path):
+            raise UnsafeTarget(SITUATION_CHANGED)
         raise UnsafeTarget(f"{it.label} is gone")
     if not fresh.offerable:
         raise UnsafeTarget(f"{it.label}: {fresh.note or 'not offered now'}")
@@ -1791,6 +1817,14 @@ FINDER_APPS_DENIED = ("macOS didn't let Labyrinth Cleaner ask Finder to move app
                       "Allow it in System Settings \u2192 Privacy & Security \u2192 Automation, "
                       "then try again.")
 FINDER_TIMED_OUT = "Finder took too long. Scan again to see what moved."
+FIXTURE_APP_REFUSAL = "REFUSED: fixture mode never moves apps outside the fixture home"
+
+
+def _fixture_app_outside_home(it: Item, cfg: Config, runner: Callable) -> bool:
+    """Development never moves a real app: fixture runs only move apps inside cfg.home."""
+    return (runner is fixture_runner and it.key.startswith("app:")
+            and not (it.path and is_within(os.path.normpath(it.path), cfg.home)
+                     and it.path != cfg.home))
 
 
 def trash_helper() -> Optional[str]:
@@ -1813,6 +1847,8 @@ def execute_item(it: Item, cfg: Config, sim: Optional[SimctlProvider] = None,
     LABYRINTH_TRASH_HELPER, and are refused when there is none.
     Items of kind "finder-trash" go to Finder through execute_finder_batch.
     """
+    if _fixture_app_outside_home(it, cfg, runner):
+        return False, FIXTURE_APP_REFUSAL
     if it.kind == "finder-trash":
         return execute_finder_batch([it], cfg, runner=runner, env=env, now=now, sim=sim)[0]
     if it.kind == "trash":
@@ -1868,10 +1904,12 @@ def execute_finder_batch(items: list, cfg: Config, runner: Callable = subprocess
     """Move `finder-trash` apps to the Trash with ONE Finder request. One (ok, message) per
     item, in order. Each item is validated first; refused ones are left out of the request.
     An app counts as moved only when it is gone from its path after the request."""
+    if runner is fixture_runner:
+        return [(False, FIXTURE_APP_REFUSAL) if _fixture_app_outside_home(it, cfg, runner)
+                else (False, TRASH_REFUSAL) if trash_helper() is None
+                else (False, "REFUSED: fixture mode never runs osascript") for it in items]
     if trash_helper() is None:
         return [(False, TRASH_REFUSAL)] * len(items)
-    if runner is fixture_runner:
-        return [(False, "REFUSED: fixture mode never runs osascript")] * len(items)
     env = env if env is not None else default_env(cfg)
     results, send = [None] * len(items), []
     for n, it in enumerate(items):

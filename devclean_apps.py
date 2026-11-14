@@ -18,6 +18,7 @@ NEVER_LISTED = {"com.apple.Safari", "com.labyrinth-apps.cleaner"}
 APP_UNUSED_DAYS = 180
 INTEL_NOTE = "Intel only, stops working in macOS 28"
 RUNNING_APPS_WARNING = "couldn't list running apps; applications are not offered"
+DEVELOPER_DIR_NOTE = "Keep: used for command-line builds"
 MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
 
 MDLS_NAMES = ("kMDItemLastUsedDate", "kMDItemPhysicalSize", "kMDItemExecutableArchitectures")
@@ -92,7 +93,9 @@ def _read_app(path: str):
                    last_used=None, size=None, archs=None)
 
 
-def find_apps(cfg: "core.Config", env: "core.Env") -> list:
+def find_apps(cfg: "core.Config", env: "core.Env", sizes: bool = True) -> list:
+    """Every listed bundle with its Spotlight metadata. `sizes=False` leaves a size Spotlight
+    doesn't know as None instead of running du (the gate's rescan never needs sizes)."""
     seen, found = set(), []
     for root in cfg.app_roots:
         for path in _bundle_candidates(root):
@@ -114,7 +117,7 @@ def find_apps(cfg: "core.Config", env: "core.Env") -> list:
         a.last_used = m.get("last_used")
         a.archs = m.get("archs")
         a.size = m.get("size")
-        if a.size is None:
+        if a.size is None and sizes:
             a.size = core.du_bytes(a.path)
     return found
 
@@ -182,13 +185,37 @@ def mdls_metadata(paths: list) -> dict:
         return {}
 
 
+# Pre-release markers, longest first so "alpha" isn't read as "a". Rank: dev < alpha < beta
+# < pre/preview < rc, all below the release itself.
+_PRE_RE = re.compile(r"(?<![a-z])(alpha|beta|preview|pre|rc|dev|a|b)(?![a-z])")
+_PRE_RANK = {"dev": 0, "alpha": 1, "a": 1, "beta": 2, "b": 2, "pre": 3, "preview": 3, "rc": 4}
+
+
+def app_version_key(v: Optional[str]) -> tuple:
+    """Sort key for app versions: "1" == "1.0", and "1.0b2", "2.0-beta.1" or "3.1 RC 2" rank
+    below the release they lead to. (core.version_key stays as it is for Gradle/runtimes.)"""
+    text = (v or "").lower()
+    m = _PRE_RE.search(text)
+    release = text[:m.start()] if m else text
+
+    def nums(t):
+        n = [int(x) for x in re.findall(r"\d+", t)]
+        while n and n[-1] == 0:
+            n.pop()
+        return tuple(n)
+    if m is None:
+        return (nums(release), 1)
+    return (nums(release), 0, _PRE_RANK[m.group(1)], tuple(int(x) for x in
+                                                         re.findall(r"\d+", text[m.end():])))
+
+
 def pick_keeper(group: list, running_paths: set, root: Optional[str] = None) -> AppInfo:
-    """The copy to keep, by the first rule that separates them: running now, highest version,
-    highest build, a name without a " (" suffix, directly in `root` (/Applications), newest
-    last_used."""
+    """The copy to keep, by the first rule that separates them: running now (or otherwise
+    pinned, see scan_apps), highest version, highest build, a name without a " (" suffix,
+    directly in `root` (/Applications), newest last_used."""
     def rank(a: AppInfo):
-        return (a.path in running_paths, core.version_key(a.version),
-                core.version_key(a.build), " (" not in a.name,
+        return (a.path in running_paths, app_version_key(a.version),
+                app_version_key(a.build), " (" not in a.name,
                 root is not None and os.path.dirname(a.path) == root, a.last_used or 0)
     return max(group, key=rank)
 
@@ -212,12 +239,23 @@ def _age_reason(a: AppInfo, now: float) -> Optional[str]:
     return None
 
 
+def _developer_dir(env: "core.Env") -> Optional[str]:
+    """The active developer directory (xcode-select -p), NFD-normalised; None if unknown."""
+    try:
+        d = env.active_developer_dir()
+    except Exception:
+        return None
+    return _nfd(d.rstrip("/")) if isinstance(d, str) and d.strip("/") else None
+
+
 def scan_apps(cfg: "core.Config", env: "core.Env", now: float,
-              warnings: Optional[list] = None) -> tuple:
+              warnings: Optional[list] = None, sizes: bool = True) -> tuple:
     """(items, total bytes of every app found). Duplicates (same bundle ID) keep one copy and
     offer the rest; single apps are offered when not opened for APP_UNUSED_DAYS. Everything
-    offered is REVIEW, never preselected. Fails closed when running apps can't be listed."""
-    found = find_apps(cfg, env)
+    offered is REVIEW, never preselected. Fails closed when running apps can't be listed.
+    The app holding the active developer directory is pinned like a running one and never
+    offered. `sizes=False` skips du (see find_apps)."""
+    found = find_apps(cfg, env, sizes)
     total = sum(a.size or 0 for a in found)
     if not found:
         return [], 0
@@ -240,6 +278,10 @@ def scan_apps(cfg: "core.Config", env: "core.Env", now: float,
     for bid, group in groups.items():
         hit = {a.path for a in group if _nfd(a.path) in running_norm}
         running |= hit or ({a.path for a in group} if bid in running_ids else set())
+    # The bundle holding the active developer directory: xcodebuild and flutter build use it.
+    dev = _developer_dir(env)
+    devdir = {a.path for a in found
+              if dev is not None and (dev + "/").startswith(_nfd(a.path) + "/")}
 
     def make(a: AppInfo, note: str, offered: bool) -> "core.Item":
         return core.Item(
@@ -251,11 +293,20 @@ def scan_apps(cfg: "core.Config", env: "core.Env", now: float,
 
     items = []
     for group in groups.values():
-        keeper = pick_keeper(group, running, root)
+        keeper = pick_keeper(group, running | devdir, root)
         keeper_running = keeper.path in running
+        keeper_dev = keeper.path in devdir
         if len(group) > 1:
-            items.append(make(keeper, "Keep: running now" if keeper_running
-                              else "Keep: newest version", False))
+            others = [app_version_key(a.version) for a in group if a is not keeper]
+            if keeper_dev:
+                note = DEVELOPER_DIR_NOTE
+            elif keeper_running:
+                note = "Keep: running now"
+            elif all(app_version_key(keeper.version) > k for k in others):
+                note = "Keep: newest version"
+            else:
+                note = "Keep: suggested copy"
+            items.append(make(keeper, note, False))
         for a in group:
             if len(group) > 1 and a is keeper:
                 continue
@@ -263,7 +314,10 @@ def scan_apps(cfg: "core.Config", env: "core.Env", now: float,
             if len(group) > 1:
                 if keeper_running:
                     parts.append(f"copy of {keeper.name} \u00b7 keep the running one")
-                elif core.version_key(keeper.version) > core.version_key(a.version):
+                elif keeper_dev:
+                    parts.append(f"copy of {keeper.name} \u00b7 keep the one used for "
+                                 "command-line builds")
+                elif app_version_key(keeper.version) > app_version_key(a.version):
                     parts.append(f"older copy \u00b7 keep {keeper.name} {keeper.version}")
                 else:
                     parts.append(f"second copy of {keeper.name} \u00b7 keep "
@@ -275,7 +329,9 @@ def scan_apps(cfg: "core.Config", env: "core.Env", now: float,
                 continue
             if silicon and a.archs and "x86_64" in a.archs and "arm64" not in a.archs:
                 parts.append(INTEL_NOTE)
-            if a.path in running:
+            if a.path in devdir:
+                items.append(make(a, DEVELOPER_DIR_NOTE, False))
+            elif a.path in running:
                 items.append(make(a, f"Quit {a.name} first", False))
             else:
                 items.append(make(a, " \u00b7 ".join(parts), True))
