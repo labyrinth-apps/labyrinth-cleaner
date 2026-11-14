@@ -275,9 +275,10 @@ devclean menubar uninstall
 - **Docker:** the build cache and unused images, only when Docker is installed and answers within 3 seconds. Containers and volumes are never pruned.
 - **Trash:** its size, and "Empty Trash" through Finder. When you clean, emptying the Trash runs first, so it can't remove Downloads files moved there in the same clean.
 - **Downloads (review):** installers (`.dmg`, `.pkg`, `.mpkg`, `.xip`, and `.zip` over 50 MB) older than 14 days, and files over 500 MB not opened for 90 days. They are moved to the Trash.
+- **Applications (review):** extra copies of the same app, and apps not opened in 6 months or more. Each row says why it is listed, and one copy is suggested to keep (never offered). On Apple Silicon, Intel-only apps get a note. Apps move to the Trash, so Put Back works, including apps in `/Applications` that another user or macOS owns, which go through Finder. Finder may ask for your password; Labyrinth Cleaner never sees it. Safari, Labyrinth Cleaner itself and anything under `/System` are never listed. Support files an app leaves behind are not touched.
 - **iOS device backups:** size only. Manage them in Finder.
 
-**Never touched:** system folders, Mail and Messages, personal files outside the Downloads review list, uninstalling apps, removing languages from apps, and "memory cleaning". The app never asks for Full Disk Access; anything it can't read is skipped and the page says so.
+**Never touched:** system folders, Mail and Messages, personal files outside the Downloads review list, removing app support files, apps that are part of macOS, removing languages from apps, and "memory cleaning". The app never asks for Full Disk Access; anything it can't read is skipped and the page says so.
 
 ## Protection rules
 

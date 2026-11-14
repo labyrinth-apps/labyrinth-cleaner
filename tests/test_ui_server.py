@@ -775,7 +775,7 @@ class Node {
   removeChild(k) { this.kids.splice(this.kids.indexOf(k), 1); }
   append(...k) { this.kids.push(...k); }
   setAttribute(k, v) { this.attrs[k] = v; } getAttribute(k) { return this.attrs[k]; }
-  addEventListener() {} focus() {} closest() { return null; }
+  addEventListener(t, f) { (this.handlers = this.handlers || {})[t] = f; } focus() {} closest() { return null; }
   querySelector() { return new Node("x"); } querySelectorAll() { return []; }
 }
 const byId = {};
@@ -795,7 +795,9 @@ global.fetch = async (path, opt) => { if (opt.method === "POST") posts.push(JSON
   const row = (id, extra) => Object.assign({ id, group: "safe", kind: "path", keys: [id], size: 1, warning: "",
     members: [{ key: id, label: id, size: 1, deletes: "" }], label: id, cost: "", restore: "", deletes: "" }, extra);
   S.data = { scan_id: "s1", trash_helper: true, disk: { free: 10, total: 100 }, small_bytes: 0, segments: [],
-    rows: [row("a"), row("b", { group: "check", warning: "W" }), row("c", { group: "review", kind: "trash" })] };
+    rows: [row("a"), row("b", { group: "check", warning: "W" }), row("c", { group: "review", kind: "trash" }),
+      row("d", { group: "apps", kind: "finder-trash", category: "Applications" }),
+      row("k", { group: "apps", kind: "info", keys: [], category: "Applications" })] };
   const res = {};
   const take = () => posts.splice(0);
   S.sel = new Set(["a"]); openModal();
@@ -809,6 +811,20 @@ global.fetch = async (path, opt) => { if (opt.method === "POST") posts.push(JSON
   S.data.trash_helper = false; S.sel = new Set(["c"]); openModal(); $("mDelete").disabled = false;
   await doDelete(); res.sent_trash_without_app = take();
   closeModal();
+  res.blocked_finder_without_app = blockedReason({ rows: [S.data.rows[3]] });
+  S.data.trash_helper = true;
+  res.blocked_finder_with_app = blockedReason({ rows: [S.data.rows[3]] });
+  res.freeable_finder = freeable([S.data.rows[3]]);
+  const apps = GROUPS.find(g => g.id === "apps");
+  const cardOf = rows => groupCard(apps, rows);
+  const find = (n, f) => { const out = []; (function w(x) { if (!x) return; if (f(x)) out.push(x); (x.kids || []).forEach(w); })(n); return out; };
+  S.sel = new Set();
+  const card = cardOf(rowsOf("apps"));
+  res.cb_count = find(card, x => x.className === "cb").length;
+  let sel = null;
+  find(card, x => x.className === "selall toggle").forEach(b => { sel = b; });
+  res.selall_found = !!sel;
+  if (sel) { sel.handlers.click(); res.selall_selected = [...S.sel].sort(); }
   S.sel = new Set(["b"]); openModal(); $("mAck").checked = true; refreshDelete();
   await doDelete(); res.sent_acknowledged = take();
   console.log(JSON.stringify(res));
@@ -882,6 +898,26 @@ class PageTests(unittest.TestCase):
         self.assertEqual(r["sent_unacknowledged"], [])
         self.assertEqual(r["sent_trash_without_app"], [])
         self.assertEqual(r["sent_acknowledged"], [["b"]])
+
+    @unittest.skipUnless(shutil.which("node"), "needs node")
+    def test_page_applications_rows_in_node(self):
+        script = re.search(r"<script>(.*)</script>", self.html(), re.S).group(1)
+        js = PAGE_HARNESS.replace("/*PAGE*/", script)
+        out = subprocess.run(["node", "-e", js], capture_output=True, text=True, timeout=30)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        r = json.loads(out.stdout.strip().splitlines()[-1])
+        self.assertEqual(r["blocked_finder_without_app"], "needs the app")
+        self.assertEqual(r["blocked_finder_with_app"], "")
+        self.assertEqual(r["freeable_finder"], 0)
+        self.assertEqual(r["cb_count"], 1)          # the keeper row has no checkbox
+        self.assertTrue(r["selall_found"])
+        self.assertEqual(r["selall_selected"], ["d"])
+
+    def test_page_has_applications_group(self):
+        html = self.html()
+        for needle in ('id: "apps"', "Copies and apps you haven't opened in a while. Removing moves them to the Trash.",
+                       '"Ax"', "var(--apps)", 'data-f="apps"'):
+            self.assertIn(needle, html)
 
     def test_modal_snapshot_hooks(self):
         html = self.html()

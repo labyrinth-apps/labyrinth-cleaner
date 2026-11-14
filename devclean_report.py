@@ -14,7 +14,7 @@ import devclean_core as core
 
 GROUP_OF = {core.SAFE: "safe", core.OPTIN: "time", core.CAUTION: "check", core.REVIEW: "review",
             core.PROTECTED: "kept"}
-GROUP_ORDER = {"safe": 0, "time": 1, "check": 2, "review": 3, "kept": 4}
+GROUP_ORDER = {"safe": 0, "time": 1, "check": 2, "review": 3, "apps": 3.5, "kept": 4}
 
 SEGMENTS = [
     ("sim", "Simulators"),
@@ -26,10 +26,11 @@ SEGMENTS = [
     ("docker", "Docker"),
     ("downloads", "Downloads (reviewable)"),
     ("trash", "Trash"),
+    ("apps", "Applications"),
     ("other", "System, apps & other files"),
     ("free", "Free"),
 ]
-MEASURED = ("sim", "android", "xcode", "web", "caches", "appcache", "docker", "downloads", "trash")
+MEASURED = ("sim", "android", "xcode", "web", "caches", "appcache", "docker", "downloads", "trash", "apps")
 # Segments sized from their scan items (Android is sized from extras only).
 ITEM_SIZED = ("sim", "xcode", "web", "caches", "appcache", "docker", "downloads", "trash")
 SMALL_BYTES = 20 * 1024 * 1024
@@ -41,6 +42,8 @@ def _artifact_index(it: core.Item) -> int:
 
 
 def segment_of(it: core.Item) -> str:
+    if it.category == "Applications":
+        return "apps"
     if it.category == "Simulator" or it.kind == "simdevice":
         return "sim"
     if it.category == "Android":
@@ -87,7 +90,7 @@ def _row(rid, group, members, label, path):
     # The row shows its most expensive member's cost; ties go to node_modules/build.
     lead = min(members, key=lambda m: (-_cost_rank(m.cost_tag), _artifact_index(m)))
     stale_days = max((m.stale_days for m in members if m.stale_days is not None), default=None)
-    offer = group != "kept"
+    offer = all(m.offerable for m in members)
     warnings = list(dict.fromkeys(m.warning for m in members if m.warning))
     return {
         "id": rid,
@@ -115,7 +118,7 @@ def _row(rid, group, members, label, path):
 def build_rows(items: list, home: str) -> list:
     rows, projects = [], {}
     for it in items:
-        group = GROUP_OF[it.tier]
+        group = "apps" if it.category == "Applications" else GROUP_OF[it.tier]
         if it.project and it.meta.get("project_dir"):
             projects.setdefault((group, it.meta["project_dir"]), []).append(it)
         else:
@@ -159,6 +162,7 @@ def disk_map(res: core.ScanResult, extras: dict) -> list:
         if (seg in ITEM_SIZED and it.kind != "simctl-unavailable"
                 and not it.key.startswith("simdevice:")):
             size[seg] += it.size or 0
+    size["apps"] = res.app_bytes
     size["sim"] += extras.get("sim_devices", 0)
     size["android"] = extras.get("android_sdk", 0) + extras.get("android_avd", 0)
     size["caches"] += extras.get("gradle_modules", 0)

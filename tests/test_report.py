@@ -94,6 +94,28 @@ class ReportTests(unittest.TestCase):
         self.assertIsNone(rows["safe:Documents/Projects/flutter_app"]["stale"])
         self.assertIsNone(rows["time:Documents/Projects/labryinth-iptv"]["stale"])  # fresh project
 
+    def test_apps_group_and_segment(self):
+        def app(key, tier, kind, size):
+            return core.Item(key=key, category="Applications", label=key, tier=tier, kind=kind,
+                             path="/Applications/" + key + ".app", size=size)
+
+        def result(app_bytes):
+            items = [app("Old", core.REVIEW, "trash", 100), app("Keep", core.PROTECTED, "info", 50)]
+            return core.ScanResult(items=items, warnings=[], free_bytes=10 ** 6, total_bytes=10 ** 7,
+                                   xcode_running=False, app_bytes=app_bytes)
+
+        res = result(150)
+        rows = {r["label"]: r for r in rep.build_rows(res.items, self.home)}
+        self.assertEqual({r["group"] for r in rows.values()}, {"apps"})
+        self.assertEqual(rows["Keep"]["keys"], [])
+        self.assertEqual(rows["Old"]["keys"], ["Old"])
+        self.assertEqual(rep.segment_of(res.items[0]), "apps")
+        self.assertEqual(rep.GROUP_ORDER["apps"], 3.5)
+        by = {s["id"]: s for s in rep.disk_map(res, ZERO)}
+        self.assertEqual((by["apps"]["bytes"], by["apps"]["reclaimable"]), (150, 100))
+        other0 = {s["id"]: s for s in rep.disk_map(result(0), ZERO)}["other"]["bytes"]
+        self.assertEqual(other0 - by["other"]["bytes"], 150)
+
     def test_segment_of(self):
         by = {i.key: i for i in self.res.items}
         self.assertEqual(rep.segment_of(by["derived-data"]), "xcode")
@@ -180,7 +202,7 @@ class ReportTests(unittest.TestCase):
     def test_review_group_and_order(self):
         self.assertEqual(rep.GROUP_OF[core.REVIEW], "review")
         order = sorted(rep.GROUP_ORDER, key=rep.GROUP_ORDER.get)
-        self.assertEqual(order, ["safe", "time", "check", "review", "kept"])
+        self.assertEqual(order, ["safe", "time", "check", "review", "apps", "kept"])
         rows = rep.build_rows(self.res.items, self.home)
         arch = next(r for r in rows if r["id"] == "archive:2026-11-01/App.xcarchive")
         self.assertEqual(arch["group"], "review")
@@ -227,7 +249,7 @@ class ReportTests(unittest.TestCase):
             ("sim", "Simulators"), ("android", "Android"), ("xcode", "Xcode"),
             ("web", "node_modules"), ("caches", "Caches & builds"), ("appcache", "App caches"),
             ("docker", "Docker"), ("downloads", "Downloads (reviewable)"), ("trash", "Trash"),
-            ("other", "System, apps & other files"), ("free", "Free")])
+            ("apps", "Applications"), ("other", "System, apps & other files"), ("free", "Free")])
         h = self.home
         os.makedirs(f"{h}/Library/Caches/com.example.app")
         with open(f"{h}/Library/Caches/com.example.app/blob", "w") as f:

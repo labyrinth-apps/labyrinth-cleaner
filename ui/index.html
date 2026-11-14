@@ -14,7 +14,7 @@
     --sans:-apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;
     --safe:#97b48a; --time:#cbb26a; --check:#d98772; --review:#93a9c6; --kept:#8f887b;
     --sim:#a996bd; --android:#a9c08f; --xcode:#9aa0c9; --node:#cbb26a; --cache:#7fa58e; --sys:#3a3631;
-    --appcache:#b3b56f; --docker:#82aeac; --downloads:#c99aa0; --trash:#cc9470;
+    --appcache:#b3b56f; --docker:#82aeac; --downloads:#c99aa0; --trash:#cc9470; --apps:#b9a58a;
     --grain:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='240'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 .93 0 0 0 0 .9 0 0 0 0 .85 0 0 0 .055 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
   }
   *{box-sizing:border-box}
@@ -444,6 +444,7 @@
       <button class="chip" data-f="time"><i style="background:var(--time)"></i>Costs time</button>
       <button class="chip" data-f="check"><i style="background:var(--check)"></i>Check first</button>
       <button class="chip" data-f="review"><i style="background:var(--review)"></i>Review</button>
+      <button class="chip" data-f="apps"><i style="background:var(--apps)"></i>Apps</button>
       <button class="chip" data-f="kept"><i style="background:var(--kept)"></i>Kept</button>
       <button class="chip segchip" id="segchip" hidden></button>
     </div>
@@ -566,14 +567,15 @@ const GROUPS = [
   { id: "time", title: "Costs you some time", desc: "Safe, but you need to reinstall before working on the project again.", color: "var(--time)", tier: "Costs reinstall time" },
   { id: "check", title: "Check first", desc: "Removes something you might still use. Getting it back means a big download.", color: "var(--check)", tier: "Check first" },
   { id: "review", title: "Review: moves to Trash", desc: "Your own files and shipped builds. They go to the Trash, so you can Put Back.", color: "var(--review)", tier: "Moves to Trash" },
+  { id: "apps", title: "Applications", desc: "Copies and apps you haven't opened in a while. Removing moves them to the Trash.", color: "var(--apps)", tier: "" },
   { id: "kept", title: "Kept on purpose", desc: "Big, but Labyrinth Cleaner never deletes these. Here's why.", color: "var(--kept)", tier: "" },
 ];
 const GROUP = Object.fromEntries(GROUPS.map(g => [g.id, g]));
 const SEG_COLOR = { sim: "var(--sim)", android: "var(--android)", xcode: "var(--xcode)", web: "var(--node)", caches: "var(--cache)",
-  appcache: "var(--appcache)", docker: "var(--docker)", downloads: "var(--downloads)", trash: "var(--trash)", other: "var(--sys)", free: "transparent" };
+  appcache: "var(--appcache)", docker: "var(--docker)", downloads: "var(--downloads)", trash: "var(--trash)", apps: "var(--apps)", other: "var(--sys)", free: "transparent" };
 // Two-letter marks, like the symbols in a map's key.
 const ICON = { Flutter: "Fl", Web: "Js", Cache: "Ca", Gradle: "Gr", DeviceSupport: "Ds", Android: "An", Simulator: "Si", Protected: "Pr",
-  "App cache": "Ap", Logs: "Lg", Trash: "Tr", "iOS backups": "Bk", Docker: "Dk", Downloads: "Dl", "Xcode Archives": "Xa" };
+  "App cache": "Ap", Logs: "Lg", Trash: "Tr", "iOS backups": "Bk", Docker: "Dk", Downloads: "Dl", "Xcode Archives": "Xa", Applications: "Ax" };
 // The native app (plan 2) injects this bridge; a plain browser doesn't have it.
 const BRIDGE = (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.labyrinth) || null;
 // How to get going again after the server stops: the app restarts it on relaunch, a browser
@@ -591,7 +593,9 @@ function rowsOf(group) { return S.data.rows.filter(r => r.group === group); }
 function selectedRows() { return S.data ? S.data.rows.filter(r => S.sel.has(r.id)) : []; }
 function sum(rows) { return rows.reduce((a, r) => a + (r.size || 0), 0); }
 // Moving to the Trash frees nothing until the Trash is emptied.
-function freeable(rows) { return sum(rows.filter(r => r.kind !== "trash")); }
+// Both kinds go to the Trash: "trash" through the helper, "finder-trash" through Finder.
+function isTrashMove(r) { return r.kind === "trash" || r.kind === "finder-trash"; }
+function freeable(rows) { return sum(rows.filter(r => !isTrashMove(r))); }
 function offerable(g) { return g.id !== "kept"; }
 
 // ---------------------------------------------------------------- scan
@@ -757,7 +761,8 @@ function groupCard(g, rows) {
   if (offerable(g)) {
     head.append(el("button", { class: "selall toggle", text: selAllText(rows), onclick: () => {
       const any = rows.some(r => S.sel.has(r.id));
-      rows.forEach(r => any ? S.sel.delete(r.id) : S.sel.add(r.id)); renderGroups(); updateSelection();
+      // Rows with no keys (suggested keepers, running copies) are shown but never ticked.
+      rows.filter(r => r.keys.length).forEach(r => any ? S.sel.delete(r.id) : S.sel.add(r.id)); renderGroups(); updateSelection();
     } }));
   }
   card.append(head);
@@ -778,7 +783,8 @@ function groupCard(g, rows) {
 let whatSeq = 0;
 
 function rowEl(g, r, max) {
-  const kept = g.id === "kept";
+  // A row with no keys is never offered (a suggested keeper): no checkbox, nothing to confirm.
+  const kept = g.id === "kept" || !r.keys.length;
   const lead = kept
     ? el("div", { class: "lock", title: "Never deleted", text: "Kept" })
     : el("input", { type: "checkbox", class: "cb", style: "--c:" + g.color, "aria-label": "Select " + r.label,
@@ -793,7 +799,7 @@ function rowEl(g, r, max) {
     "aria-controls": wid, "aria-label": "What happens: " + r.label, title: "What happens", text: "›",
     onclick: e => toggleWhat(r.id, e.currentTarget, wid) });
   const size = el("div", { class: "size" }, human(r.size));
-  if (r.kind === "trash") size.append(el("span", { class: "totrash", text: "Moves to Trash" }));
+  if (isTrashMove(r)) size.append(el("span", { class: "totrash", text: "Moves to Trash" }));
   else if (!kept) size.append(el("div", { class: "mini" }, el("div", { style: "width:" + pct.toFixed(1) + "%;background:" + g.color })));
   size.append(el("small", { text: age(r.mtime) }));
   const row = el("div", { class: "item" },
@@ -867,7 +873,7 @@ function updateSelection() {
 function openModal() {
   const rows = selectedRows();
   if (!rows.length) return;
-  const toTrash = rows.filter(r => r.kind === "trash"), toDelete = rows.filter(r => r.kind !== "trash");
+  const toTrash = rows.filter(isTrashMove), toDelete = rows.filter(r => !isTrashMove(r));
   const free = S.data.disk.free, freed = freeable(rows);
   $("mTitle").textContent = (toTrash.length && !toDelete.length ? "Move " : toTrash.length ? "Clean " : "Delete ") +
     plural(rows.length, "item") + ", " + human(sum(rows)) + (toTrash.length && !toDelete.length ? " to the Trash?" : "?");
@@ -926,7 +932,7 @@ function hideModal() {
 // Why Delete can't go ahead for the confirmed rows, or "" when it can.
 function blockedReason(m) {
   if (!m) return "nothing to delete";
-  if (m.rows.some(r => r.kind === "trash") && !S.data.trash_helper) return "needs the app";
+  if (m.rows.some(isTrashMove) && !S.data.trash_helper) return "needs the app";
   if (m.rows.some(r => r.warning) && !$("mAck").checked) return "warnings not acknowledged";
   return "";
 }

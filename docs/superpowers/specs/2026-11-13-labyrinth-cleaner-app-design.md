@@ -34,7 +34,7 @@ They also want it to clean more than developer leftovers, so that it's useful on
   - Old installers and large untouched files are offered on a **review list**.
   - Picked files are **moved to the Trash** (Put Back works). They are never permanently deleted.
   - Downloads is the only place the app touches personal files.
-- **Never touched:** system folders, Mail and Messages, app uninstalling, removing languages from apps, "memory cleaning".
+- **Never touched:** system folders, Mail and Messages, removing app support files, apps that are part of macOS, removing languages from apps, "memory cleaning".
 - **Windows:** later. It isn't built now, but nothing should make it harder.
 - **Project folders:** nothing is hard-coded to the author's setup. `~/Documents/Projects` is unconventional, so it isn't a default.
 - **Simulators:** the app lists the simulators and simulator runtimes and lets the user choose which to clean, instead of deciding for them. See "Developer folders and simulators" below.
@@ -221,7 +221,7 @@ These rules apply to every item and supersede the earlier spec's preselection.
 - The Mac App Store. Its sandbox would block most of these scans.
 - A Swift rewrite of the core.
 - Full Disk Access, admin rights, a privileged helper, or system-wide caches.
-- Uninstalling apps, finding duplicates, or browsing every large file on the disk.
+- Uninstalling apps, finding duplicate files, or browsing every large file on the disk.
 - Payments, licensing, analytics, telemetry or crash reporting. The app sends nothing anywhere except Sparkle's update check.
 
 ## Anti-goals (a failure even if it works)
