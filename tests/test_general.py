@@ -474,6 +474,25 @@ class AppCacheTests(GeneralBase):
         with self.assertRaises(ValueError):
             general.parse_lsappinfo("")
 
+    def test_parse_lsappinfo_names_nested_helpers_after_their_host(self):
+        # Dia ships helpers inside its bundle that call themselves "Arc": while Dia runs and
+        # Arc doesn't, Arc's cache must not show as in use by "Arc".
+        text = (' 1) "Dia" ASN:x:\n    bundleID="company.thebrowser.dia"\n'
+                '    executable path="/Applications/Dia.app/Contents/MacOS/Dia"\n'
+                ' 2) "Arc" ASN:x:\n    bundleID="company.thebrowser.browser.helper"\n'
+                '    executable path="/Applications/Dia.app/Contents/Frameworks/ArcCore.framework/'
+                'Helpers/Browser Helper (Aperitif).app/Contents/MacOS/Browser Helper (Aperitif)"\n'
+                ' 3) "1Password Browser Helper" ASN:x:\n    bundleID="X.com.1password.browser-helper"\n'
+                '    executable path="/Applications/1Password.app/Contents/Library/LoginItems/'
+                '1Password Browser Helper.app/Contents/MacOS/1Password Browser Helper"\n')
+        apps = general.parse_lsappinfo(text)
+        self.assertEqual(apps, [("company.thebrowser.dia", "Dia"),
+                                ("company.thebrowser.browser.helper", "Dia"),
+                                ("X.com.1password.browser-helper", "1Password")])
+        self.assertIsNone(general._owner("Arc", apps))
+        # The helper's own cache stays protected while its host runs.
+        self.assertEqual(general._owner("company.thebrowser.browser.helper", apps)[1], "Dia")
+
     def test_real_running_apps_uses_lsappinfo_output(self):
         out = subprocess.CompletedProcess([], 0, '1) "A" ASN:x:\n bundleID="a.b.c"\n', "")
         with mock.patch.object(general.subprocess, "run", return_value=out) as run:

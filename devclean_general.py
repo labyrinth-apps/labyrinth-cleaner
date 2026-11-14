@@ -71,18 +71,46 @@ BROWSER_NAMES = {
 def parse_lsappinfo(text: str) -> list:
     """(bundle_id, name) for each app in `lsappinfo list` output.
 
-    An app block starts with `N) "Name" ASN:...` and carries a `bundleID="..."` line.
+    An app block starts with `N) "Name" ASN:...` and carries a `bundleID="..."` line and an
+    `executable path="..."` line. A helper running from inside another app's bundle
+    (`Dia.app/Contents/.../Helper.app`) is named after that outer app: Dia's helpers call
+    themselves "Arc", and must not make Arc look like it's running. The outer app's name is
+    its own lsappinfo name when it runs, else the bundle's file name.
     Raises ValueError when nothing parses: a Mac always has running apps, so an empty
     result means the output isn't what we expect.
     """
-    apps, name = [], ""
+    blocks = []                                   # [name, bundle_id or None, executable path]
     for line in text.splitlines():
         m = re.match(r'^\s*\d+\)\s+"([^"]*)"', line)
         if m:
-            name = m.group(1)
+            blocks.append([m.group(1), None, ""])
+            continue
+        if not blocks:
+            continue
         b = re.search(r'bundleID="([^"]+)"', line)
         if b:
-            apps.append((b.group(1), name))
+            blocks[-1][1] = b.group(1)
+        e = re.search(r'executable path="([^"]+)"', line)
+        if e:
+            blocks[-1][2] = e.group(1)
+
+    def outer_app(exe):
+        i = exe.find(".app/")
+        return exe[:i + 4] if i >= 0 else ""
+
+    top_names = {}                                # outer .app path -> name, for top-level apps
+    for name, _, exe in blocks:
+        host = outer_app(exe)
+        if host and exe.find(".app/", len(host)) < 0:
+            top_names.setdefault(host, name)
+    apps = []
+    for name, bundle, exe in blocks:
+        if not bundle:
+            continue
+        host = outer_app(exe)
+        if host and exe.find(".app/", len(host)) >= 0:    # nested inside another app
+            name = top_names.get(host) or os.path.basename(host)[:-4]
+        apps.append((bundle, name))
     if not apps:
         raise ValueError("no running apps found in lsappinfo output")
     return apps
