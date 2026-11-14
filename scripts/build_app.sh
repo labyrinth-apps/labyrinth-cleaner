@@ -59,12 +59,19 @@ VOLNAME="Labyrinth Cleaner"
 ENTITLEMENTS="$ROOT/app/LabyrinthCleaner.entitlements"
 SU_KEY_FILE="$ROOT/app/sparkle_public_key.txt"
 
+# The Sparkle public key with all whitespace removed ("" when the file is missing).
+SU_KEY=""
+[ -f "$SU_KEY_FILE" ] && SU_KEY="$(tr -d '[:space:]' < "$SU_KEY_FILE")"
+
 # Everything --publish needs is checked before building, so it never fails after a notarization.
 if [ -n "$PUBLISH_TAG" ]; then
-    [ -s "$SU_KEY_FILE" ] || die "--publish refuses to run without the Sparkle public key: app/sparkle_public_key.txt is missing.
+    [ -n "$SU_KEY" ] || die "--publish refuses to run without the Sparkle public key: app/sparkle_public_key.txt is missing or empty.
   Create the key once with Sparkle's generate_keys (from the SwiftPM artifact's bin/), then:
     generate_keys -p > app/sparkle_public_key.txt
   and run this again. A release without it could never update."
+    # An Ed25519 public key is 32 bytes: 44 base64 characters ending in one '='.
+    [[ "$SU_KEY" =~ ^[A-Za-z0-9+/]{43}=$ ]] \
+        || die "app/sparkle_public_key.txt does not hold a Sparkle EdDSA public key (expected 44 base64 characters from 'generate_keys -p')"
     [[ "$PUBLISH_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]] || die "--publish tag must look like vX.Y.Z, got '$PUBLISH_TAG'"
     [ "$PUBLISH_TAG" = "v$VERSION" ] || die "--publish $PUBLISH_TAG does not match VERSION ($VERSION)"
     command -v gh >/dev/null || die "--publish needs the GitHub CLI (gh)"
@@ -72,6 +79,29 @@ if [ -n "$PUBLISH_TAG" ]; then
         || warn "publishing to $RELEASES_REPO, but the app's feed (SUFeedURL) points at $DEFAULT_RELEASES_REPO"
 fi
 [ "$SKIP_BUILD" != 1 ] || [ -n "$PUBLISH_TAG" ] || die "LABYRINTH_SKIP_BUILD=1 only goes with --publish"
+
+# Read-only DMG mounts; all are detached (and their mount points removed) on exit.
+MOUNTS=()
+TEMP_DIRS=()
+cleanup() {
+    local m
+    for m in ${MOUNTS[@]+"${MOUNTS[@]}"}; do
+        [ -d "$m" ] || continue
+        hdiutil detach "$m" -quiet >/dev/null 2>&1 || hdiutil detach "$m" -force -quiet >/dev/null 2>&1 || true
+        rmdir "$m" 2>/dev/null || true
+    done
+    for m in ${TEMP_DIRS[@]+"${TEMP_DIRS[@]}"}; do rm -rf "$m"; done
+}
+trap cleanup EXIT
+
+# Attaches $1 read-only at a fresh mount point and sets MOUNTED to it.
+attach_readonly() {
+    MOUNTED="$(mktemp -d "${TMPDIR:-/tmp}/labyrinth-dmg.XXXXXX")"
+    MOUNTS+=("$MOUNTED")
+    local out
+    out="$(hdiutil attach -readonly -nobrowse -noautoopen -mountpoint "$MOUNTED" "$1" 2>&1)" \
+        || die "could not attach $1 read-only: $out"
+}
 
 # Signs with the Developer ID identity and the hardened runtime. Never --deep: callers sign inside-out.
 sign() { codesign --force --sign "$DEVID_SHA" --options runtime --timestamp "$@"; }
@@ -102,8 +132,8 @@ build_bundle() {
     cp "$bin_dir/LabyrinthCleaner" "$bin_dir/labyrinth-trash" "$APP/Contents/MacOS/"
 
     build="$(git rev-list --count HEAD)"
-    su_key=""
-    [ -f "$SU_KEY_FILE" ] && su_key="$(tr -d '[:space:]' < "$SU_KEY_FILE")"
+    su_key="$SU_KEY"
+    [ -n "$su_key" ] || [ -z "$PUBLISH_TAG" ] || die "--publish needs the Sparkle public key in app/sparkle_public_key.txt"
     sed -e "s/@VERSION@/$VERSION/" -e "s/@BUILD@/$build/" -e "s|@SU_PUBLIC_KEY@|$su_key|" app/Info.plist > "$APP/Contents/Info.plist"
     if [ -z "$su_key" ]; then
         /usr/libexec/PlistBuddy -c "Delete :SUPublicEDKey" "$APP/Contents/Info.plist"
@@ -235,6 +265,7 @@ gatekeeper_checks() {
     xcrun stapler validate "$DMG"
     # A downloaded copy carries the quarantine flag; that is what a user's first open sees.
     q="$(mktemp -d "$BUILD_DIR/.gatekeeper.XXXXXX")"
+    TEMP_DIRS+=("$q")
     flag="0081;$(printf '%x' "$(date +%s)");Safari;"
     qdmg="$q/$(basename "$DMG")"
     qapp="$q/$(basename "$APP")"
@@ -244,6 +275,10 @@ gatekeeper_checks() {
     xattr -w com.apple.quarantine "$flag" "$qapp"
     gatekeeper_accepts -t open --context context:primary-signature "$qdmg"
     gatekeeper_accepts -t exec "$qapp"
+    # The app exactly as shipped: inside the quarantined DMG, with the Finder flags dmgbuild sets.
+    attach_readonly "$qdmg"
+    gatekeeper_accepts -t exec "$MOUNTED/$(basename "$APP")"
+    hdiutil detach "$MOUNTED" -quiet >/dev/null
     rm -rf "$q"
 }
 
@@ -258,6 +293,15 @@ publish() {
     dmg_name="$(basename "$DMG")"
     step "Publishing $dmg_name to $RELEASES_REPO@$tag"
     xcrun stapler validate "$DMG" || die "$DMG has no stapled notarization ticket"
+
+    # The app inside the DMG must carry this exact Sparkle key, or the release could never update
+    # (a DMG built before the key was added would otherwise slip through LABYRINTH_SKIP_BUILD=1).
+    local shipped_key
+    attach_readonly "$DMG"
+    shipped_key="$(plutil -extract SUPublicEDKey raw -o - "$MOUNTED/$(basename "$APP")/Contents/Info.plist" 2>/dev/null || true)"
+    hdiutil detach "$MOUNTED" -quiet >/dev/null || true
+    [ -n "$shipped_key" ] || die "the app in $DMG has no SUPublicEDKey (built without app/sparkle_public_key.txt): rebuild it"
+    [ "$shipped_key" = "$SU_KEY" ] || die "the app in $DMG has a different SUPublicEDKey than app/sparkle_public_key.txt: rebuild it"
 
     # The appcast is generated from a copy of this version's DMG (Sparkle reads the version
     # from the app inside it) and signed with the EdDSA key in the login keychain.
@@ -282,7 +326,17 @@ Requires macOS 13 or later, Apple Silicon or Intel. Verify the download with \`s
     if gh release view "$tag" -R "$RELEASES_REPO" >/dev/null 2>&1; then
         gh release upload "$tag" "${assets[@]}" -R "$RELEASES_REPO" --clobber
     else
-        gh release create "$tag" "${assets[@]}" -R "$RELEASES_REPO" --title "Labyrinth Cleaner $VERSION" --notes "$notes"
+        # gh tags the remote default branch's HEAD unless told otherwise; pin the built commit
+        # when the remote has it.
+        local target=() head
+        head="$(git rev-parse HEAD 2>/dev/null || true)"
+        if [ -n "$head" ] && [ -n "$(git branch -r --contains HEAD 2>/dev/null)" ]; then
+            target=(--target "$head")
+        else
+            warn "HEAD (${head:-no git}) is not on the remote: $tag will tag the default branch's HEAD instead. Push first to tag the built commit."
+        fi
+        gh release create "$tag" "${assets[@]}" -R "$RELEASES_REPO" ${target[@]+"${target[@]}"} \
+            --title "Labyrinth Cleaner $VERSION" --notes "$notes"
     fi
     step "Published $RELEASES_REPO@$tag"
 }

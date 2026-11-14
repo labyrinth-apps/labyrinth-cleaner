@@ -41,5 +41,16 @@ public func cliDestinations(home: String, fixtureHome: String? = nil,
     return dirs
 }
 
+public let cliMoveToApplicationsMessage =
+    "Move Labyrinth Cleaner to your Applications folder first, then install the command line tool."
+
+/// nil when the command line tool may link to this copy of the app. An app run from a mounted DMG
+/// (a read-only volume) or under App Translocation lives at a path that disappears, so the link
+/// would dangle: the user must move the app first.
+public func cliInstallBlocker(bundlePath: String, volumeIsReadOnly: Bool) -> String? {
+    if volumeIsReadOnly || bundlePath.contains("/AppTranslocation/") { return cliMoveToApplicationsMessage }
+    return nil
+}
+
 /// The open-at-login switch is off-limits in fixture runs.
 public let fixtureLoginMessage = "Open at Login isn't available in fixture runs."

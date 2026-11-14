@@ -62,6 +62,17 @@ scripts/build_app.sh --publish v0.1.0
 
 This does the full release, then publishes it. It generates `appcast.xml` with Sparkle's `generate_appcast`, signed with the key in your login keychain. Then it uploads the DMG, the `.sha256` and `appcast.xml` to the GitHub release `v0.1.0`, creating the release or replacing its files. The tag must match `VERSION`. It refuses to run without `app/sparkle_public_key.txt` and never runs with `--no-notarize`. It never creates the repository or changes its visibility. It needs `gh auth login` once.
 
+Before it uploads anything, `--publish` checks two things:
+- the DMG is notarized and stapled;
+- the app inside the DMG carries exactly the key in `app/sparkle_public_key.txt`. A DMG built before you added the key is refused, so rebuild it.
+
+`gh release create` tags the HEAD of the remote's default branch, not your local commit. When the built commit is already on the remote (`git branch -r --contains HEAD` lists it), the script passes `--target <that commit>`. Otherwise it warns, and the tag lands on the default branch's HEAD. Push before publishing so the tag matches the build:
+
+```sh
+git push
+scripts/build_app.sh --publish v0.1.0
+```
+
 Environment variables:
 
 - `LABYRINTH_TEAM_ID`: the Apple team (default `X8BX4XM7S2`).

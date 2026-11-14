@@ -5,6 +5,10 @@ import LabyrinthKit
 enum CLIInstaller {
     static func run(fixture: FixtureOptions? = nil) {
         guard let resources = Bundle.main.resourceURL else { return }
+        let readOnly = (try? Bundle.main.bundleURL.resourceValues(forKeys: [.volumeIsReadOnlyKey]))?.volumeIsReadOnly ?? false
+        if let blocker = cliInstallBlocker(bundlePath: Bundle.main.bundlePath, volumeIsReadOnly: readOnly) {
+            return done("Can't install the command line tool yet", blocker)
+        }
         let target = resources.appendingPathComponent("core/devclean-launcher").path
         let fm = FileManager.default
         let home = fixture?.home ?? NSHomeDirectory()

@@ -15,6 +15,20 @@ final class CLILinkTests: XCTestCase {
         XCTAssertEqual(msg, "~/.local/bin/devclean exists and isn't a link. Remove it first.")
     }
 
+    func testInstallBlockedWhenTranslocatedOrReadOnly() {
+        let msg = "Move Labyrinth Cleaner to your Applications folder first, then install the command line tool."
+        XCTAssertNil(cliInstallBlocker(bundlePath: "/Applications/Labyrinth Cleaner.app", volumeIsReadOnly: false))
+        XCTAssertNil(cliInstallBlocker(bundlePath: "/Users/x/Apps/Labyrinth Cleaner.app", volumeIsReadOnly: false))
+        XCTAssertEqual(cliInstallBlocker(
+            bundlePath: "/private/var/folders/ab/T/AppTranslocation/1F2E3D4C/d/Labyrinth Cleaner.app",
+            volumeIsReadOnly: false), msg)
+        XCTAssertEqual(cliInstallBlocker(bundlePath: "/Volumes/Labyrinth Cleaner/Labyrinth Cleaner.app",
+                                         volumeIsReadOnly: true), msg)
+        // Translocated apps sit on a read-only nullfs mount; both signals together still refuse.
+        XCTAssertEqual(cliInstallBlocker(bundlePath: "/private/var/folders/x/AppTranslocation/y/d/Labyrinth Cleaner.app",
+                                         volumeIsReadOnly: true), msg)
+    }
+
     func testDestinations() {
         let home = "/Users/x"
         XCTAssertEqual(cliDestinations(home: home, isWritable: { _ in true }, exists: { _ in true }),
