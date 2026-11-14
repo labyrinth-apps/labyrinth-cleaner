@@ -2,25 +2,43 @@
 
 Labyrinth Cleaner gets disk space back on a Mac. It shows what is using your disk, what you can delete, and what each delete costs you, then deletes only what you pick. In the page nothing is preselected, and nothing is ever cleaned automatically.
 
-**The Mac app is coming soon** (a signed, notarized download). Until then, the same engine runs from this repository: `devclean ui` opens the app's page in your browser, and `devclean` is the command-line version. It needs only Python 3 and has no dependencies. The command-line tool is still called `devclean`.
+## Labyrinth Cleaner (Mac app)
 
-## Install
+The Mac app has a window and a menu-bar item. The window is the page described below, in its own window: scan, tick what you want back, review, clean. The menu bar shows your free disk space and refreshes every minute. It turns amber below 30 GB and red below 15 GB, and one notification fires when free space drops below 15 GB (again only after it has gone back above 20 GB). Its menu opens the window, toggles Open at Login and installs the command line tool. Nothing scans until you open the window.
+
+The app is not downloadable yet: a signed, notarized download is planned. For now, build it from source on a Mac with Xcode or the Command Line Tools:
 
 ```sh
-ln -sf "$PWD/devclean" ~/.local/bin/devclean    # ~/.local/bin is already on PATH
+scripts/build_app.sh
+```
+
+This creates `build/Labyrinth Cleaner.app`. Add `--debug` for a faster, single-architecture debug build.
+
+The menu bar shows Finder's "available" number, in decimal GB. That number includes purgeable space macOS can free by itself. The window and the command line show strict free space in binary units, the same as `df -h`. So the menu bar usually reads a few GB higher.
+
+## Command line
+
+The same engine runs without the app: `devclean ui` opens the page in your browser, and `devclean` is the command-line version. It needs only Python 3 and has no dependencies. From the app, choose **Install Command Line Tool…** in the menu-bar menu. It links `devclean` into `~/.local/bin` (or `/usr/local/bin` when that is writable) and runs through the app's own Python. If Terminal says `devclean` isn't found, add this line to `~/.zshrc`:
+
+```sh
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+From a source checkout, link the script yourself. `~/.local/bin` must be on your PATH, as above.
+
+```sh
+ln -sf "$PWD/devclean" ~/.local/bin/devclean
 ```
 
 ## Usage
 
-```sh
-devclean                  # scan, toggle items by number, confirm with "yes", delete
-devclean --dry-run        # scan and print the exact commands; deletes nothing
-devclean --yes            # delete the preselected SAFE items, no prompt
-devclean --dry-run --select all      # show the commands for every offered item
-devclean --select 1,4-6 --dry-run    # pick by number, non-interactively
-devclean --min-size 0     # also list items under 20 MB (hidden by default)
-devclean --json           # scan result as JSON (for scripts / a future menu-bar app)
-```
+- `devclean`: scan, toggle items by number, confirm with "yes", delete.
+- `devclean --dry-run`: scan and print the exact commands. Deletes nothing.
+- `devclean --yes`: delete the preselected SAFE items, no prompt.
+- `devclean --dry-run --select all`: show the commands for every offered item.
+- `devclean --select 1,4-6 --dry-run`: pick by number, non-interactively.
+- `devclean --min-size 0`: also list items under 20 MB (hidden by default).
+- `devclean --json`: the scan result as JSON, for scripts.
 
 In the interactive picker, type numbers or ranges to toggle them (`3 5-7`). `s` selects the preselected safe items (the developer targets), `a` selects everything, `n` clears the selection, Enter continues and `q` quits. The confirmation screen lists every `rm -rf` / `xcrun` command and the total size, and nothing is deleted until you type `yes`.
 
@@ -40,10 +58,7 @@ A build folder is only offered when a `pubspec.yaml` or `package.json` sits next
 
 ## Web UI (the Labyrinth Cleaner page)
 
-```sh
-devclean ui               # scan, open the page in your browser
-devclean ui --no-open     # print the URL only
-```
+`devclean ui` scans and opens the page in your browser. `devclean ui --no-open` prints the URL only.
 
 **What the page shows:**
 - how much you can get back, and how much of that costs nothing (items marked `NO COST`). Items that move to the Trash aren't counted: they free space only when the Trash is emptied.
@@ -62,20 +77,15 @@ Nothing is ticked when the page opens. Tick items, then press **Review & clean**
 
 The disk map measures only the folders devclean knows about. The rest of the disk is one grey block, "System, apps & other files". Measuring it would be slow and would trigger macOS privacy prompts. The first scan after a reboot can take a minute while the disk cache is cold. After that it takes about 15 s.
 
-## Menu bar
+## Removing the old DevcleanBar
+
+Earlier versions installed a separate menu-bar item, DevcleanBar. The app replaces it, and the app warns once if the old one is still running. To remove it:
 
 ```sh
-devclean menubar install     # builds ~/Applications/DevcleanBar.app and starts it at login
-devclean menubar uninstall   # stops it and removes the app and its login item
+devclean menubar uninstall
 ```
 
-- **The number:** free space, refreshed every minute. It's amber below 30 GB and red below 15 GB.
-- **The alert:** a notification fires once when free space drops below 15 GB. It fires again only after free space has gone back above 20 GB.
-- **"Clean up…":** opens the devclean page. The item itself never deletes anything.
-
-The menu bar shows Finder's "available" number, in decimal GB. That number includes purgeable space macOS can free by itself. The page and the CLI show strict free space in binary units, the same as `df -h`. So the menu bar usually reads a few GB higher.
-
-Building it needs `swiftc`, which comes with Xcode or the Command Line Tools.
+`devclean menubar install` no longer installs anything. It points you to the app.
 
 ## Tiers
 
@@ -130,11 +140,20 @@ Still never offered: a runtime with a running simulator, a running simulator, De
 - `devclean_core.py`: scan, protection rules, the safety gate, and the cost tag and cost line for each item. It has no terminal I/O.
 - `devclean_report.py`: turns a scan into what the page shows: rows, groups, the disk map and the headline.
 - `devclean_ui.py` and `ui/index.html`: the local web server and the page. The page is a single HTML file with no build step.
-- `devclean_menubar.py` and `menubar/`: the menu-bar item (Swift) and its installer.
+- `app/`: the Mac app (a Swift package): the window, the menu-bar item, the Trash helper, and `LabyrinthKit` with the logic that is tested.
+- `devclean-launcher`: the command-line entry point inside the app. It runs the app's own Python.
+- `scripts/build_app.sh`: builds `build/Labyrinth Cleaner.app`.
+- `devclean_menubar.py`: removes the old DevcleanBar (`devclean menubar uninstall`).
 - `tests/`: fixture tests. Every test builds a fake `$HOME` in a temp dir, and simulator data comes from JSON fixtures (`tests/fixtures/real_2026-11-11/` is a real capture from this Mac). The tests never call the real `xcrun`.
 
 ```sh
 python3 -m unittest discover -s tests -v
+```
+
+The app's tests:
+
+```sh
+cd app && swift test
 ```
 
 Testing flags: `--home DIR` treats DIR as `$HOME` and turns off real simulator scanning. `--simctl-fixture DIR` reads `simctl_list.json` and `runtime_list.json` from DIR.

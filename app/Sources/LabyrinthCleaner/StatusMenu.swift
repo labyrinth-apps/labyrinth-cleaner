@@ -25,8 +25,8 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         loginItem.action = #selector(toggleLogin)
         loginItem.target = self
         menu.addItem(loginItem)
-        let cli = NSMenuItem(title: "Install Command Line Tool…", action: nil, keyEquivalent: "")
-        cli.isEnabled = false   // enabled in a later task
+        let cli = NSMenuItem(title: "Install Command Line Tool…", action: #selector(cliTapped), keyEquivalent: "")
+        cli.target = self
         menu.addItem(cli)
         menu.addItem(.separator())
         let quit = NSMenuItem(title: "Quit Labyrinth Cleaner", action: #selector(quitTapped), keyEquivalent: "q")
@@ -76,6 +76,7 @@ final class StatusMenu: NSObject, NSMenuDelegate {
 
     @objc private func openTapped() { onOpen() }
     @objc private func quitTapped() { onQuit() }
+    @objc private func cliTapped() { CLIInstaller.run() }
 
     @objc private func toggleLogin() {
         let service = SMAppService.mainApp

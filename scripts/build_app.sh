@@ -28,6 +28,8 @@ sed -e "s/@VERSION@/$VERSION/" -e "s/@BUILD@/$BUILD/" app/Info.plist > "$APP/Con
 
 cp devclean devclean_*.py "$APP/Contents/Resources/core/"
 cp ui/index.html "$APP/Contents/Resources/core/ui/"
+cp devclean-launcher "$APP/Contents/Resources/core/"
+chmod 755 "$APP/Contents/Resources/core/devclean-launcher"
 
 # Dev shim. Plan 3 replaces it with the embedded interpreter.
 cat > "$APP/Contents/Resources/python/bin/python3" <<'SHIM'
