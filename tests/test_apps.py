@@ -897,7 +897,7 @@ class AppGate(AppsTestBase):
         a, b, items = self.finder_pair()
         run = FinderRunner(delete=[a])
         res = core.execute_finder_batch(items, self.cfg, runner=run, env=self.env(), now=NOW)
-        self.assertEqual(res, [(True, "ok"), (False, "Still in place: " + b)])
+        self.assertEqual(res, [(True, "ok"), (False, core.FINDER_NOT_MOVED)])
 
     def test_finder_batch_leaves_refused_items_out(self):
         a, b, items = self.finder_pair()

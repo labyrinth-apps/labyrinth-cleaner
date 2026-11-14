@@ -1869,6 +1869,9 @@ FINDER_TRASH_ARGV_HEAD = [
     "-e", "end run",
 ]
 FINDER_CANCELLED = "Cancelled: nothing was moved"
+# Finder can finish without an error yet leave an app in place: cancelling its password
+# prompt does this (checked by hand, 2026-11-14), so -128 is not the only cancel.
+FINDER_NOT_MOVED = "Not moved: Finder left it where it is (for example, its password prompt was cancelled)"
 FINDER_APPS_DENIED = ("macOS didn't let Labyrinth Cleaner ask Finder to move apps to the Trash. "
                       "Allow it in System Settings \u2192 Privacy & Security \u2192 Automation, "
                       "then try again.")
@@ -1991,5 +1994,5 @@ def execute_finder_batch(items: list, cfg: Config, runner: Callable = subprocess
         if not os.path.lexists(path):
             results[n] = (True, "ok")
         else:
-            results[n] = (False, err if rc != 0 else f"Still in place: {path}")
+            results[n] = (False, err if rc != 0 else FINDER_NOT_MOVED)
     return results
