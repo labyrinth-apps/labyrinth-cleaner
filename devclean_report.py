@@ -102,6 +102,7 @@ def _row(rid, group, members, label, path):
         "keys": [m.key for m in members] if offer else [],
         "size": sum(sizes) if sizes else None,
         "mtime": max(mtimes) if mtimes else None,
+        "version": lead.meta.get("version") if lead.category == "Applications" else None,
         "cost_tag": lead.cost_tag,
         "cost": lead.cost,
         "stale": core.stale_label(stale_days) if group == "time" else None,

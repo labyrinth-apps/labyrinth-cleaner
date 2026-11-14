@@ -797,7 +797,8 @@ global.fetch = async (path, opt) => { if (opt.method === "POST") posts.push(JSON
   S.data = { scan_id: "s1", trash_helper: true, disk: { free: 10, total: 100 }, small_bytes: 0, segments: [],
     rows: [row("a"), row("b", { group: "check", warning: "W" }), row("c", { group: "review", kind: "trash" }),
       row("d", { group: "apps", kind: "finder-trash", category: "Applications" }),
-      row("k", { group: "apps", kind: "info", keys: [], category: "Applications" })] };
+      row("k", { group: "apps", kind: "info", keys: [], category: "Applications", size: 1000, cost: "Keep: newest version" })] };
+  S.data.rows[3].size = 10; S.data.rows[3].version = "88.1"; S.data.rows[3].cost = "older copy · keep Figma 101.6";
   const res = {};
   const take = () => posts.splice(0);
   S.sel = new Set(["a"]); openModal();
@@ -824,6 +825,11 @@ global.fetch = async (path, opt) => { if (opt.method === "POST") posts.push(JSON
   let sel = null;
   find(card, x => x.className === "selall toggle").forEach(b => { sel = b; });
   res.selall_found = !!sel;
+  const texts = find(card, x => true).map(x => x.textContent || x.text).filter(Boolean);
+  res.texts = texts;
+  res.lock = find(card, x => x.className === "lock").map(x => [x.textContent, x.attrs.title]);
+  res.gtotal = find(card, x => x.className === "gtotal").map(x => x.textContent);
+  res.expect_total = human(10);
   if (sel) { sel.handlers.click(); res.selall_selected = [...S.sel].sort(); }
   S.sel = new Set(["b"]); openModal(); $("mAck").checked = true; refreshDelete();
   await doDelete(); res.sent_acknowledged = take();
@@ -910,6 +916,10 @@ class PageTests(unittest.TestCase):
         self.assertEqual(r["blocked_finder_with_app"], "")
         self.assertEqual(r["freeable_finder"], 0)
         self.assertEqual(r["cb_count"], 1)          # the keeper row has no checkbox
+        self.assertIn("older copy · keep Figma 101.6", r["texts"])   # the reason is on the row
+        self.assertIn("v88.1", r["texts"])                           # the version
+        self.assertEqual(r["lock"], [["Keep", "Keep: newest version"]])
+        self.assertEqual(r["gtotal"], [r["expect_total"]])           # keeper size left out
         self.assertTrue(r["selall_found"])
         self.assertEqual(r["selall_selected"], ["d"])
 

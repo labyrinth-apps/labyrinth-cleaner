@@ -1217,6 +1217,8 @@ def cost_for(it: Item) -> tuple:
         return "NO COST", "These simulators already can't run."
     if it.kind == "simdevice":
         return "~1 MIN", "Deletes its installed apps and data. Xcode can create a fresh one."
+    if it.key.startswith("app:"):
+        return "TRASH", it.note              # the row says why the app is listed
     if it.kind in ("trash", "finder-trash"):
         return "TRASH", "Moved to the Trash. You can Put Back."
     if it.key.startswith("appcache:"):

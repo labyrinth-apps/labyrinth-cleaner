@@ -752,7 +752,7 @@ function groupCard(g, rows) {
   const head = el("div", { class: "ghead" },
     el("span", { class: "dot", style: "background:" + g.color }),
     el("div", {}, el("h3", { text: g.title }), el("div", { class: "gdesc", text: g.desc })),
-    el("span", { class: "gtotal", style: g.id === "kept" ? "color:var(--muted)" : null, text: human(sum(rows)) }));
+    el("span", { class: "gtotal", style: g.id === "kept" ? "color:var(--muted)" : null, text: human(sum(g.id === "apps" ? rows.filter(r => r.keys.length) : rows)) }));
   if (g.id === "time") {
     head.append(el("button", { class: "selall", text: "Select stale", onclick: () => {
       rows.forEach(r => r.stale ? S.sel.add(r.id) : S.sel.delete(r.id)); renderGroups(); updateSelection();
@@ -785,8 +785,9 @@ let whatSeq = 0;
 function rowEl(g, r, max) {
   // A row with no keys is never offered (a suggested keeper): no checkbox, nothing to confirm.
   const kept = g.id === "kept" || !r.keys.length;
+  const keepMark = g.id !== "kept";   // an Applications row with no keys: a keeper or a running copy
   const lead = kept
-    ? el("div", { class: "lock", title: "Never deleted", text: "Kept" })
+    ? el("div", { class: "lock", title: keepMark ? r.cost || r.warning || "Not offered" : "Never deleted", text: keepMark ? "Keep" : "Kept" })
     : el("input", { type: "checkbox", class: "cb", style: "--c:" + g.color, "aria-label": "Select " + r.label,
         checked: S.sel.has(r.id), onchange: e => { e.target.checked ? S.sel.add(r.id) : S.sel.delete(r.id); updateSelection(); refreshSelAll(); } });
   const pct = Math.max(2, ((r.size || 0) / max) * 100);
@@ -806,7 +807,8 @@ function rowEl(g, r, max) {
     lead,
     el("div", { class: "ico", "aria-hidden": "true", text: ICON[r.category] || "··" }),
     el("div", {},
-      el("div", { class: "name" }, r.label, r.stale ? el("span", { class: "stale", text: r.stale }) : null, chev),
+      el("div", { class: "name" }, r.label, r.version ? el("span", { class: "stale", text: "v" + r.version }) : null,
+        r.stale ? el("span", { class: "stale", text: r.stale }) : null, chev),
       r.warning ? el("div", { class: "warn", text: "⚠ " + r.warning }) : null,
       el("div", { class: "path", title: r.path, text: r.path })),
     size,

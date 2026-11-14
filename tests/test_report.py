@@ -108,6 +108,16 @@ class ReportTests(unittest.TestCase):
         rows = {r["label"]: r for r in rep.build_rows(res.items, self.home)}
         self.assertEqual({r["group"] for r in rows.values()}, {"apps"})
         self.assertEqual(rows["Keep"]["keys"], [])
+        # Offered rows carry the reason (not "Moved to the Trash"), and the version.
+        old = res.items[0]
+        old.note, old.meta = "older copy \u00b7 keep Figma 101.6", {"version": "88.1"}
+        old.key = "app:Old"
+        self.assertEqual(core.cost_for(old), ("TRASH", old.note))
+        old.cost_tag, old.cost = core.cost_for(old)
+        old.restore = core.DOWNLOAD_RESTORE
+        row = {r["label"]: r for r in rep.build_rows(res.items, self.home)}["Old"]
+        self.assertEqual((row["cost"], row["version"], row["restore"]),
+                         (old.note, "88.1", core.DOWNLOAD_RESTORE))
         self.assertEqual(rows["Old"]["keys"], ["Old"])
         self.assertEqual(rep.segment_of(res.items[0]), "apps")
         self.assertEqual(rep.GROUP_ORDER["apps"], 3.5)
