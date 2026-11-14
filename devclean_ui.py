@@ -118,8 +118,8 @@ class UIServer:
 
         if check is not None:
             threading.Thread(target=watchdog, daemon=True).start()
-        self._serving = True
         try:
+            self._serving = True
             self.httpd.serve_forever(poll_interval=0.1)
         finally:
             stop.set()
@@ -479,13 +479,16 @@ def _run_app(cfg, sim, fixture, args, options, docker) -> int:
                    xcode_check=(lambda: False) if args.home else core.xcode_running,
                    idle_timeout=None, options=options,
                    fixed_roots=bool(args.projects), docker=docker, app_mode=True)
-    if threading.current_thread() is threading.main_thread():
-        signal.signal(signal.SIGTERM, _raise_interrupt)
-    print(json.dumps({"labyrinth_server": 1, "url": srv.url}), flush=True)
-    if fixture:
-        print("fixture mode: xcrun deletes are disabled", file=sys.stderr, flush=True)
-    threading.Thread(target=_watch_stdin, daemon=True).start()
+    # Everything after the handler is installed sits inside the try: the app may close stdin
+    # (and so the watcher send SIGTERM) right after reading the handshake, before
+    # serve_forever starts. That is a stop like any other, not an interrupt escaping as 130.
     try:
+        if threading.current_thread() is threading.main_thread():
+            signal.signal(signal.SIGTERM, _raise_interrupt)
+        print(json.dumps({"labyrinth_server": 1, "url": srv.url}), flush=True)
+        if fixture:
+            print("fixture mode: xcrun deletes are disabled", file=sys.stderr, flush=True)
+        threading.Thread(target=_watch_stdin, daemon=True).start()
         srv.serve_forever()
     except KeyboardInterrupt:
         _begin_shutdown()

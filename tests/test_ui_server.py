@@ -915,6 +915,16 @@ class AppModeTests(ServerTestCase):
         self.assertIn(b"fixture mode", p.stderr.read())   # the notice goes to stderr
         self.assertFalse(os.path.exists(self.url_file()))
 
+    def test_app_mode_stdin_closed_at_start_exits_cleanly(self):
+        # The stdin watcher can send its SIGTERM before serve_forever starts: that must still
+        # be a clean exit (0), never an interrupt escaping as 130. Several runs: it was a race.
+        for _ in range(6):
+            p = subprocess.Popen([sys.executable, DEVCLEAN, "ui", "--app", "--home", self.home,
+                                  "--no-simulators"], stdin=subprocess.DEVNULL,
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            self.procs.append(p)
+            self.assertEqual(p.wait(timeout=30), 0, p.stderr.read().decode(errors="replace"))
+
     def test_app_mode_ignores_live_cli_server(self):
         cli = self.spawn(["--no-open", "--home", self.home, "--idle-timeout", "30"])
         cli.stdin.close()
