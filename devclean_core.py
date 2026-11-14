@@ -1882,8 +1882,9 @@ FINDER_TRASH_ARGV_HEAD = [
     "-e", "end run",
 ]
 FINDER_CANCELLED = "Cancelled: nothing was moved"
-# Finder can finish without an error yet leave an app in place: cancelling its password
-# prompt does this (checked by hand, 2026-11-14), so -128 is not the only cancel.
+# Finder may finish without an error yet leave an app in place. In a hand check
+# (2026-11-14) a second run, meant to be cancelled, printed nothing and no -128; whether
+# that was a cancel wasn't confirmed. Either way each path is checked after the request.
 FINDER_NOT_MOVED = "Not moved: Finder left it where it is (for example, its password prompt was cancelled)"
 FINDER_APPS_DENIED = ("macOS didn't let Labyrinth Cleaner ask Finder to move apps to the Trash. "
                       "Allow it in System Settings \u2192 Privacy & Security \u2192 Automation, "
