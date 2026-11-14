@@ -100,11 +100,11 @@
   .seg.est{background-image:repeating-linear-gradient(135deg,rgba(236,229,216,.07) 0 1px,transparent 1px 7px)!important;color:var(--muted)}
   .seg.free{background:transparent!important;color:var(--dim);cursor:default;font:500 10px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase}
   .seg .reclaim{position:absolute;right:0;top:0;bottom:0;background:repeating-linear-gradient(135deg,rgba(18,17,16,.55) 0 1.5px,transparent 1.5px 5px);border-left:1px solid rgba(18,17,16,.7)}
-  .seg .lbl{position:relative;padding:3px 5px;margin-left:-5px;border-radius:2px}
-  .seg.free .lbl{padding:0;margin:0}
+  .seg .lbl{position:relative}
+  .seg.hl{filter:brightness(1.18)}
+  .legend div.hl{color:var(--text)}
   .legend{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:0 32px;margin-top:18px}
   .legend div{display:grid;grid-template-columns:9px minmax(0,1fr) auto;column-gap:10px;align-items:baseline;font-size:12.5px;color:var(--muted);cursor:pointer;padding:7px 0 8px;border-top:1px solid var(--line)}
-  .legend div:hover{color:var(--text)}
   .legend i{width:9px;height:9px;border-radius:1px;display:block;align-self:center}
   .legend b{color:var(--text);font-weight:500;font-variant-numeric:tabular-nums;white-space:nowrap}
   .legend em{grid-column:2 / -1;font-style:normal;color:var(--safe);font-size:11.5px;font-variant-numeric:tabular-nums;margin-top:1px}
@@ -659,21 +659,30 @@ function renderMap() {
     const pct = Math.min(100, s.bytes ? (s.reclaimable / s.bytes) * 100 : 0);
     const cls = "seg" + (s.id === "other" ? " est" : "") + (s.id === "free" ? " free" : "") + (S.seg === s.id ? " on" : "");
     const title = s.label + ": " + human(s.bytes) + (s.reclaimable ? " · " + human(s.reclaimable) + " can be cleaned" : "");
-    segs.append(el("div", { class: cls, style: "flex:" + s.bytes + " 1 0;background:" + SEG_COLOR[s.id], title, onclick: () => pickSeg(s.id) },
+    // Only the wide grey "other" block and free space carry text: the coloured blocks are too
+    // narrow to label legibly, so the legend under the bar names them (hover links the two).
+    const labelled = s.id === "other" || s.id === "free";
+    const block = el("div", { class: cls, style: "flex:" + s.bytes + " 1 0;background:" + SEG_COLOR[s.id], title, onclick: () => pickSeg(s.id) },
       pct > 0 ? el("div", { class: "reclaim", style: "width:" + pct.toFixed(1) + "%" }) : null,
-      el("span", { class: "lbl", style: s.id === "free" ? "" : "background:" + SEG_COLOR[s.id], text: s.label + " " + human(s.bytes),
-                   "data-full": s.label + " " + human(s.bytes), "data-short": human(s.bytes) })));
+      labelled ? el("span", { class: "lbl", text: s.label + " " + human(s.bytes),
+                              "data-full": s.label + " " + human(s.bytes), "data-short": human(s.bytes) }) : null);
+    segs.append(block);
     if (s.id !== "free") {
-      legend.append(el("div", { onclick: () => pickSeg(s.id) },
+      const row = el("div", { onclick: () => pickSeg(s.id) },
         el("i", { style: "background:" + SEG_COLOR[s.id] }), s.label + " ", el("b", { text: human(s.bytes) }),
-        s.reclaimable ? el("em", { text: " · " + human(s.reclaimable) + " can go" }) : null));
+        s.reclaimable ? el("em", { text: " · " + human(s.reclaimable) + " can go" }) : null);
+      const on = () => { block.classList.add("hl"); row.classList.add("hl"); };
+      const off = () => { block.classList.remove("hl"); row.classList.remove("hl"); };
+      for (const n of [block, row]) { n.addEventListener("mouseenter", on); n.addEventListener("mouseleave", off); }
+      legend.append(row);
     }
   }
   fitMapLabels();
 }
 
-// A block's label shows in full, or just its size, or not at all: never cut off. The legend
-// under the bar always has every figure. Needs layout, so it does nothing in the page tests.
+// A label shows in full, or just its size, or not at all: never cut off. It is measured again
+// whenever the bar changes size, including when the results first appear (the map is drawn
+// while still hidden). Needs layout, so it does nothing in the page tests.
 function fitMapLabels() {
   const segs = $("segs");
   if (!segs.querySelectorAll) return;
@@ -688,7 +697,7 @@ function fitMapLabels() {
     if (lbl.offsetWidth > room) lbl.style.display = "none";
   }
 }
-if (typeof window !== "undefined" && window.addEventListener) window.addEventListener("resize", fitMapLabels);
+if (typeof ResizeObserver !== "undefined") new ResizeObserver(() => fitMapLabels()).observe($("segs"));
 
 function pickSeg(id) {
   if (id === "free") return;
