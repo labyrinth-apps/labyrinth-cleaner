@@ -68,6 +68,12 @@ BROWSER_NAMES = {
 
 # ---------------------------------------------------------------- running apps
 
+def outer_app(exe: str) -> str:
+    """The outermost .app bundle an executable path is inside, else ''."""
+    i = exe.find(".app/")
+    return exe[:i + 4] if i >= 0 else ""
+
+
 def parse_lsappinfo(text: str) -> list:
     """(bundle_id, name) for each app in `lsappinfo list` output.
 
@@ -94,10 +100,6 @@ def parse_lsappinfo(text: str) -> list:
         if e:
             blocks[-1][2] = e.group(1)
 
-    def outer_app(exe):
-        i = exe.find(".app/")
-        return exe[:i + 4] if i >= 0 else ""
-
     top_names = {}                                # outer .app path -> name, for top-level apps
     for name, _, exe in blocks:
         host = outer_app(exe)
@@ -122,6 +124,24 @@ def running_apps() -> list:
     if r.returncode != 0:
         raise OSError(f"lsappinfo exit {r.returncode}")
     return parse_lsappinfo(r.stdout)
+
+
+def parse_running_bundle_paths(text: str) -> set:
+    """The outermost .app path of every running process in `lsappinfo list` output.
+    Helpers nested inside another app count for that outer app. Non-app executables
+    are ignored. Raises ValueError when no `executable path` line is found at all."""
+    exes = re.findall(r'executable path="([^"]+)"', text)
+    if not exes:
+        raise ValueError("no executable paths found in lsappinfo output")
+    return {host for host in (outer_app(e) for e in exes) if host}
+
+
+def running_bundle_paths() -> set:
+    """The real provider. Raises on any failure so the scan can fail closed and warn."""
+    r = subprocess.run(["lsappinfo", "list"], capture_output=True, text=True, timeout=10)
+    if r.returncode != 0:
+        raise OSError(f"lsappinfo exit {r.returncode}")
+    return parse_running_bundle_paths(r.stdout)
 
 
 # ---------------------------------------------------------------- app caches

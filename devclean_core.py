@@ -82,9 +82,16 @@ class Config:
     home: str
     project_roots: Optional[tuple] = None
     android_sdk: Optional[str] = None
+    app_roots: Optional[tuple] = None
 
     def __post_init__(self):
         self.home = os.path.realpath(os.path.expanduser(self.home))
+        if self.app_roots is None:
+            # Only the real home sees the real /Applications; fixture homes stay inside.
+            if self.home == os.path.realpath(os.path.expanduser("~")):
+                self.app_roots = ("/Applications", self.p("Applications"))
+            else:
+                self.app_roots = (self.p(".fixture-root/Applications"), self.p("Applications"))
         if self.project_roots is None:
             candidates = [self.p(d) for d in DEFAULT_PROJECT_DIRS]
             candidates += saved_project_folders(load_settings(self.home))
@@ -492,8 +499,31 @@ def _general():
     return devclean_general
 
 
+def _apps():
+    """devclean_apps, imported on first use (it imports this module)."""
+    import devclean_apps
+    return devclean_apps
+
+
 def _real_running_apps() -> list:
     return _general().running_apps()
+
+
+def _real_app_metadata(paths: list) -> dict:
+    return _apps().mdls_metadata(paths)
+
+
+def _real_running_app_paths() -> set:
+    return _general().running_bundle_paths()
+
+
+def _real_apple_silicon() -> bool:
+    try:
+        r = subprocess.run(["sysctl", "-n", "hw.optional.arm64"], capture_output=True,
+                           text=True, timeout=10)
+        return r.returncode == 0 and r.stdout.strip() == "1"
+    except Exception:
+        return False
 
 
 @dataclass
@@ -506,11 +536,19 @@ class Env:
     running_apps: Callable[[], list] = lambda: []
     # A runner for docker commands (never the general runner); None = no docker.
     docker: Optional[Callable] = None
+    # path -> {"last_used": float|None, "size": int|None, "archs": list|None}; missing = unknown.
+    app_metadata: Callable[[list], dict] = lambda paths: {}
+    apple_silicon: Callable[[], bool] = lambda: False
+    user_uid: Callable[[], int] = os.getuid
+    # Outermost .app paths of running processes; raises when they can't be listed.
+    running_app_paths: Callable[[], set] = lambda: set()
 
     @classmethod
     def real(cls) -> "Env":
         return cls(dev_tools=_dev_tools_installed, xcode_running=xcode_running,
                    last_used=_last_used, running_apps=_real_running_apps,
+                   app_metadata=_real_app_metadata, apple_silicon=_real_apple_silicon,
+                   running_app_paths=_real_running_app_paths, user_uid=os.getuid,
                    docker=subprocess.run if shutil.which("docker") else None)
 
     @classmethod
