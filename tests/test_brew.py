@@ -303,5 +303,124 @@ class ScanBrewTests(BrewBase):
         self.assertEqual(forms, {("info", "--json=v2", "--installed"), ("cleanup", "-n"), ("autoremove", "-n")})
 
 
+class RunBrewTests(BrewBase):
+    def item(self, env, key="brew:pkg:ffmpeg@6"):
+        return self.by_key(core.scan(self.cfg, core.NoSimctl(), env=env, now=self.now))[key]
+
+    def test_uninstall_runs_through_env_brew_with_exact_argv(self):
+        rec = []
+        env = self.env(record=rec)
+        it = self.item(env, "brew:pkg:ffmpeg@6")
+        rec.clear()
+
+        def general(argv, **kw):
+            raise AssertionError("brew went through the general runner")
+        ok_, msg = core.execute_item(it, self.cfg, runner=general, env=env, now=self.now)
+        self.assertTrue(ok_, msg)
+        self.assertEqual(rec[-1][0], [self.brew_path, "uninstall", "--formula", "ffmpeg@6"])
+        self.assertEqual(rec[-1][1]["timeout"], 300)
+
+    def test_gate_refuses_forged_argv(self):
+        env = self.env()
+        for key, argv in (("brew:pkg:ffmpeg@6", [self.brew_path, "uninstall", "--formula", "ffmpeg@6", "--ignore-dependencies"]),
+                          ("brew:pkg:ffmpeg@6", [self.brew_path, "uninstall", "--force", "--formula", "ffmpeg@6"]),
+                          ("brew:pkg:ffmpeg@6", ["/tmp/brew", "uninstall", "--formula", "ffmpeg@6"]),
+                          ("brew:cleanup", [self.brew_path, "cleanup", "--prune=all"]),
+                          ("brew:pkg:libshared", [self.brew_path, "uninstall", "--formula", "libshared"])):
+            forged = core.Item(key=key, category="Homebrew", label="x", tier=core.CAUTION, kind="brew",
+                               argv=argv, meta={"version": "6.1.6"})
+            ok_, msg = core.execute_item(forged, self.cfg, env=env, now=self.now)
+            self.assertFalse(ok_)
+            self.assertTrue(msg.startswith("REFUSED"), msg)
+
+    def test_version_changed_is_situation_changed(self):
+        it = self.item(self.env())
+        info = json.loads(read_fixture("info.json"))
+        for f in info["formulae"]:
+            if f["name"] == "ffmpeg@6":
+                for k in f["installed"]:
+                    k["version"] = "6.1.7"
+                f["linked_keg"] = "6.1.7"
+        rec = []
+        env = self.env(record=rec, info_text=json.dumps(info))
+        self.assertEqual(core.execute_item(it, self.cfg, env=env, now=self.now),
+                         (False, "REFUSED: Situation changed: scan again"))
+        self.assertFalse([a for a, _ in rec if "--formula" in a and "--dry-run" not in a])
+
+    def test_service_started_after_scan_is_refused(self):
+        env = self.env()
+        it = self.item(env)
+        write(os.path.join(self.services, "homebrew.mxcl.ffmpeg@6.plist"))
+        ok_, msg = core.execute_item(it, self.cfg, env=env, now=self.now)
+        self.assertFalse(ok_)
+        self.assertTrue(msg.startswith("REFUSED"), msg)
+
+    def test_fixture_runner_and_no_brew_refuse(self):
+        rec = []
+        env = self.env(record=rec)
+        it = self.item(env)
+        rec.clear()
+        self.assertEqual(core.execute_item(it, self.cfg, runner=core.fixture_runner, env=env, now=self.now),
+                         (False, "REFUSED: fixture mode never runs brew"))
+        no_brew = dataclasses.replace(env, brew=None)
+        self.assertEqual(core.execute_item(it, self.cfg, env=no_brew, now=self.now),
+                         (False, "REFUSED: Homebrew is not available"))
+        self.assertEqual(rec, [])
+
+    def test_busy(self):
+        env = self.env(uninstall_stderr="Error: A `brew install` process has already locked /opt/homebrew/Cellar/x")
+        it = self.item(env)
+        self.assertEqual(core.execute_item(it, self.cfg, env=env, now=self.now),
+                         (False, "Homebrew is busy with another command. Try again when it's done."))
+
+    def test_other_failure_returns_stderr(self):
+        env = self.env(uninstall_stderr="Error: nope")
+        it = self.item(env)
+        self.assertEqual(core.execute_item(it, self.cfg, env=env, now=self.now), (False, "Error: nope"))
+
+    def test_cleanup_runs_with_no_fresh_item(self):
+        rec = []
+        env = self.env(record=rec)
+        it = self.item(env, "brew:cleanup")
+        quiet = self.env(record=rec, cleanup="", autoremove="==> Would autoremove 0 unneeded formulae:\n")
+        self.assertNotIn("brew:cleanup", self.by_key(core.scan(self.cfg, core.NoSimctl(), env=quiet, now=self.now)))
+        rec.clear()
+        ok_, msg = core.execute_item(it, self.cfg, env=quiet, now=self.now)
+        self.assertTrue(ok_, msg)
+        self.assertEqual(rec[-1][0], [self.brew_path, "cleanup"])
+
+    def test_cleanup_refused_when_a_library_became_a_service(self):
+        env = self.env()
+        it = self.item(env, "brew:cleanup")
+        write(os.path.join(self.services, "homebrew.mxcl.orphan.plist"))
+        ok_, msg = core.execute_item(it, self.cfg, env=env, now=self.now)
+        self.assertFalse(ok_)
+        self.assertTrue(msg.startswith("REFUSED"), msg)
+
+    def test_order_uninstalls_before_cleanup(self):
+        d = self.by_key(self.scan())
+        keys = [i.key for i in core.execution_order([d["brew:cleanup"], d["brew:pkg:ffmpeg@8"], d["brew:pkg:ffmpeg@6"]])]
+        self.assertEqual(keys, ["brew:pkg:ffmpeg@6", "brew:pkg:ffmpeg@8", "brew:cleanup"])
+
+    def test_texts(self):
+        d = self.by_key(self.scan())
+        self.assertEqual(d["brew:pkg:ffmpeg@6"].restore, "Removed. Reinstall with `brew install ffmpeg@6`.")
+        self.assertEqual(d["brew:pkg:ffmpeg@6"].cost_tag, "REINSTALL")
+        self.assertEqual(d["brew:pkg:ffmpeg@6"].cost, d["brew:pkg:ffmpeg@6"].note)
+        self.assertEqual((d["brew:cleanup"].cost_tag, d["brew:cleanup"].cost),
+                         ("NO COST", "Homebrew doesn't use them."))
+        self.assertEqual(d["brew:cleanup"].restore, "Nothing to get back: Homebrew doesn't use them.")
+
+    def test_preview(self):
+        p = brew.preview_uninstall(["ffmpeg@6"], self.env())
+        self.assertEqual(p, {"ok": True, "packages": ["ffmpeg@6"], "libraries": ["libonly6", "orphan"]})
+        self.assertEqual(brew.preview_uninstall(["a;b"], self.env())["ok"], False)
+        self.assertEqual(brew.preview_uninstall(["ffmpeg@6"], self.env(broken="uninstall")),
+                         {"ok": False, "error": "Couldn't ask Homebrew what this would remove. Scan again."})
+        write(os.path.join(self.services, "homebrew.mxcl.libonly6.plist"))
+        self.assertEqual(brew.preview_uninstall(["ffmpeg@6"], self.env())["error"],
+                         "libonly6 runs as a background service. Stop it with `brew services stop libonly6` first.")
+
+
 if __name__ == "__main__":
     unittest.main()

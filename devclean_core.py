@@ -1323,6 +1323,10 @@ def cost_for(it: Item) -> tuple:
         return "~5 MIN", _general().DOCKER_BUILDER_COST
     if it.key == "docker:images":
         return f"{human(it.size)} DL", _general().DOCKER_IMAGES_COST
+    if it.key == "brew:cleanup":
+        return "NO COST", "Homebrew doesn't use them."
+    if it.key.startswith("brew:pkg:"):
+        return "REINSTALL", it.note
     return "?", it.note
 
 
@@ -1374,6 +1378,10 @@ def explain_for(it: Item, home: Optional[str] = None) -> tuple:
         restore = "Rebuilt by the next image build."
     elif it.key == "docker:images":
         restore = "Downloaded again the next time a container needs them."
+    elif it.key.startswith("brew:pkg:"):
+        restore = f"Removed. Reinstall with `brew install {it.key[len('brew:pkg:'):]}`."
+    elif it.key == "brew:cleanup":
+        restore = "Nothing to get back: Homebrew doesn't use them."
     else:
         restore = ""
     return deletes, restore
@@ -1418,6 +1426,8 @@ def execution_order(items: list) -> list:
     ordered = _refill(
         ordered, lambda i: "sim" if i.kind in ("simdevice", "runtime") else None,
         lambda i: (0, ()) if i.kind == "simdevice" else (1, version_key(i.meta.get("version", ""))))
+    ordered = _refill(ordered, lambda i: "brew" if i.kind == "brew" else None,
+                      lambda i: (i.key == "brew:cleanup", i.key))
     ordered = _refill(ordered, lambda i: "gradle" if i.key.startswith("gradle:") else None,
                       lambda i: version_key(i.key[len("gradle:"):]))
 
@@ -1834,6 +1844,13 @@ def validate_item(it: Item, cfg: Config, sim: Optional[SimctlProvider] = None,
     sim, env = resolve_providers(cfg, sim, env)
     now = time.time() if now is None else now
     fresh = rescan_item(it, cfg, sim, env, now)
+    if fresh is None and it.key == "brew:cleanup":
+        # Earlier uninstalls in this clean may have autoremoved the only libraries, so a rescan
+        # finds nothing to clean. `brew cleanup` is always safe; the gate still pins the argv.
+        _brew().validate(it, None, env)
+        return
+    if fresh is None and it.key.startswith("brew:"):
+        raise UnsafeTarget(SITUATION_CHANGED)
     if fresh is None:
         # An app that is still there but no longer listed (running apps unreadable, or now
         # kept): the situation changed, it isn't gone.
@@ -1873,6 +1890,9 @@ def validate_item(it: Item, cfg: Config, sim: Optional[SimctlProvider] = None,
     if it.kind == "docker":
         if it.argv is None or it.argv != _general().DOCKER_ARGV.get(it.key):
             raise UnsafeTarget("unexpected docker command")
+        return
+    if it.kind == "brew":
+        _brew().validate(it, fresh, env)
         return
     raise UnsafeTarget(f"unknown item kind {it.kind}")
 
@@ -1977,10 +1997,18 @@ def execute_item(it: Item, cfg: Config, sim: Optional[SimctlProvider] = None,
         return False, f"REFUSED: fixture mode never runs {it.argv[0] if it.argv else it.kind}"
     if it.kind == "docker" and env.docker is None:
         return False, "REFUSED: docker is not available"
+    if it.kind == "brew":
+        # Homebrew only ever runs through env.brew (via run_item), never the general runner.
+        if runner is fixture_runner:
+            return False, "REFUSED: fixture mode never runs brew"
+        if env.brew is None:
+            return False, _brew().BREW_UNAVAILABLE
     try:
         validate_item(it, cfg, sim, env, now)
     except UnsafeTarget as e:
         return False, f"REFUSED: {e}"
+    if it.kind == "brew":
+        return _brew().run_item(it, env)
     if it.kind == "trash":
         argv = [helper, "--home", cfg.home, it.path]
     else:

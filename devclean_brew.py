@@ -255,3 +255,65 @@ def scan_brew(cfg, env, warnings: list, sizes: bool = True) -> tuple:
                                kind=kind, argv=argv, size=size, note=note,
                                preselect=tier == core.SAFE, meta={"libraries": list(autoremove)}))
     return items, (total_bytes() if sizes else 0)
+
+
+# ---------------------------------------------------------------- gate, run, preview
+
+BREW_BUSY = "Homebrew is busy with another command. Try again when it's done."
+PREVIEW_FAILED = "Couldn't ask Homebrew what this would remove. Scan again."
+BREW_UNAVAILABLE = "REFUSED: Homebrew is not available"
+
+
+def validate(it, fresh, env) -> None:
+    """The last check before brew runs. `fresh` is the rescanned item, or None for
+    `brew:cleanup` when the rescan found nothing to clean. Raises core.UnsafeTarget."""
+    brew = env.brew
+    if brew is None:
+        raise core.UnsafeTarget("Homebrew is not available")
+    if it.kind != "brew" or not it.argv or it.argv[0] != brew.path:
+        raise core.UnsafeTarget(core.SITUATION_CHANGED)
+    if it.key == "brew:cleanup":
+        if it.argv != [brew.path, "cleanup"]:
+            raise core.UnsafeTarget(core.SITUATION_CHANGED)
+        return
+    if not it.key.startswith("brew:pkg:") or fresh is None:
+        raise core.UnsafeTarget(core.SITUATION_CHANGED)
+    name = it.key[len("brew:pkg:"):]
+    if (not NAME_RE.match(name) or it.argv != [brew.path, "uninstall", "--formula", name]
+            or fresh.meta.get("version") != it.meta.get("version")):
+        raise core.UnsafeTarget(core.SITUATION_CHANGED)
+
+
+def run_item(it, env) -> tuple:
+    """Run a validated brew item through env.brew. Returns (ok, message)."""
+    try:
+        r = call(env.brew, list(it.argv[1:]), CLEAN_TIMEOUT)
+    except (OSError, subprocess.SubprocessError) as e:
+        return False, str(e) or "brew failed"
+    if r.returncode != 0:
+        err = (r.stderr or "").strip()
+        if "already locked" in err or "Operation already in progress" in err:
+            return False, BREW_BUSY
+        return False, err or f"exit {r.returncode}"
+    return True, "ok"
+
+
+def preview_uninstall(names: list, env) -> dict:
+    """Ask Homebrew what uninstalling `names` would remove, without removing anything."""
+    brew = env.brew
+    if brew is None:
+        return {"ok": False, "error": PREVIEW_FAILED}
+    if not names or not all(isinstance(n, str) and NAME_RE.match(n) for n in names):
+        return {"ok": False, "error": PREVIEW_FAILED}
+    try:
+        r = call(brew, ["uninstall", "--dry-run", "--formula", *names], SCAN_TIMEOUT)
+    except (OSError, subprocess.SubprocessError):
+        return {"ok": False, "error": PREVIEW_FAILED}
+    if r.returncode != 0:
+        return {"ok": False, "error": PREVIEW_FAILED}
+    packages = parse_would_uninstall(r.stdout)
+    libraries = parse_would_autoremove(r.stdout)
+    for n in [*names, *packages, *libraries]:
+        if _has_service(brew, n):
+            return {"ok": False, "error": SERVICE_BLOCK(n)}
+    return {"ok": True, "packages": packages, "libraries": libraries}
