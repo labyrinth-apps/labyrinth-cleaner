@@ -98,11 +98,12 @@ class ParseFallbackTests(unittest.TestCase):
 
 SIZES = {"ffmpeg@6": 5000, "ffmpeg@8": 7000, "libonly6": 3000, "libshared": 1100, "orphan": 2200,
          "python@3.11": 9000, "oldtool": 400, "toolx": 600, "postgresql@15": 8000,
-         "Weird_Name": 300, "openssl@3": 1500}
+         "Weird_Name": 300, "openssl@3": 1500, "jq": 700, "yq": 800}
 SIZES_CASK = 4500
 VERSIONS = {"ffmpeg@6": "6.1.6", "ffmpeg@8": "8.0.1", "libonly6": "1.0", "libshared": "1.0",
             "orphan": "0.1", "python@3.11": "3.11.14", "oldtool": "1.0", "toolx": "1.0",
-            "postgresql@15": "15.14", "Weird_Name": "1.0", "openssl@3": "3.5.0"}
+            "postgresql@15": "15.14", "Weird_Name": "1.0", "openssl@3": "3.5.0", "jq": "1.7.1",
+            "yq": "4.44.3"}
 
 
 def dry_run(names):
@@ -209,7 +210,7 @@ class ScanBrewTests(BrewBase):
         pkgs = {k for k in d if k.startswith("brew:pkg:")}
         self.assertEqual(pkgs, {"brew:pkg:ffmpeg@6", "brew:pkg:ffmpeg@8", "brew:pkg:python@3.11",
                                 "brew:pkg:oldtool", "brew:pkg:toolx", "brew:pkg:postgresql@15",
-                                "brew:pkg:Weird_Name"})
+                                "brew:pkg:Weird_Name", "brew:pkg:yq"})
         f6 = d["brew:pkg:ffmpeg@6"]
         self.assertEqual((f6.tier, f6.kind, f6.preselect, f6.argv),
                          (core.CAUTION, "brew", False, [self.brew_path, "uninstall", "--formula", "ffmpeg@6"]))
@@ -639,6 +640,100 @@ class GateRunTests(BrewBase):
         self.assertEqual([a for a, _ in rec if a[1:] == ["autoremove", "-n"]].__len__(), 1)
         self.assertTrue(ok_, msg)   # the one read saw nothing to clean and read cleanly
         self.assertIn([self.brew_path, "cleanup"], [a for a, _ in rec])
+
+
+def formula(name, version, deps=(), on_request=True, full_name=None, **extra):
+    return dict({"name": name, "full_name": full_name or name, "linked_keg": version,
+                 "installed": [{"version": version, "time": 1700000000, "installed_on_request": on_request,
+                                "runtime_dependencies": [{"full_name": d} for d in deps]}]}, **extra)
+
+
+class ListingRuleTests(BrewBase):
+    def item(self, env, key):
+        return self.by_key(core.scan(self.cfg, core.NoSimctl(), env=env, now=self.now))[key]
+
+    def test_a_package_another_formula_needs_is_not_listed(self):
+        d = self.by_key(self.scan())
+        self.assertNotIn("brew:pkg:jq", d)       # installed on request, but yq needs it
+        self.assertIn("brew:pkg:yq", d)
+
+    def test_gate_refuses_a_package_that_became_a_dependency(self):
+        it = self.item(self.env(), "brew:pkg:oldtool")
+
+        def needs_oldtool(f):
+            f["yq"]["installed"][0]["runtime_dependencies"].append({"full_name": "oldtool"})
+        rec = []
+        env = self.env(record=rec, info_text=with_info(needs_oldtool))
+        self.assertEqual(core.execute_item(it, self.cfg, env=env, now=self.now),
+                         (False, "REFUSED: Situation changed: scan again"))
+        self.assertFalse([a for a, _ in rec if a[1:3] == ["uninstall", "--formula"]])
+
+    def test_gate_refuses_a_package_no_longer_installed_on_request(self):
+        it = self.item(self.env(), "brew:pkg:oldtool")
+
+        def as_dependency(f):
+            f["oldtool"]["installed"][0]["installed_on_request"] = False
+        rec = []
+        env = self.env(record=rec, info_text=with_info(as_dependency))
+        self.assertEqual(core.execute_item(it, self.cfg, env=env, now=self.now),
+                         (False, "REFUSED: Situation changed: scan again"))
+        self.assertFalse([a for a, _ in rec if a[1:3] == ["uninstall", "--formula"]])
+
+    def test_a_formula_a_cask_needs_is_not_listed(self):
+        for dep in (["ffmpeg@8"], "ffmpeg@8", ["homebrew/core/ffmpeg@8"]):
+            info = json.loads(read_fixture("info.json"))
+            info["casks"] = [{"token": "app", "depends_on": {"formula": dep, "macos": {">=": ["12"]}}},
+                             {"token": "plain", "depends_on": {}}, {"token": "none"}]
+            d = self.by_key(self.scan(info_text=json.dumps(info)))
+            self.assertNotIn("brew:pkg:ffmpeg@8", d, dep)
+            self.assertIn("brew:pkg:ffmpeg@6", d, dep)
+
+    def family(self, *pairs):
+        """Notes of formulae (name, version) installed on request, nothing else."""
+        info = {"formulae": [formula(n, v) for n, v in pairs], "casks": []}
+        for n, _ in pairs:
+            write(os.path.join(self.prefix, "Cellar", n, "1", "f"), "x")
+        d = self.by_key(self.scan(info_text=json.dumps(info)))
+        return {k[len("brew:pkg:"):]: i.note for k, i in d.items() if k.startswith("brew:pkg:")}
+
+    def test_family_note_names_the_newer_versions_suffix(self):
+        cases = [((("python@3.11", "3.11.14"), ("python@3.13", "3.13.1")), "python@3.11", "python 3.13"),
+                 ((("ffmpeg@6", "6.1.6"), ("ffmpeg@8", "8.0.1")), "ffmpeg@6", "ffmpeg 8"),
+                 ((("python@3.11", "3.11.14"), ("python", "3.14.0_1")), "python@3.11", "python 3.14"),
+                 ((("ffmpeg@6", "6.1.6"), ("ffmpeg", "8.0.1")), "ffmpeg@6", "ffmpeg 8"),
+                 ((("php@8.3", "8.3.9"), ("php", "8.4.2")), "php@8.3", "php 8.4")]
+        for pairs, older, shown in cases:
+            notes = self.family(*pairs)
+            self.assertIn(f"older version · {shown} also installed", notes[older], pairs)
+
+    def tap_info(self, short, full):
+        info = json.loads(read_fixture("info.json"))
+        info["formulae"].append(formula(short, "2.1", full_name=full))
+        write(os.path.join(self.prefix, "Cellar", short, "2.1", "bin", "x"), "x" * 50)
+        return json.dumps(info)
+
+    def test_tap_formula_is_offered_by_its_short_name(self):
+        rec = []
+        env = self.env(record=rec, info_text=self.tap_info("tapx", "me/tools/tapx"))
+        it = self.item(env, "brew:pkg:tapx")
+        self.assertEqual((it.tier, it.label, it.argv),
+                         (core.CAUTION, "tapx", [self.brew_path, "uninstall", "--formula", "tapx"]))
+        self.assertNotIn("brew:pkg:me/tools/tapx", self.by_key(self.scan(info_text=self.tap_info("tapx", "me/tools/tapx"))))
+        rec.clear()
+        self.assertEqual(core.execute_item(it, self.cfg, env=env, now=self.now), (True, "ok"))
+        self.assertIn([self.brew_path, "uninstall", "--formula", "tapx"], [a for a, _ in rec])
+
+    def test_tap_formula_another_needs_by_full_name_is_not_listed(self):
+        info = json.loads(self.tap_info("tapx", "me/tools/tapx"))
+        info["formulae"].append(formula("usesit", "1.0", deps=["me/tools/tapx"]))
+        d = self.by_key(self.scan(info_text=json.dumps(info)))
+        self.assertNotIn("brew:pkg:tapx", d)
+
+    def test_tap_formula_with_an_odd_short_name_stays_kept(self):
+        d = self.by_key(self.scan(info_text=self.tap_info("Odd_Tool", "me/tools/Odd_Tool")))
+        it = d["brew:pkg:me/tools/Odd_Tool"]
+        self.assertFalse(it.offerable)
+        self.assertEqual(it.note, "Can't be removed from here: run brew uninstall me/tools/Odd_Tool yourself.")
 
 
 if __name__ == "__main__":

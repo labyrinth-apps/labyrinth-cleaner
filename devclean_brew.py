@@ -56,18 +56,27 @@ def find_brew(home: str) -> Optional[BrewRunner]:
 
 @dataclass
 class Formula:
-    name: str
+    name: str             # full name: user/tap/x for a tap formula, x for core
     version: str
     time: Optional[float]
     on_request: bool
     deps: frozenset = field(default_factory=frozenset)
     deprecated: bool = False
     pinned: bool = False
+    short: str = ""       # the `name` Homebrew gives it: its Cellar rack, service and argv name
+
+    def __post_init__(self):
+        self.short = self.short or _short(self.name)
 
 
 def parse_info(text: str) -> dict:
+    """Installed formulae by full name."""
+    return _parse_info(json.loads(text))
+
+
+def _parse_info(data: dict) -> dict:
     out = {}
-    for f in json.loads(text).get("formulae", []):
+    for f in data.get("formulae", []):
         kegs = f.get("installed") or []
         if not kegs:
             continue
@@ -83,8 +92,21 @@ def parse_info(text: str) -> dict:
             name=name, version=keg.get("version", ""),
             time=float(t) if isinstance(t, (int, float)) else None,
             on_request=bool(keg.get("installed_on_request")), deps=deps,
-            deprecated=bool(f.get("deprecated") or f.get("disabled")), pinned=bool(f.get("pinned")))
+            deprecated=bool(f.get("deprecated") or f.get("disabled")), pinned=bool(f.get("pinned")),
+            short=f.get("name") or "")
     return out
+
+
+def parse_cask_deps(data: dict) -> frozenset:
+    """The formulae installed casks depend on (`depends_on.formula`, a list or one name)."""
+    out = set()
+    for c in data.get("casks") or []:
+        dep = ((c or {}).get("depends_on") or {}).get("formula") if isinstance(c, dict) else None
+        if isinstance(dep, str):
+            dep = [dep]
+        if isinstance(dep, list):
+            out.update(d for d in dep if isinstance(d, str))
+    return frozenset(out)
 
 
 _UNITS = {"B": 1, "KB": 1000, "MB": 1000 ** 2, "GB": 1000 ** 3, "TB": 1000 ** 4}
@@ -164,7 +186,7 @@ def _keg_dir(brew: BrewRunner, name: str) -> str:
 
 
 def _read_brew(brew: BrewRunner, full: bool = True):
-    """(formulae, cleanup bytes, autoremove names), or None when any call fails.
+    """(formulae, cask formula deps, cleanup bytes, autoremove names), or None when any call fails.
     Not `full`: `info` only, and no cleanup bytes or autoremove names (a package's gate)."""
     forms = [["info", "--json=v2", "--installed"]]
     if full:
@@ -174,27 +196,35 @@ def _read_brew(brew: BrewRunner, full: bool = True):
             results = list(ex.map(lambda a: call(brew, a, SCAN_TIMEOUT), forms))
         if any(r.returncode != 0 for r in results):
             return None
+        info = json.loads(results[0].stdout)
+        formulae, cask_deps = _parse_info(info), parse_cask_deps(info)
         if not full:
-            return parse_info(results[0].stdout), 0, []
-        return (parse_info(results[0].stdout), parse_cleanup(results[1].stdout, brew.prefix),
+            return formulae, cask_deps, 0, []
+        return (formulae, cask_deps, parse_cleanup(results[1].stdout, brew.prefix),
                 parse_would_autoremove(results[2].stdout))
     except Exception:
         return None
 
 
 def _family_note(f: Formula, listed: dict) -> Optional[str]:
-    base = f.name.split("@")[0]
+    base = f.short.split("@")[0]
     others = [g for g in listed.values()
-              if g.name != f.name and g.name.split("@")[0] == base]
+              if g.name != f.name and g.short.split("@")[0] == base]
     if not others:
         return None
     key = core.version_key
     newer = [g for g in others if key(g.version) > key(f.version)]
     if newer:
         top = max(newer, key=lambda g: key(g.version))
-        major = top.version.split(".")[0]
-        return f"older version · {base} {major} also installed"
-    return "also installed: " + ", ".join(sorted(g.name for g in others))
+        if "@" in top.short:
+            shown = top.short.split("@", 1)[1]            # python@3.13 -> 3.13, ffmpeg@8 -> 8
+        else:
+            # Plain python next to python@3.11: as precise as the older one's suffix.
+            parts = re.split(r"[._]", top.version)
+            dotted = "." in f.short.split("@", 1)[-1] if "@" in f.short else False
+            shown = ".".join(parts[:2]) if dotted else parts[0]
+        return f"older version · {base} {shown} also installed"
+    return "also installed: " + ", ".join(sorted(g.short for g in others))
 
 
 def scan_brew(cfg, env, warnings: list, sizes: bool = True, full: bool = True) -> tuple:
@@ -220,17 +250,25 @@ def scan_brew(cfg, env, warnings: list, sizes: bool = True, full: bool = True) -
     if read is None:
         warnings.append(SCAN_WARNING)
         return [], 0
-    formulae, cleanup_bytes, autoremove = read
+    formulae, cask_deps, cleanup_bytes, autoremove = read
     auto = set(autoremove)
-    all_deps = set().union(*(f.deps for f in formulae.values())) if formulae else set()
-    listed = {n: f for n, f in formulae.items() if f.on_request and n not in all_deps}
+    # What any installed formula or cask needs, by short name (unique in the Cellar), so a
+    # full name and a short name for the same formula both count.
+    all_deps = set().union(cask_deps, *(f.deps for f in formulae.values()))
+    needed = {_short(d) for d in all_deps}
+    listed = {n: f for n, f in formulae.items() if f.on_request and f.short not in needed}
+    cask_needed = {_short(c) for c in cask_deps}
 
     items = []
-    for name, f in listed.items():
+    for full_name, f in listed.items():
         libs = [d for d in sorted(f.deps)
                 if d in formulae and not formulae[d].on_request and d not in auto
+                and _short(d) not in cask_needed
                 and not any(d in g.deps for n2, g in formulae.items()
-                            if n2 != name and g.on_request)]
+                            if n2 != full_name and g.on_request)]
+        # Formulae from taps are uninstalled by their short name (spec); a name the regex
+        # rejects stays kept, shown by its full name.
+        name = f.short if NAME_RE.match(f.short) else full_name
         key = f"brew:pkg:{name}"
         if _has_service(brew, name):
             items.append(core.Item(key=key, category=CATEGORY, label=name, tier=core.PROTECTED,
@@ -253,7 +291,7 @@ def scan_brew(cfg, env, warnings: list, sizes: bool = True, full: bool = True) -
         fam = _family_note(f, listed)
         if fam:
             notes.append(fam)
-        if name.split("@")[0] in RUNTIME_BASES:
+        if f.short.split("@")[0] in RUNTIME_BASES:
             notes.append("Projects or scripts you run may use it")
         if f.deprecated:
             notes.append("Homebrew no longer maintains it")

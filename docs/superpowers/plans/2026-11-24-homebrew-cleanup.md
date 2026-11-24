@@ -47,7 +47,7 @@
 2. **Homebrew not installed:** no Homebrew rows, no warning, no disk-map bytes. Test in Task 2.
 3. **`brew info` works but `cleanup -n` fails or times out:** no Homebrew items at all, one warning. Test in Task 2.
 4. **The user runs `brew install` while a clean runs:** the row fails with the busy message, not a raw lock trace. Test in Task 3.
-5. **A formula name the regex rejects** (from a tap, or odd characters): shown as kept with no checkbox, never offered. Test in Task 2.
+5. **A formula name the regex rejects** (odd characters; a tap formula is offered by its short name when that passes): shown as kept with no checkbox, never offered. Test in Task 2.
 
 ---
 

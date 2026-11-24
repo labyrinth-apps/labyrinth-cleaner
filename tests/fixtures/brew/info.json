@@ -135,6 +135,42 @@
    "disabled": false
   },
   {
+   "name": "jq",
+   "full_name": "jq",
+   "installed": [
+    {
+     "version": "1.7.1",
+     "time": 1700000000,
+     "installed_on_request": true,
+     "runtime_dependencies": []
+    }
+   ],
+   "linked_keg": "1.7.1",
+   "pinned": false,
+   "deprecated": false,
+   "disabled": false
+  },
+  {
+   "name": "yq",
+   "full_name": "yq",
+   "installed": [
+    {
+     "version": "4.44.3",
+     "time": 1700000000,
+     "installed_on_request": true,
+     "runtime_dependencies": [
+      {
+       "full_name": "jq"
+      }
+     ]
+    }
+   ],
+   "linked_keg": "4.44.3",
+   "pinned": false,
+   "deprecated": false,
+   "disabled": false
+  },
+  {
    "name": "libonly6",
    "full_name": "libonly6",
    "installed": [
