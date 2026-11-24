@@ -588,6 +588,12 @@ function el(tag, attrs, ...kids) {
 function costNodes(text) {
   return String(text || "").split("`").map((part, i) => i % 2 ? el("code", { text: part }) : document.createTextNode(part));
 }
+// Set a line that may carry `commands` (Homebrew's messages, the reinstall hint) as text and <code>.
+function setCodeText(node, text) {
+  node.textContent = "";
+  clear(node);
+  node.append(...costNodes(text));
+}
 
 const $ = id => document.getElementById(id);
 function clear(node) { while (node.firstChild) node.removeChild(node.firstChild); }
@@ -803,8 +809,16 @@ function groupCard(g, rows) {
   card.append(head);
 
   const small = S.data.small_bytes;
-  const big = rows.filter(r => r.size === null || r.size >= small);
-  const tiny = rows.filter(r => r.size !== null && r.size < small);
+  let isTiny = r => r.size !== null && r.size < small;
+  if (g.id === "brew") {
+    // Versions of one tool sit together: none is folded away while another is shown.
+    const fam = r => r.label.split("@")[0];
+    const shownFams = new Set(rows.filter(r => !isTiny(r)).map(fam));
+    const own = isTiny;
+    isTiny = r => own(r) && !shownFams.has(fam(r));
+  }
+  const big = rows.filter(r => !isTiny(r));
+  const tiny = rows.filter(isTiny);
   const max = Math.max(1, ...rows.map(r => r.size || 0));
   const visible = S.expanded.has(g.id) ? rows : big;
   for (const r of visible) card.append(rowEl(g, r, max));
@@ -834,7 +848,8 @@ function rowEl(g, r, max) {
   const chev = kept ? null : el("button", { class: "chev", type: "button", "aria-expanded": open ? "true" : "false",
     "aria-controls": wid, "aria-label": "What happens: " + r.label, title: "What happens", text: "›",
     onclick: e => toggleWhat(r.id, e.currentTarget, wid) });
-  const size = el("div", { class: "size" }, human(r.size));
+  // A kept Homebrew row (a service, a pinned package) isn't measured: no size, not "?".
+  const size = el("div", { class: "size" }, kept && g.id === "brew" && r.size == null ? null : human(r.size));
   if (isTrashMove(r)) size.append(el("span", { class: "totrash", text: "Moves to Trash" }));
   else if (!kept) size.append(el("div", { class: "mini" }, el("div", { style: "width:" + pct.toFixed(1) + "%;background:" + g.color })));
   size.append(el("small", { text: age(r.mtime) }));
@@ -985,9 +1000,9 @@ async function openModal() {
       for (const name of brew.libraries) list.append(el("div", { class: "mrow" }, el("span", { class: "l", text: name })));
     }
     const first = (brew.packages && brew.packages[0]) || keys[0].slice("brew:pkg:".length);
-    $("mSub").textContent = baseSub + " This can't be undone from the Trash. You can reinstall with `brew install " + first + "`.";
+    setCodeText($("mSub"), baseSub + " This can't be undone from the Trash. You can reinstall with `brew install " + first + "`.");
   } else {
-    $("mwarn").textContent = brew.error || PREVIEW_FAILED;
+    setCodeText($("mwarn"), brew.error || PREVIEW_FAILED);
     $("mwarn").hidden = false;
   }
   refreshDelete();
@@ -1072,7 +1087,7 @@ async function doDelete() {
 }
 
 function showModalError(msg) {
-  $("mwarn").textContent = msg;
+  setCodeText($("mwarn"), msg);   // a refused clean can carry Homebrew's `brew services stop x`
   $("mwarn").hidden = false;
 }
 

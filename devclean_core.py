@@ -1324,7 +1324,10 @@ def cost_for(it: Item) -> tuple:
     if it.key == "docker:images":
         return f"{human(it.size)} DL", _general().DOCKER_IMAGES_COST
     if it.key == "brew:cleanup":
-        return "NO COST", "Homebrew doesn't use them."
+        # The row shows its cost, not its note: name the libraries that go here too.
+        libs = it.meta.get("libraries") or []
+        return "NO COST", ("Homebrew doesn't use them: " + ", ".join(libs)) if libs \
+            else "Homebrew doesn't use them."
     if it.key.startswith("brew:pkg:"):
         return "REINSTALL", it.note
     return "?", it.note

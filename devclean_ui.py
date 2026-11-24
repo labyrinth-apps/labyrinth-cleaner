@@ -251,6 +251,21 @@ class UIServer:
                 return 400, {"error": "unknown or protected key", "keys": bad}
             if self._job_running:
                 return 409, {"error": "a clean is already running"}
+            latest = self._latest
+            names = [k[len("brew:pkg:"):] for k in dict.fromkeys(keys) if k.startswith("brew:pkg:")]
+            env = self.env
+        if names:
+            # The page asks for this preview before it confirms; asking again here means a
+            # request that skipped it (or a package Homebrew won't remove now) starts nothing.
+            # Outside the lock: the dry run can take seconds.
+            preview = devclean_brew.preview_uninstall(names, env)
+            if not preview.get("ok"):
+                return 409, {"error": preview.get("error") or devclean_brew.PREVIEW_FAILED}
+        with self._lock:
+            if self._latest is not latest:
+                return 409, {"error": "stale scan"}
+            if self._job_running:
+                return 409, {"error": "a clean is already running"}
             chosen = core.execution_order([items[k] for k in dict.fromkeys(keys)])
             job_id = secrets.token_hex(8)
             job = {"job_id": job_id, "state": "running",

@@ -140,7 +140,27 @@ def build_rows(items: list, home: str) -> list:
         rid = f"{group}:{os.path.relpath(project_dir, home)}"
         rows.append(_row(rid, group, members, label, _tilde(project_dir, home)))
     rows.sort(key=lambda r: (GROUP_ORDER[r["group"]], -(r["size"] or 0), r["label"]))
+    _sort_brew_families(rows)
     return rows
+
+
+def _sort_brew_families(rows: list) -> None:
+    """Versions of one tool sit next to each other (ffmpeg, ffmpeg@6, ffmpeg@8): families by
+    their largest row, then base name, then newest version first. In place; brew rows are
+    contiguous after the group sort."""
+    brew = [r for r in rows if r["group"] == "brew"]
+    if not brew:
+        return
+
+    def base(r):
+        return r["label"].split("@")[0]
+    largest = {}
+    for r in brew:
+        largest[base(r)] = max(largest.get(base(r), 0), r["size"] or 0)
+    brew.sort(key=lambda r: core.version_key(r["version"] or ""), reverse=True)
+    brew.sort(key=lambda r: (-largest[base(r)], base(r)))
+    start = rows.index(next(r for r in rows if r["group"] == "brew"))
+    rows[start:start + len(brew)] = brew
 
 
 def measure_extras(cfg: core.Config, measure=core.du_bytes) -> dict:

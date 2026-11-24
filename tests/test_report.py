@@ -282,6 +282,23 @@ class ReportTests(unittest.TestCase):
         p = rep.scan_payload(result(50_000_000), cfg_for(self.home), "id1", 1.0, ZERO)
         self.assertEqual(p["headline"]["reclaimable"], 1_000_000)
 
+    def test_homebrew_versions_of_one_tool_sit_together(self):
+        def pkg(name, size, version, tier=core.CAUTION):
+            return core.Item(key=f"brew:pkg:{name}", category="Homebrew", label=name, tier=tier,
+                             kind="brew" if tier == core.CAUTION else "info", size=size,
+                             meta={"version": version} if version else {})
+        items = [pkg("ffmpeg@6", 5_000_000, "6.1.6"), pkg("jq", 9_000_000, "1.7.1"),
+                 pkg("ffmpeg", 60_000_000, "8.0.1"), pkg("ffmpeg@8", 1_000_000, "8.0.1"),
+                 pkg("ffmpeg@7", 4_000_000, "7.1.2"), pkg("wget", 9_000_000, "1.25"),
+                 pkg("postgresql@15", None, None, tier=core.PROTECTED),
+                 pkg("postgresql@17", 80_000_000, "17.2"),
+                 core.Item(key="derived-data", category="Xcode", label="DerivedData", tier=core.SAFE,
+                           kind="path", path=self.home + "/dd", size=1)]
+        order = [r["label"] for r in rep.build_rows(items, self.home) if r["group"] == "brew"]
+        # ffmpeg and ffmpeg@8 share a version: the larger one first, as elsewhere.
+        self.assertEqual(order, ["postgresql@17", "postgresql@15", "ffmpeg", "ffmpeg@8", "ffmpeg@7",
+                                 "ffmpeg@6", "jq", "wget"])
+
     def test_new_segments_order_and_sum(self):
         self.assertEqual(rep.SEGMENTS, [
             ("sim", "Simulators"), ("android", "Android"), ("xcode", "Xcode"),

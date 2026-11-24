@@ -1511,6 +1511,10 @@ class CliBrewTests(BrewBase):
         self.assertIn(f"{self.brew_path} uninstall --formula ffmpeg@6", out)
         self.assertLess(out.index("Would run"), out.index("Homebrew also removes"))
         self.assertLess(out.index("Homebrew also removes"), out.index("Commands:"))
+        undo = "This can't be undone from the Trash. You can reinstall with `brew install "
+        self.assertIn(undo, out)
+        self.assertLess(out.index("Homebrew also removes"), out.index(undo))
+        self.assertLess(out.index(undo), out.index("Commands:"))
         # Only the read-only calls ran, and the one preview covered every chosen package.
         argvs = [a for a, _ in record]
         self.assertNotIn([self.brew_path, "cleanup"], argvs)

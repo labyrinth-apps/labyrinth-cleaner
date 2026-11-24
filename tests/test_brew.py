@@ -466,7 +466,9 @@ class RunBrewTests(BrewBase):
         self.assertEqual(d["brew:pkg:ffmpeg@6"].cost_tag, "REINSTALL")
         self.assertEqual(d["brew:pkg:ffmpeg@6"].cost, d["brew:pkg:ffmpeg@6"].note)
         self.assertEqual((d["brew:cleanup"].cost_tag, d["brew:cleanup"].cost),
-                         ("NO COST", "Homebrew doesn't use them."))
+                         ("NO COST", "Homebrew doesn't use them: orphan"))
+        quiet = self.by_key(self.scan(autoremove="==> Would autoremove 0 unneeded formulae:\n"))
+        self.assertEqual(quiet["brew:cleanup"].cost, "Homebrew doesn't use them.")
         self.assertEqual(d["brew:cleanup"].restore, "Nothing to get back: Homebrew doesn't use them.")
 
     def test_preview(self):

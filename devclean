@@ -246,10 +246,13 @@ def main(argv=None):
             if not args.dry_run:
                 print("Nothing deleted.")
                 return 1
-        elif preview["libraries"]:
-            print("\nHomebrew also removes these libraries nothing needs any more:")
-            for name in preview["libraries"]:
-                print(f"  {name}")
+        else:
+            if preview["libraries"]:
+                print("\nHomebrew also removes these libraries nothing needs any more:")
+                for name in preview["libraries"]:
+                    print(f"  {name}")
+            first = (preview["packages"] or brew_names)[0]
+            print(f"\nThis can't be undone from the Trash. You can reinstall with `brew install {first}`.")
     # Command lines carry nothing but the command: zsh has INTERACTIVE_COMMENTS
     # off by default, so a trailing "# note" would become extra rm arguments.
     # Trash items have no command: only the trash helper (the app's tool) can move them.
