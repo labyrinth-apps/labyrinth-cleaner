@@ -1,6 +1,6 @@
 # Homebrew cleanup: old versions, unneeded libraries, packages you installed
 
-Status: draft, 2026-11-24. Extends `2026-11-13-labyrinth-cleaner-app-design.md` and follows the pattern of `2026-11-14-applications-cleanup-design.md`. Ships as version 0.3.0, before the Windows version.
+Status: approved by the user, 2026-11-24. Extends `2026-11-13-labyrinth-cleaner-app-design.md` and follows the pattern of `2026-11-14-applications-cleanup-design.md`. Ships as version 0.3.0, before the Windows version.
 
 ## Why
 
