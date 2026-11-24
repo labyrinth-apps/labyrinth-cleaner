@@ -828,7 +828,7 @@ class LifecycleTests(ServerTestCase):
         self.srv.env = dataclasses.replace(self.srv.env, brew=None)
         status, data = self.clean(p["scan_id"], ["brew:pkg:ffmpeg@6"])
         self.assertEqual((status, data), (409, {"error": devclean_brew.PREVIEW_FAILED}))
-        self.assertIsNone(self.srv._jobs.get(data.get("job_id")))
+        self.assertEqual(self.srv._jobs, {})
 
     def test_brew_preview_without_brew(self):
         self.start(brew=ui.fake_brew(self.make_brew_dir()))

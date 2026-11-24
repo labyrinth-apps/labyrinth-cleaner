@@ -270,19 +270,22 @@ def scan_brew(cfg, env, warnings: list, sizes: bool = True, full: bool = True) -
         # rejects stays kept, shown by its full name.
         name = f.short if NAME_RE.match(f.short) else full_name
         key = f"brew:pkg:{name}"
+        # Kept rows carry their version too: shown, and sorted newest first in their family.
+        kept_meta = {"version": f.version}
         if _has_service(brew, name):
             items.append(core.Item(key=key, category=CATEGORY, label=name, tier=core.PROTECTED,
-                                   kind="info", note=SERVICE_NOTE(name)))
+                                   kind="info", note=SERVICE_NOTE(name), meta=kept_meta))
             continue
         if f.pinned:
             # `brew uninstall` exits 0 for a pinned formula and removes nothing.
             items.append(core.Item(key=key, category=CATEGORY, label=name, tier=core.PROTECTED,
-                                   kind="info", note=PINNED_NOTE(name)))
+                                   kind="info", note=PINNED_NOTE(name), meta=kept_meta))
             continue
         if not NAME_RE.match(name):
             items.append(core.Item(
                 key=key, category=CATEGORY, label=name, tier=core.PROTECTED, kind="info",
-                note=f"Can't be removed from here: run brew uninstall {name} yourself."))
+                note=f"Can't be removed from here: run brew uninstall {name} yourself.",
+                meta=kept_meta))
             continue
         lib_bytes = kegs_bytes(libs) if sizes and libs else 0
         notes = []

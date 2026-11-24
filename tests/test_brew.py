@@ -708,6 +708,21 @@ class ListingRuleTests(BrewBase):
             notes = self.family(*pairs)
             self.assertIn(f"older version · {shown} also installed", notes[older], pairs)
 
+    def test_kept_rows_carry_their_version_and_sort_newest_first(self):
+        import devclean_report as report
+        info = {"formulae": [formula("python@3.11", "3.11.14"), formula("python@3.13", "3.13.1", pinned=True),
+                             formula("ffmpeg@6", "6.1.6"), formula("ffmpeg@8", "8.0.1")], "casks": []}
+        for n, size in (("python@3.11", 200), ("python@3.13", 100), ("ffmpeg@6", 100), ("ffmpeg@8", 100)):
+            write(os.path.join(self.prefix, "Cellar", n, "1", "f"), "x" * size)
+        write(os.path.join(self.services, "homebrew.mxcl.ffmpeg@8.plist"))
+        res = self.scan(info_text=json.dumps(info))
+        d = self.by_key(res)
+        self.assertFalse(d["brew:pkg:python@3.13"].offerable)
+        self.assertEqual(d["brew:pkg:python@3.13"].meta["version"], "3.13.1")
+        self.assertEqual(d["brew:pkg:ffmpeg@8"].meta["version"], "8.0.1")
+        order = [r["label"] for r in report.build_rows(res.items, self.home) if r["group"] == "brew"]
+        self.assertEqual(order, ["python@3.13", "python@3.11", "ffmpeg@8", "ffmpeg@6"])
+
     def tap_info(self, short, full):
         info = json.loads(read_fixture("info.json"))
         info["formulae"].append(formula(short, "2.1", full_name=full))
