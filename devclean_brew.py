@@ -185,6 +185,34 @@ def _keg_dir(brew: BrewRunner, name: str) -> str:
     return os.path.join(brew.cellar, _short(name))
 
 
+def _measure_cellar(brew: BrewRunner) -> dict:
+    """{entry name: bytes} for each top-level Cellar entry (a rack per formula), each measured
+    once, in parallel."""
+    try:
+        names = os.listdir(brew.cellar)
+    except OSError:
+        return {}
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        sizes = list(ex.map(lambda n: core.du_bytes(os.path.join(brew.cellar, n)) or 0, names))
+    return dict(zip(names, sizes))
+
+
+def _total_bytes(brew: BrewRunner, racks: dict) -> int:
+    """Cellar (the sum of its measured entries) plus Caskroom (one du)."""
+    cask = (core.du_bytes(brew.caskroom) or 0) if os.path.isdir(brew.caskroom) else 0
+    return sum(racks.values()) + cask
+
+
+def _has_keg(brew: BrewRunner, name: str) -> bool:
+    """A rack counts as installed only while it holds a keg (a subdirectory), as for Homebrew:
+    uninstall may leave the rack with a stray file in it."""
+    try:
+        with os.scandir(_keg_dir(brew, name)) as it:
+            return any(e.is_dir() for e in it)
+    except OSError:
+        return False
+
+
 def _read_brew(brew: BrewRunner, full: bool = True):
     """(formulae, cask formula deps, cleanup bytes, autoremove names), or None when any call fails.
     Not `full`: `info` only, and no cleanup bytes or autoremove names (a package's gate)."""
@@ -233,23 +261,29 @@ def scan_brew(cfg, env, warnings: list, sizes: bool = True, full: bool = True) -
     brew = env.brew
     if brew is None or not os.path.isdir(brew.cellar):
         return [], 0
-    du = core.du_bytes
-
-    def kegs_bytes(names):
-        return sum((du(_keg_dir(brew, n)) or 0) for n in names)
-
-    def total_bytes():
-        return (du(brew.cellar) or 0) + ((du(brew.caskroom) or 0) if os.path.isdir(brew.caskroom) else 0)
-
     if not os.access(brew.cellar, os.W_OK):
         item = core.Item(key="brew:other-account", category=CATEGORY, label="Homebrew",
                          tier=core.PROTECTED, kind="info", note=OTHER_ACCOUNT_NOTE)
-        return [item], (total_bytes() if sizes else 0)
+        return [item], (_total_bytes(brew, _measure_cellar(brew)) if sizes else 0)
 
-    read = _read_brew(brew, full)
+    if sizes:
+        # Every Cellar entry is measured once, alongside Homebrew's own answers, and reused for
+        # package rows, their libraries, the safe item and the disk map.
+        with ThreadPoolExecutor(max_workers=1) as ex:
+            measuring = ex.submit(_measure_cellar, brew)
+            read = _read_brew(brew, full)
+            racks = measuring.result()
+    else:
+        read, racks = _read_brew(brew, full), {}
     if read is None:
         warnings.append(SCAN_WARNING)
         return [], 0
+
+    def rack_bytes(name):
+        return racks.get(_short(name), 0)
+
+    def kegs_bytes(names):
+        return sum(rack_bytes(n) for n in names)
     formulae, cask_deps, cleanup_bytes, autoremove = read
     auto = set(autoremove)
     # What any installed formula or cask needs, by short name (unique in the Cellar), so a
@@ -300,7 +334,7 @@ def scan_brew(cfg, env, warnings: list, sizes: bool = True, full: bool = True) -
             notes.append("Homebrew no longer maintains it")
         if libs and sizes:
             notes.append(f"plus about {core.human(lib_bytes)} of libraries only it uses")
-        size = ((du(_keg_dir(brew, name)) or 0) + lib_bytes) if sizes else None
+        size = (rack_bytes(name) + lib_bytes) if sizes else None
         items.append(core.Item(
             key=key, category=CATEGORY, label=name, tier=core.CAUTION, kind="brew",
             argv=[brew.path, "uninstall", "--formula", name], size=size, note=" · ".join(notes),
@@ -318,7 +352,7 @@ def scan_brew(cfg, env, warnings: list, sizes: bool = True, full: bool = True) -
         items.append(core.Item(key="brew:cleanup", category=CATEGORY, label=SAFE_LABEL, tier=tier,
                                kind=kind, argv=argv, size=size, note=note,
                                preselect=tier == core.SAFE, meta={"libraries": list(autoremove)}))
-    return items, (total_bytes() if sizes else 0)
+    return items, (_total_bytes(brew, racks) if sizes else 0)
 
 
 # ---------------------------------------------------------------- gate, run, preview
@@ -388,7 +422,7 @@ def run_item(it, env) -> tuple:
     if it.key.startswith("brew:pkg:"):
         # Exit 0 isn't proof: a pinned formula, or one of several kegs, leaves the package in place.
         name = it.key[len("brew:pkg:"):]
-        if os.path.lexists(_keg_dir(env.brew, name)):
+        if _has_keg(env.brew, name):
             if "is pinned" in err:
                 return False, PINNED_NOTE(name)
             return False, (_still_installed(out) or _still_installed(err)

@@ -753,5 +753,51 @@ class ListingRuleTests(BrewBase):
         self.assertEqual(it.note, "Can't be removed from here: run brew uninstall me/tools/Odd_Tool yourself.")
 
 
+class ScanCostTests(BrewBase):
+    def test_no_folder_is_measured_twice_in_one_scan(self):
+        measured = []
+
+        def du(path):
+            measured.append(os.path.realpath(path))
+            return tree_bytes(path)
+        with mock.patch.object(core, "du_bytes", du):
+            res = self.scan()
+        brew_paths = [p for p in measured if p.startswith(self.prefix + os.sep)]
+        self.assertEqual(len(brew_paths), len(set(brew_paths)), sorted(brew_paths))
+        # Nor inside another measured folder (the whole Cellar after its racks, say).
+        nested = [(a, b) for a in brew_paths for b in brew_paths if a != b and a.startswith(b + os.sep)]
+        self.assertEqual(nested, [])
+        # The sizes are the same as when every folder was measured on its own.
+        d = self.by_key(res)
+        self.assertEqual(d["brew:pkg:ffmpeg@6"].size, SIZES["ffmpeg@6"] + SIZES["libonly6"])
+        self.assertEqual(d["brew:cleanup"].size, 34600000 + 64 + SIZES["orphan"])
+        self.assertEqual(res.homebrew_bytes, sum(SIZES.values()) + SIZES_CASK)
+
+    def test_rescan_without_sizes_measures_nothing(self):
+        with mock.patch.object(core, "du_bytes", lambda p: self.fail(p)):
+            brew.scan_brew(self.cfg, self.env(), [], sizes=False)
+
+
+class KegLeftTests(BrewBase):
+    def item(self, env):
+        return self.by_key(core.scan(self.cfg, core.NoSimctl(), env=env, now=self.now))["brew:pkg:ffmpeg@6"]
+
+    def test_rack_left_with_only_a_stray_file_counts_as_removed(self):
+        rack = os.path.join(self.prefix, "Cellar", "ffmpeg@6")
+
+        def uninstall(argv):
+            shutil.rmtree(os.path.join(rack, "6.1.6"))
+            write(os.path.join(rack, ".stray"), "x")       # Homebrew leaves the rack for this
+            return ok(argv)
+        env = self.env(on_uninstall=uninstall)
+        self.assertEqual(core.execute_item(self.item(env), self.cfg, env=env, now=self.now), (True, "ok"))
+        self.assertTrue(os.path.isdir(rack))
+
+    def test_rack_still_holding_a_keg_fails(self):
+        env = self.env(on_uninstall=lambda argv: ok(argv))
+        self.assertEqual(core.execute_item(self.item(env), self.cfg, env=env, now=self.now),
+                         (False, "ffmpeg@6 is still installed."))
+
+
 if __name__ == "__main__":
     unittest.main()
