@@ -35,7 +35,7 @@ A read-only look at the user's Mac (2026-11-24) found:
 - Casks. Cask apps already appear under Applications. SDK casks such as Flutter are tools, not clutter.
 - Taps, `brew update`, `brew upgrade`, telling the user something is outdated.
 - Starting or stopping `brew services`.
-- Package data outside the kegs: databases and config under `<prefix>/var` and `<prefix>/etc` are never touched.
+- Package data outside the kegs: databases and config files under `<prefix>/var` and `<prefix>/etc` are never deleted. (`brew cleanup` itself removes empty folders and broken symlinks there; the user accepted that on 2026-11-24.)
 - Other package managers (MacPorts, Nix, pip or npm globals).
 - Knowing whether the user still runs a package. macOS doesn't keep reliable access dates for these programs, so there is no "last used" date.
 - Changing Homebrew's own behaviour. The app doesn't set or clear `HOMEBREW_NO_AUTOREMOVE`, so the dry run and the real run follow the same rules.
@@ -47,7 +47,7 @@ A read-only look at the user's Mac (2026-11-24) found:
 - **Running the app installs, upgrades or updates anything.** Every `brew` call has auto-update and install-cleanup turned off.
 - **Labyrinth Cleaner uses `sudo` or asks for a password.**
 - **A test, or development, runs the real `brew`.**
-- **Anything under `<prefix>/var` or `<prefix>/etc` is deleted.**
+- **A database or config file under `<prefix>/var` or `<prefix>/etc` is deleted.** Empty folders and broken symlinks that `brew cleanup` prunes there don't count (decided by the user, 2026-11-24).
 - **Something that runs as a background service is removed,** whether a ticked package or a library going along with it.
 
 ## The user's decisions
