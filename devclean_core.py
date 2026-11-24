@@ -1468,6 +1468,7 @@ class ScanResult:
     total_bytes: int
     xcode_running: bool
     app_bytes: int = 0
+    homebrew_bytes: int = 0
 
     @property
     def offerable(self):
@@ -1508,12 +1509,14 @@ def scan(cfg: Config, sim: Optional[SimctlProvider] = None,
     items += g.scan_trash(cfg)
     items += g.scan_backups(cfg)
     items += g.scan_docker(cfg, env)
+    brew_items, brew_bytes = _brew().scan_brew(cfg, env, warnings)
+    items += brew_items
     items += scan_info(cfg)
 
     if measure:
         def size_of(it: Item):
             if (it.kind in ("path", "info", "simdevice", "trash") and it.path and it.size is None
-                    and not it.key.startswith("app:")
+                    and not it.key.startswith(("app:", "brew:"))
                     and os.path.isdir(it.path)):
                 it.size = du_bytes(it.path)
                 if it.mtime is None:
@@ -1550,7 +1553,8 @@ def scan(cfg: Config, sim: Optional[SimctlProvider] = None,
     items.sort(key=lambda i: (TIER_ORDER[i.tier], i.category, -(i.size or 0)))
     du = shutil.disk_usage(cfg.home)
     return ScanResult(items=items, warnings=warnings, free_bytes=free_space(cfg.home),
-                      total_bytes=du.total, xcode_running=xr, app_bytes=app_bytes)
+                      total_bytes=du.total, xcode_running=xr, app_bytes=app_bytes,
+                      homebrew_bytes=brew_bytes)
 
 
 # ---------------------------------------------------------------- safety gate
@@ -1685,6 +1689,7 @@ RESCANNERS = {
     "log:": lambda key, cfg, sim, env, now: _general().scan_logs(cfg, now),
     "empty-trash": lambda key, cfg, sim, env, now: _general().scan_trash(cfg),
     "docker:": lambda key, cfg, sim, env, now: _general().scan_docker(cfg, env),
+    "brew:": lambda key, cfg, sim, env, now: _brew().scan_brew(cfg, env, [], sizes=False)[0],
     "flutter:": _rescan_projects,
     "web:": _rescan_projects,
     "derived-data": _rescan_fixed,
