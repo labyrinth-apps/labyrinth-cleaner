@@ -14,7 +14,7 @@
     --sans:-apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;
     --safe:#97b48a; --time:#cbb26a; --check:#d98772; --review:#93a9c6; --kept:#8f887b;
     --sim:#a996bd; --android:#a9c08f; --xcode:#9aa0c9; --node:#cbb26a; --cache:#7fa58e; --sys:#3a3631;
-    --appcache:#b3b56f; --docker:#82aeac; --downloads:#c99aa0; --trash:#cc9470; --apps:#b9a58a;
+    --appcache:#b3b56f; --docker:#82aeac; --downloads:#c99aa0; --trash:#cc9470; --apps:#b9a58a; --brew:#bf8f4a;
     --grain:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='240'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 .93 0 0 0 0 .9 0 0 0 0 .85 0 0 0 .055 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
   }
   *{box-sizing:border-box}
@@ -475,6 +475,7 @@
       <button class="chip" data-f="check"><i style="background:var(--check)"></i>Check first</button>
       <button class="chip" data-f="review"><i style="background:var(--review)"></i>Review</button>
       <button class="chip" data-f="apps"><i style="background:var(--apps)"></i>Apps</button>
+      <button class="chip" data-f="brew"><i style="background:var(--brew)"></i>Homebrew</button>
       <button class="chip" data-f="kept"><i style="background:var(--kept)"></i>Kept</button>
       <button class="chip segchip" id="segchip" hidden></button>
     </div>
@@ -598,14 +599,15 @@ const GROUPS = [
   { id: "check", title: "Check first", desc: "Removes something you might still use. Getting it back means a big download.", color: "var(--check)", tier: "Check first" },
   { id: "review", title: "Review: moves to Trash", desc: "Your own files and shipped builds. They go to the Trash, so you can Put Back.", color: "var(--review)", tier: "Moves to Trash" },
   { id: "apps", title: "Applications", desc: "Copies and apps you haven't opened in a while. Removing moves them to the Trash.", color: "var(--apps)", tier: "" },
+  { id: "brew", title: "Homebrew packages", desc: "Command-line tools and libraries you installed with Homebrew. Removing uninstalls them; you can install them again with brew.", color: "var(--brew)", tier: "" },
   { id: "kept", title: "Kept on purpose", desc: "Big, but Labyrinth Cleaner never deletes these. Here's why.", color: "var(--kept)", tier: "" },
 ];
 const GROUP = Object.fromEntries(GROUPS.map(g => [g.id, g]));
 const SEG_COLOR = { sim: "var(--sim)", android: "var(--android)", xcode: "var(--xcode)", web: "var(--node)", caches: "var(--cache)",
-  appcache: "var(--appcache)", docker: "var(--docker)", downloads: "var(--downloads)", trash: "var(--trash)", apps: "var(--apps)", other: "var(--sys)", free: "transparent" };
+  appcache: "var(--appcache)", docker: "var(--docker)", downloads: "var(--downloads)", trash: "var(--trash)", apps: "var(--apps)", homebrew: "var(--brew)", other: "var(--sys)", free: "transparent" };
 // Two-letter marks, like the symbols in a map's key.
 const ICON = { Flutter: "Fl", Web: "Js", Cache: "Ca", Gradle: "Gr", DeviceSupport: "Ds", Android: "An", Simulator: "Si", Protected: "Pr",
-  "App cache": "Ap", Logs: "Lg", Trash: "Tr", "iOS backups": "Bk", Docker: "Dk", Downloads: "Dl", "Xcode Archives": "Xa", Applications: "Ax" };
+  "App cache": "Ap", Logs: "Lg", Trash: "Tr", "iOS backups": "Bk", Docker: "Dk", Downloads: "Dl", "Xcode Archives": "Xa", Applications: "Ax", Homebrew: "Hb" };
 // The native app (plan 2) injects this bridge; a plain browser doesn't have it.
 const BRIDGE = (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.labyrinth) || null;
 // How to get going again after the server stops: the app restarts it on relaunch, a browser
@@ -785,7 +787,7 @@ function groupCard(g, rows) {
   const head = el("div", { class: "ghead" },
     el("span", { class: "dot", style: "background:" + g.color }),
     el("div", {}, el("h3", { text: g.title }), el("div", { class: "gdesc", text: g.desc })),
-    el("span", { class: "gtotal", style: g.id === "kept" ? "color:var(--muted)" : null, text: human(sum(g.id === "apps" ? rows.filter(r => r.keys.length) : rows)) }));
+    el("span", { class: "gtotal", style: g.id === "kept" ? "color:var(--muted)" : null, text: human(sum(g.id === "apps" || g.id === "brew" ? rows.filter(r => r.keys.length) : rows)) }));
   if (g.id === "time") {
     head.append(el("button", { class: "selall", text: "Select stale", onclick: () => {
       rows.forEach(r => r.stale ? S.sel.add(r.id) : S.sel.delete(r.id)); renderGroups(); updateSelection();
@@ -913,17 +915,22 @@ function updateSelection() {
 }
 
 // ---------------------------------------------------------------- confirm & clean
-function openModal() {
+const PREVIEW_FAILED = "Couldn't ask Homebrew what this would remove. Scan again.";
+const isBrewPkg = k => k.startsWith("brew:pkg:");
+const hasBrewPkgs = rows => rows.some(r => r.keys.some(isBrewPkg));
+
+async function openModal() {
   const rows = selectedRows();
   if (!rows.length) return;
   const toTrash = rows.filter(isTrashMove), toDelete = rows.filter(r => !isTrashMove(r));
   const free = S.data.disk.free, freed = freeable(rows);
   $("mTitle").textContent = (toTrash.length && !toDelete.length ? "Move " : toTrash.length ? "Clean " : "Delete ") +
     plural(rows.length, "item") + ", " + human(sum(rows)) + (toTrash.length && !toDelete.length ? " to the Trash?" : "?");
-  $("mSub").textContent = !toTrash.length
+  const baseSub = !toTrash.length
     ? "Deleting is permanent. Nothing goes to the Trash, so the space is freed right away."
     : "Moved to the Trash: you can Put Back, and the space is freed when you empty the Trash." +
       (toDelete.length ? " Deleted permanently: can't be undone." : "");
+  $("mSub").textContent = baseSub;
   $("mFree").textContent = human(free);
   $("mAfter").textContent = human(free + freed);
   $("mAfterWrap").hidden = false;
@@ -943,6 +950,7 @@ function openModal() {
   };
   section("Deleted permanently", toDelete);
   section("Moved to Trash", toTrash);
+  const needsBrew = hasBrewPkgs(rows);
   const warned = rows.some(r => r.warning), noHelper = toTrash.length > 0 && !S.data.trash_helper;
   $("mAck").checked = false;
   $("mAck").disabled = false;
@@ -952,11 +960,37 @@ function openModal() {
   $("mCancel").textContent = "Cancel";
   $("mDelete").hidden = false;
   // What the user confirms is exactly what is sent: later selection changes don't count.
-  S.modal = { rows, scan_id: S.data.scan_id, warned, noHelper };
+  const m = { rows, scan_id: S.data.scan_id, warned, noHelper };
+  S.modal = m;
   S.modalKeys = rows.flatMap(r => r.keys);
-  refreshDelete();
+  refreshDelete();   // blocked as "homebrew" until Homebrew's own list is in
   showModal();
   $("mCancel").focus();
+  if (!needsBrew) return;
+  // Homebrew's own dry run says what else goes with the ticked packages.
+  const keys = S.modalKeys.filter(isBrewPkg);
+  let brew;
+  try {
+    const res = await api("POST", "/api/brew-preview", { scan_id: m.scan_id, keys });
+    const d = res && res.data;
+    brew = res && res.status === 200 && d && d.ok === true ? d : { ok: false, error: (d && d.error) || "" };
+  } catch (e) {
+    brew = { ok: false, error: "" };
+  }
+  if (S.modal !== m) return;   // closed or reopened meanwhile: not this dialog's answer
+  m.brew = brew;
+  if (brew.ok) {
+    if (brew.libraries && brew.libraries.length) {
+      list.append(el("div", { class: "msec", text: "Homebrew also removes these libraries nothing needs any more:" }));
+      for (const name of brew.libraries) list.append(el("div", { class: "mrow" }, el("span", { class: "l", text: name })));
+    }
+    const first = (brew.packages && brew.packages[0]) || keys[0].slice("brew:pkg:".length);
+    $("mSub").textContent = baseSub + " This can't be undone from the Trash. You can reinstall with `brew install " + first + "`.";
+  } else {
+    $("mwarn").textContent = brew.error || PREVIEW_FAILED;
+    $("mwarn").hidden = false;
+  }
+  refreshDelete();
 }
 
 // The page behind the dialog can't be reached (mouse or keyboard) while it is open.
@@ -975,6 +1009,7 @@ function hideModal() {
 // Why Delete can't go ahead for the confirmed rows, or "" when it can.
 function blockedReason(m) {
   if (!m) return "nothing to delete";
+  if (hasBrewPkgs(m.rows) && !(m.brew && m.brew.ok)) return "homebrew";
   if (m.rows.some(isTrashMove) && !S.data.trash_helper) return "needs the app";
   if (m.rows.some(r => r.warning) && !$("mAck").checked) return "warnings not acknowledged";
   return "";

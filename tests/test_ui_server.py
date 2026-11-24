@@ -918,6 +918,65 @@ global.fetch = async (path, opt) => { if (opt.method === "POST") posts.push(JSON
 """
 
 
+BREW_TAIL = r"""
+;(async () => {
+  const row = (id, extra) => Object.assign({ id, group: "safe", kind: "path", keys: [id], size: 1, warning: "",
+    members: [{ key: id, label: id, size: 1, deletes: "" }], label: id, cost: "", restore: "", deletes: "" }, extra);
+  S.data = { scan_id: "s1", trash_helper: true, disk: { free: 10, total: 100 }, small_bytes: 0, segments: [],
+    rows: [row("a"),
+      row("brew:pkg:ffmpeg@6", { group: "brew", kind: "brew", category: "Homebrew", size: 500, version: "6.1" }),
+      row("brew:other-account", { group: "brew", kind: "info", keys: [], category: "Homebrew", size: 900,
+        cost: "Homebrew belongs to another account on this Mac" })] };
+  const res = {}, previews = [], answers = [];
+  const clean = [];
+  global.fetch = async (path, opt) => { if (path === "/api/clean") clean.push(JSON.parse(opt.body).keys); return { status: 503, json: async () => ({ error: "test" }) }; };
+  api = async (method, path, body) => { previews.push([path, body]); return answers.shift(); };
+  const find = (n, f) => { const out = []; (function w(x) { if (!x) return; if (f(x)) out.push(x); (x.kids || []).forEach(w); })(n); return out; };
+  const texts = () => find($("mlist"), x => true).map(x => x.textContent || x.text).filter(Boolean);
+  // 1. a clean without Homebrew packages sends no preview and is never blocked
+  S.sel = new Set(["a"]); await openModal();
+  res.plain_previews = previews.length; res.plain_blocked = blockedReason(S.modal); closeModal();
+  // 2. ok preview
+  answers.push({ status: 200, data: { ok: true, packages: ["ffmpeg@6"], libraries: ["libonly6", "orphan"] } });
+  S.sel = new Set(["brew:pkg:ffmpeg@6"]);
+  const pending = openModal();
+  res.blocked_in_flight = blockedReason(S.modal);
+  await doDelete(); res.sent_in_flight = clean.splice(0);
+  await pending;
+  res.ok_request = previews[0];
+  res.ok_blocked = blockedReason(S.modal); res.ok_texts = texts();
+  res.ok_sub = $("mSub").textContent; res.ok_warn_hidden = $("mwarn").hidden; closeModal();
+  // 3. failed preview
+  const msg = "x runs as a background service. Stop it with `brew services stop x` first.";
+  answers.push({ status: 200, data: { ok: false, error: msg } });
+  S.sel = new Set(["brew:pkg:ffmpeg@6"]); await openModal();
+  res.fail_blocked = blockedReason(S.modal); res.fail_warn = [$("mwarn").hidden, $("mwarn").textContent];
+  await doDelete(); res.sent_blocked = clean.splice(0); closeModal();
+  // 4. thrown request
+  answers.push(Promise.reject(new Error("net")));
+  S.sel = new Set(["brew:pkg:ffmpeg@6"]); await openModal();
+  res.throw_blocked = blockedReason(S.modal); res.throw_warn = $("mwarn").textContent; closeModal();
+  // 5. a stale response is ignored after the modal was reopened
+  let release; answers.push(new Promise(r => { release = r; }));
+  S.sel = new Set(["brew:pkg:ffmpeg@6"]); const first = openModal();
+  closeModal();
+  S.sel = new Set(["a"]); await openModal();
+  release({ status: 200, data: { ok: false, error: "late" } }); await first;
+  res.stale_ignored = [S.modal.brew === undefined, $("mwarn").hidden];
+  closeModal();
+  // 6. kept row and select all
+  const brew = GROUPS.find(g => g.id === "brew");
+  S.sel = new Set();
+  const card = groupCard(brew, rowsOf("brew"));
+  res.cb_count = find(card, x => x.className === "cb").length;
+  res.lock = find(card, x => x.className === "lock").map(x => [x.textContent, x.attrs.title]);
+  find(card, x => x.className === "selall toggle")[0].handlers.click();
+  res.selall = [...S.sel];
+  console.log(JSON.stringify(res));
+})().catch(e => { console.error(e && e.stack || e); process.exit(1); });
+"""
+
+
 class PageTests(unittest.TestCase):
     def html(self):
         with open(os.path.join(ROOT, "ui", "index.html")) as f:
@@ -1018,6 +1077,41 @@ class PageTests(unittest.TestCase):
         self.assertNotIn("border", rule.group(1))
         self.assertNotIn("--time", rule.group(1))
         self.assertIn("var(--dim)", rule.group(1))
+
+    def test_page_has_homebrew_group(self):
+        html = self.html()
+        for needle in ('id: "brew"', "Homebrew packages",
+                       "Command-line tools and libraries you installed with Homebrew. Removing uninstalls them; "
+                       "you can install them again with brew.",
+                       '"Hb"', "homebrew:", "--brew:"):
+            self.assertIn(needle, html)
+
+    @unittest.skipUnless(shutil.which("node"), "needs node")
+    def test_page_homebrew_confirm_in_node(self):
+        script = re.search(r"<script>(.*)</script>", self.html(), re.S).group(1)
+        js = PAGE_HARNESS.split(";(async () => {")[0].replace("/*PAGE*/", script) + BREW_TAIL
+        out = subprocess.run(["node", "-e", js], capture_output=True, text=True, timeout=30)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        r = json.loads(out.stdout.strip().splitlines()[-1])
+        self.assertEqual(r["plain_previews"], 0)
+        self.assertEqual(r["plain_blocked"], "")
+        self.assertEqual(r["blocked_in_flight"], "homebrew")
+        self.assertEqual(r["sent_in_flight"], [])
+        self.assertEqual(r["ok_request"], ["/api/brew-preview", {"scan_id": "s1", "keys": ["brew:pkg:ffmpeg@6"]}])
+        self.assertEqual(r["ok_blocked"], "")
+        for t in ("Homebrew also removes these libraries nothing needs any more:", "libonly6", "orphan"):
+            self.assertIn(t, r["ok_texts"])
+        self.assertTrue(r["ok_sub"].endswith("This can't be undone from the Trash. You can reinstall with `brew install ffmpeg@6`."))
+        self.assertTrue(r["ok_warn_hidden"])
+        self.assertEqual(r["fail_blocked"], "homebrew")
+        self.assertEqual(r["fail_warn"], [False, "x runs as a background service. Stop it with `brew services stop x` first."])
+        self.assertEqual(r["sent_blocked"], [])
+        self.assertEqual(r["throw_blocked"], "homebrew")
+        self.assertEqual(r["throw_warn"], "Couldn't ask Homebrew what this would remove. Scan again.")
+        self.assertEqual(r["stale_ignored"], [True, True])
+        self.assertEqual(r["cb_count"], 1)
+        self.assertEqual(r["lock"], [["Keep", "Homebrew belongs to another account on this Mac"]])
+        self.assertEqual(r["selall"], ["brew:pkg:ffmpeg@6"])
 
     def test_page_has_applications_group(self):
         html = self.html()
