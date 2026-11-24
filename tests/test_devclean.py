@@ -19,8 +19,10 @@ from unittest import mock
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, ROOT)
+sys.path.insert(0, HERE)
 
 import devclean_core as core  # noqa: E402
+from test_brew import BrewBase  # noqa: E402
 
 CLI = os.path.join(ROOT, "devclean")
 REAL_FIXTURE = os.path.join(HERE, "fixtures", "real_2026-11-11")
@@ -1471,6 +1473,72 @@ class ProjectRootTests(unittest.TestCase):
         keys = {i["key"] for i in json.loads(r.stdout)["items"]}
         self.assertIn("flutter:Documents/Projects/flutter_app/build", keys)
         self.assertIn("web:Developer/app/node_modules", keys)
+
+
+class CliBrewTests(BrewBase):
+    """The CLI on a temp home with the fake brew runner patched in: no real brew can run."""
+
+    def cli(self, *args, record=None, **env_kw):
+        import importlib.machinery, importlib.util, io, contextlib
+        loader = importlib.machinery.SourceFileLoader("devclean_cli_brew_under_test", CLI)
+        spec = importlib.util.spec_from_loader(loader.name, loader)
+        mod = importlib.util.module_from_spec(spec)
+        loader.exec_module(mod)
+        env = self.env(record=record, **env_kw)
+        buf = io.StringIO()
+        real_items = core.execute_items
+
+        def run_items(items, cfg, sim, runner=None, env=None, **kw):
+            # Fixture mode refuses brew by design; here the only runner that can act is env.brew,
+            # and the general runner refuses everything.
+            return real_items(items, cfg, sim, runner=lambda argv, **k: (_ for _ in ()).throw(
+                AssertionError(argv)), env=env, **kw)
+        with mock.patch.dict(os.environ, {"NO_COLOR": "1"}), \
+                mock.patch.object(core, "fixture_env", lambda cfg, xc, fixture: env), \
+                mock.patch.object(core, "execute_items", run_items), \
+                mock.patch.object(sys.stdin, "isatty", return_value=False), \
+                contextlib.redirect_stdout(buf), contextlib.redirect_stderr(io.StringIO()):
+            rc = mod.main(["--home", self.home, "--min-size", "0", "--projects",
+                           os.path.join(self.home, "Documents"), *args])
+        return rc, buf.getvalue()
+
+    def test_cli_dry_run_prints_homebrew_preview(self):
+        record = []
+        rc, out = self.cli("--dry-run", "--select", "all", record=record)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("Homebrew also removes these libraries nothing needs any more:", out)
+        self.assertIn("\n  libonly6\n", out)
+        self.assertIn(f"{self.brew_path} uninstall --formula ffmpeg@6", out)
+        self.assertLess(out.index("Would run"), out.index("Homebrew also removes"))
+        self.assertLess(out.index("Homebrew also removes"), out.index("Commands:"))
+        # Only the read-only calls ran, and the one preview covered every chosen package.
+        argvs = [a for a, _ in record]
+        self.assertNotIn([self.brew_path, "cleanup"], argvs)
+        self.assertFalse([a for a in argvs if a[1:3] == ["uninstall", "--formula"]], argvs)
+        previews = [a for a, _ in record if a[1:3] == ["uninstall", "--dry-run"]]
+        self.assertEqual(len(previews), 1)
+        self.assertIn("ffmpeg@6", previews[0])
+
+    def test_cli_yes_runs_only_brew_cleanup(self):
+        record = []
+        rc, out = self.cli("--yes", "--select", "all", record=record)
+        argvs = [a for a, _ in record]
+        self.assertIn([self.brew_path, "cleanup"], argvs)
+        self.assertFalse([a for a in argvs if "uninstall" in a and "--dry-run" not in a], argvs)
+        self.assertNotIn("Homebrew also removes", out)   # no package chosen, no preview
+
+    def test_cli_preview_failure_deletes_nothing(self):
+        record = []
+        rc, out = self.cli("--dry-run", "--select", "all", record=record, broken="uninstall")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("Couldn't ask Homebrew what this would remove. Scan again.", out)
+        rc, out = self.cli("--select", "all", record=record, broken="uninstall")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("Couldn't ask Homebrew what this would remove. Scan again.", out)
+        self.assertIn("Nothing deleted.", out)
+        self.assertFalse([a for a, _ in record if a[1:2] == ["cleanup"] and len(a) == 2], record)
+        self.assertFalse([a for a, _ in record if a[1:3] == ["uninstall", "--formula"]], record)
+
 
 
 if __name__ == "__main__":

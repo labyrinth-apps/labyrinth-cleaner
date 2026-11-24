@@ -259,9 +259,9 @@ devclean menubar uninstall
 
 | tier | preselected | `--yes` | what |
 |---|---|---|---|
-| **safe** | CLI only, developer targets only | developer targets only | Flutter `build/` and `.dart_tool/` (a `pubspec.yaml` must be next to them), Xcode DerivedData (kept while Xcode runs), old `~/.gradle/caches/<version>` folders, Gradle `build-cache-1`, `~/.shorebird/bin/cache`, `~/.npm/_cacache`, CocoaPods / Homebrew / ms-playwright caches. Also safe, but never preselected: caches of apps it can name (a bundle-ID folder such as `com.spotify.client`, or a known browser) and old logs. |
+| **safe** | CLI only, developer targets only | developer targets only | Flutter `build/` and `.dart_tool/` (a `pubspec.yaml` must be next to them), Xcode DerivedData (kept while Xcode runs), old `~/.gradle/caches/<version>` folders, Gradle `build-cache-1`, `~/.shorebird/bin/cache`, `~/.npm/_cacache`, CocoaPods / Homebrew / ms-playwright caches, old Homebrew versions and unneeded libraries (`brew cleanup`). Also safe, but never preselected: caches of apps it can name (a bundle-ID folder such as `com.spotify.client`, or a known browser) and old logs. |
 | **opt-in** | no | never | `node_modules` and `.next` in web projects (you run `npm install` again), the Docker build cache. |
-| **caution** | no | never | iOS DeviceSupport builds, the newest Gradle version (older ones are safe), simulator runtimes, single simulators (`xcrun simctl delete <udid>`), Android system images, unavailable simulators, unused Docker images, emptying the Trash, app caches whose app it can't name ("macOS or a background tool may use this cache."). |
+| **caution** | no | never | iOS DeviceSupport builds, the newest Gradle version (older ones are safe), simulator runtimes, single simulators (`xcrun simctl delete <udid>`), Android system images, unavailable simulators, unused Docker images, Homebrew packages you installed (`brew uninstall`), emptying the Trash, app caches whose app it can't name ("macOS or a background tool may use this cache."). |
 | **review** | no | never | Old installers and large untouched files in `~/Downloads`, and Xcode archives. These are only ever **moved to the Trash** (Put Back works), never deleted with `rm`. The app and the command line tool installed from it do this; a source checkout's command line refuses. |
 | **keep** | - | - | Shown for information only and never offered, with the reason: for example an app's cache while the app is open, or iOS device backups (size only). |
 
@@ -272,6 +272,7 @@ devclean menubar uninstall
 - **Developer:** build folders and caches for Flutter, web, Xcode, Gradle, npm, CocoaPods, Homebrew, Playwright and Shorebird; simulator runtimes and single simulators; Android system images; DeviceSupport builds; Xcode archives (review tier). `xcrun` runs only when Xcode or its command-line tools are installed, so a Mac without them never sees the "install developer tools" prompt.
 - **App caches:** top-level folders in `~/Library/Caches`, except macOS's own (`com.apple.*` and daemon caches such as `CloudKit`, `GeoServices` or `SiriTTS`) and this app's own. A cache is shown but not selectable while its app is running ("Quit *App* first"). A cache whose app can't be named is offered under *Check first* with a warning.
 - **Logs and crash reports:** entries in `~/Library/Logs` and `~/Library/Logs/DiagnosticReports` older than 7 days.
+- **Homebrew:** old versions and libraries nothing needs any more (`brew cleanup`, safe), and the packages you installed (`brew uninstall`, under *Check first*, never preselected). Before you confirm, Homebrew's own dry run lists the libraries it would also remove. A package that runs as a background service, or one from a tap, is shown but not offered. Nothing runs when Homebrew isn't installed.
 - **Docker:** the build cache and unused images, only when Docker is installed and answers within 3 seconds. Containers and volumes are never pruned.
 - **Trash:** its size, and "Empty Trash" through Finder. When you clean, emptying the Trash runs first, so it can't remove Downloads files moved there in the same clean.
 - **Downloads (review):** installers (`.dmg`, `.pkg`, `.mpkg`, `.xip`, and `.zip` over 50 MB) older than 14 days, and files over 500 MB not opened for 90 days. They are moved to the Trash.
@@ -314,7 +315,7 @@ Still never offered: a runtime with a running simulator, a running simulator, De
 - `scripts/build_app.sh`: builds, signs, notarizes and publishes the app and its DMG (see Build and release). `scripts/verify_bundle.sh` checks a built bundle: universal binaries, signatures and the embedded Python. Its `--rosetta` option also runs the Intel half of Python under Rosetta; on macOS 27 that makes the system show "App Update Required" for the app, so it is off by default.
 - `app/LabyrinthCleaner.entitlements`: the app's only entitlement, Apple Events (Empty Trash asks Finder).
 - `devclean_menubar.py`: removes the old DevcleanBar (`devclean menubar uninstall`).
-- `tests/`: fixture tests. Every test builds a fake `$HOME` in a temp dir, and simulator data comes from JSON fixtures (`tests/fixtures/real_2026-11-11/` is a real capture from this Mac). The tests never call the real `xcrun`.
+- `tests/`: fixture tests. Every test builds a fake `$HOME` in a temp dir, and simulator data comes from JSON fixtures (`tests/fixtures/real_2026-11-11/` is a real capture from this Mac). The tests never call the real `xcrun` or `brew`.
 
 ```sh
 python3 -m unittest discover -s tests -v

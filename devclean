@@ -237,6 +237,19 @@ def main(argv=None):
         print(f"  {human(it.size):>9}  [{it.tier}] {it.category}: {it.label}{tag}")
         if it.warning:
             print(c(f"             ! {it.warning}", "31"))
+    brew_names = [i.key[len("brew:pkg:"):] for i in chosen if i.key.startswith("brew:pkg:")]
+    if brew_names:
+        import devclean_brew
+        preview = devclean_brew.preview_uninstall(brew_names, env)
+        if not preview["ok"]:
+            print(c(f"\n{preview['error']}", "31"))
+            if not args.dry_run:
+                print("Nothing deleted.")
+                return 1
+        elif preview["libraries"]:
+            print("\nHomebrew also removes these libraries nothing needs any more:")
+            for name in preview["libraries"]:
+                print(f"  {name}")
     # Command lines carry nothing but the command: zsh has INTERACTIVE_COMMENTS
     # off by default, so a trailing "# note" would become extra rm arguments.
     # Trash items have no command: only the trash helper (the app's tool) can move them.
