@@ -212,7 +212,7 @@ class ReportTests(unittest.TestCase):
     def test_review_group_and_order(self):
         self.assertEqual(rep.GROUP_OF[core.REVIEW], "review")
         order = sorted(rep.GROUP_ORDER, key=rep.GROUP_ORDER.get)
-        self.assertEqual(order, ["safe", "time", "check", "review", "apps", "kept"])
+        self.assertEqual(order, ["safe", "time", "check", "review", "apps", "brew", "kept"])
         rows = rep.build_rows(self.res.items, self.home)
         arch = next(r for r in rows if r["id"] == "archive:2026-11-01/App.xcarchive")
         self.assertEqual(arch["group"], "review")
@@ -254,12 +254,41 @@ class ReportTests(unittest.TestCase):
         self.assertEqual((row["deletes"], row["restore"], row["kind"]),
                          ("~/x/node_modules", "R1", "path"))
 
+    def test_homebrew_segment_and_group(self):
+        pkg = core.Item(key="brew:pkg:x", category="Homebrew", label="x", tier=core.CAUTION,
+                        kind="brew", size=5_000_000, meta={"version": "1.2"})
+        safe = core.Item(key="brew:cleanup", category="Homebrew", label="Old", tier=core.SAFE,
+                         kind="brew", size=1_000_000)
+        kept = core.Item(key="brew:pkg:svc", category="Homebrew", label="svc", tier=core.PROTECTED,
+                         kind="info")
+        other = core.Item(key="brew:other-account", category="Homebrew", label="Homebrew",
+                          tier=core.PROTECTED, kind="info")
+
+        def result(brew_bytes):
+            return core.ScanResult(items=[pkg, safe, kept, other], warnings=[], free_bytes=10 ** 6,
+                                   total_bytes=10 ** 9, xcode_running=False, homebrew_bytes=brew_bytes)
+
+        by = {s["id"]: s for s in rep.disk_map(result(50_000_000), ZERO)}
+        self.assertEqual((by["homebrew"]["bytes"], by["homebrew"]["reclaimable"]),
+                         (50_000_000, 6_000_000))
+        self.assertEqual(rep.disk_map(result(0), ZERO)[-2]["bytes"] - by["other"]["bytes"], 50_000_000)
+        self.assertEqual(rep.segment_of(pkg), "homebrew")
+        self.assertEqual(rep.GROUP_ORDER["brew"], 3.6)
+        rows = {r["id"]: r for r in rep.build_rows(result(0).items, self.home)}
+        self.assertEqual([rows[k]["group"] for k in ("brew:pkg:x", "brew:pkg:svc", "brew:other-account",
+                                                     "brew:cleanup")],
+                         ["brew", "brew", "brew", "safe"])
+        self.assertEqual(rows["brew:pkg:x"]["version"], "1.2")
+        p = rep.scan_payload(result(50_000_000), cfg_for(self.home), "id1", 1.0, ZERO)
+        self.assertEqual(p["headline"]["reclaimable"], 1_000_000)
+
     def test_new_segments_order_and_sum(self):
         self.assertEqual(rep.SEGMENTS, [
             ("sim", "Simulators"), ("android", "Android"), ("xcode", "Xcode"),
             ("web", "node_modules"), ("caches", "Caches & builds"), ("appcache", "App caches"),
             ("docker", "Docker"), ("downloads", "Downloads (reviewable)"), ("trash", "Trash"),
-            ("apps", "Applications"), ("other", "System, apps & other files"), ("free", "Free")])
+            ("apps", "Applications"), ("homebrew", "Homebrew"),
+            ("other", "System, apps & other files"), ("free", "Free")])
         h = self.home
         os.makedirs(f"{h}/Library/Caches/com.example.app")
         with open(f"{h}/Library/Caches/com.example.app/blob", "w") as f:

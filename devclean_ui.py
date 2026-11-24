@@ -37,6 +37,7 @@ from urllib.parse import parse_qs, urlsplit
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 
+import devclean_brew  # noqa: E402
 import devclean_core as core  # noqa: E402
 import devclean_report as report  # noqa: E402
 
@@ -54,7 +55,7 @@ class UIServer:
     def __init__(self, cfg: core.Config, sim: "core.SimctlProvider | None", *, fixture: bool,
                  xcode_check=core.xcode_running, runner=None, idle_timeout: "float | None" = 3600,
                  port: int = 0, measure=core.du_bytes, options: dict = None,
-                 fixed_roots: bool = False, docker=None, app_mode: bool = False):
+                 fixed_roots: bool = False, docker=None, brew=None, app_mode: bool = False):
         self.cfg, self.sim, self.fixture = cfg, sim, fixture
         self.xcode_check, self.measure = xcode_check, measure
         # Project folders given with --projects: the settings can't change them.
@@ -64,6 +65,9 @@ class UIServer:
         if docker is not None:
             # Only `devclean ui --home ... --fake-docker FILE` passes one (see fake_docker).
             self.env = dataclasses.replace(self.env, docker=docker)
+        if brew is not None:
+            # Only `devclean ui --home ... --fake-brew DIR` passes one (see fake_brew).
+            self.env = dataclasses.replace(self.env, brew=brew)
         # Fixture data can carry real runtime UUIDs: never run xcrun in fixture mode.
         self.runner = runner or (core.fixture_runner if fixture else subprocess.run)
         # None: never exit for being idle (the app owns the server and stops it itself).
@@ -262,6 +266,25 @@ class UIServer:
             self._job_thread.start()
         return 200, {"job_id": job_id}
 
+    def brew_preview(self, body) -> tuple:
+        """What uninstalling the ticked Homebrew packages would also remove. Read-only."""
+        if not isinstance(body, dict):
+            return 400, {"error": "expected a JSON object"}
+        scan_id, keys = body.get("scan_id"), body.get("keys")
+        with self._lock:
+            if self._latest is None or scan_id != self._latest[0]:
+                return 409, {"error": "stale scan"}
+            if not isinstance(keys, list) or not keys or not all(isinstance(k, str) for k in keys):
+                return 400, {"error": "keys must be a non-empty list of strings"}
+            items = self._latest[1]
+            bad = [k for k in keys if not k.startswith("brew:pkg:") or k not in items
+                   or not items[k].offerable]
+            if bad:
+                return 400, {"error": "unknown or protected key", "keys": bad}
+            names = [k[len("brew:pkg:"):] for k in dict.fromkeys(keys)]
+            env = self.env
+        return 200, devclean_brew.preview_uninstall(names, env)
+
     @staticmethod
     def _finish(entry, it, ok, msg):
         entry["message"] = "" if ok else msg
@@ -399,6 +422,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/clean":
             status, out = app.start_clean(body)
             return self._send(status, out)
+        if path == "/api/brew-preview":
+            status, out = app.brew_preview(body)
+            return self._send(status, out)
         if path == "/api/settings/project-folders":
             status, out = app.change_project_folders(body)
             return self._send(status, out)
@@ -424,6 +450,36 @@ def fake_docker(path: str):
             return subprocess.CompletedProcess(argv, 0, out, "")
         return subprocess.CompletedProcess(argv, 1, "", "fake docker: only `docker system df` is answered")
     return run
+
+
+BREW_READ_ONLY = {("info", "--json=v2", "--installed"): "info.json", ("cleanup", "-n"): "cleanup.txt",
+                  ("autoremove", "-n"): "autoremove.txt"}
+
+
+def fake_brew(dir: str):
+    """A brew runner for demos on a fixture home: answers the four read-only forms from the
+    files in `dir` (/PREFIX stands for dir/prefix) and refuses everything else, so nothing is
+    ever uninstalled. Every file it reads is under `dir`."""
+    root = os.path.realpath(dir)
+    prefix = os.path.join(root, "prefix")
+    path = os.path.join(root, "bin", "brew")
+    answers = {}
+    for name in ("info.json", "cleanup.txt", "autoremove.txt", "uninstall.txt"):
+        with open(os.path.join(root, name), encoding="utf-8") as f:
+            answers[name] = f.read().replace("/PREFIX", prefix)
+
+    def run(argv, **kw):
+        argv = list(argv)
+        name = None
+        if argv[:1] == [path]:
+            name = BREW_READ_ONLY.get(tuple(argv[1:]))
+            if name is None and argv[1:4] == ["uninstall", "--dry-run", "--formula"] and len(argv) > 4:
+                name = "uninstall.txt"
+        if name is None:
+            return subprocess.CompletedProcess(argv, 1, "", "fake brew: only read-only commands are answered")
+        return subprocess.CompletedProcess(argv, 0, answers[name], "")
+    return devclean_brew.BrewRunner(path=path, prefix=prefix, run=run,
+                                    service_dirs=(os.path.join(root, "services"),))
 
 
 def _live_server(path: str):
@@ -492,12 +548,12 @@ def _watch_stdin():
     os.kill(os.getpid(), signal.SIGTERM)
 
 
-def _run_app(cfg, sim, fixture, args, options, docker) -> int:
+def _run_app(cfg, sim, fixture, args, options, docker, brew) -> int:
     """`devclean ui --app`: own server, no URL file, no idle exit, one handshake line on stdout."""
     srv = UIServer(cfg, sim, fixture=fixture,
                    xcode_check=(lambda: False) if args.home else core.xcode_running,
                    idle_timeout=None, options=options,
-                   fixed_roots=bool(args.projects), docker=docker, app_mode=True)
+                   fixed_roots=bool(args.projects), docker=docker, brew=brew, app_mode=True)
     # Everything after the handler is installed sits inside the try: the app may close stdin
     # (and so the watcher send SIGTERM) right after reading the handshake, before
     # serve_forever starts. That is a stop like any other, not an interrupt escaping as 130.
@@ -533,6 +589,7 @@ def main(argv=None) -> int:
     ap.add_argument("--no-open", action="store_true", help="print the URL, don't open a browser")
     ap.add_argument("--idle-timeout", type=float, default=3600, help=argparse.SUPPRESS)
     ap.add_argument("--fake-docker", metavar="FILE", help=argparse.SUPPRESS)
+    ap.add_argument("--fake-brew", metavar="DIR", help=argparse.SUPPRESS)
     ap.add_argument("--app", action="store_true", help=argparse.SUPPRESS)
     args = ap.parse_args(argv)
     if args.fake_docker and not args.home:
@@ -543,6 +600,14 @@ def main(argv=None) -> int:
             docker = fake_docker(args.fake_docker)
         except OSError as e:
             ap.error(f"--fake-docker: {e}")
+    if args.fake_brew and not args.home:
+        ap.error("--fake-brew needs --home (it is for demos on a fixture home)")
+    brew = None
+    if args.fake_brew:
+        try:
+            brew = fake_brew(args.fake_brew)
+        except OSError as e:
+            ap.error(f"--fake-brew: {e}")
 
     cfg = core.Config(home=args.home or os.path.expanduser("~"), project_roots=tuple(
         os.path.abspath(os.path.expanduser(d)) for d in args.projects) if args.projects else None)
@@ -556,10 +621,11 @@ def main(argv=None) -> int:
         "simulators": not (args.no_simulators or args.home or args.simctl_fixture),
         "fixture": fixture,
         "fake_docker": os.path.realpath(args.fake_docker) if args.fake_docker else None,
+        "fake_brew": os.path.realpath(args.fake_brew) if args.fake_brew else None,
     }
 
     if args.app:
-        return _run_app(cfg, sim, fixture, args, options, docker)
+        return _run_app(cfg, sim, fixture, args, options, docker, brew)
 
     uf = url_file(cfg)
     lock = _startup_lock(uf)
@@ -579,7 +645,7 @@ def main(argv=None) -> int:
         srv = UIServer(cfg, sim, fixture=fixture,
                        xcode_check=(lambda: False) if args.home else core.xcode_running,
                        idle_timeout=args.idle_timeout, options=options,
-                       fixed_roots=bool(args.projects), docker=docker)
+                       fixed_roots=bool(args.projects), docker=docker, brew=brew)
         _write_private(uf, srv.url)
     finally:
         os.close(lock)   # releases the flock

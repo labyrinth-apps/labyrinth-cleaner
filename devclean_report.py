@@ -14,7 +14,7 @@ import devclean_core as core
 
 GROUP_OF = {core.SAFE: "safe", core.OPTIN: "time", core.CAUTION: "check", core.REVIEW: "review",
             core.PROTECTED: "kept"}
-GROUP_ORDER = {"safe": 0, "time": 1, "check": 2, "review": 3, "apps": 3.5, "kept": 4}
+GROUP_ORDER = {"safe": 0, "time": 1, "check": 2, "review": 3, "apps": 3.5, "brew": 3.6, "kept": 4}
 
 SEGMENTS = [
     ("sim", "Simulators"),
@@ -27,10 +27,11 @@ SEGMENTS = [
     ("downloads", "Downloads (reviewable)"),
     ("trash", "Trash"),
     ("apps", "Applications"),
+    ("homebrew", "Homebrew"),
     ("other", "System, apps & other files"),
     ("free", "Free"),
 ]
-MEASURED = ("sim", "android", "xcode", "web", "caches", "appcache", "docker", "downloads", "trash", "apps")
+MEASURED = ("sim", "android", "xcode", "web", "caches", "appcache", "docker", "downloads", "trash", "apps", "homebrew")
 # Segments sized from their scan items (Android is sized from extras only).
 ITEM_SIZED = ("sim", "xcode", "web", "caches", "appcache", "docker", "downloads", "trash")
 SMALL_BYTES = 20 * 1024 * 1024
@@ -44,6 +45,8 @@ def _artifact_index(it: core.Item) -> int:
 def segment_of(it: core.Item) -> str:
     if it.category == "Applications":
         return "apps"
+    if it.category == "Homebrew":
+        return "homebrew"
     if it.category == "Simulator" or it.kind == "simdevice":
         return "sim"
     if it.category == "Android":
@@ -102,7 +105,7 @@ def _row(rid, group, members, label, path):
         "keys": [m.key for m in members] if offer else [],
         "size": sum(sizes) if sizes else None,
         "mtime": max(mtimes) if mtimes else None,
-        "version": lead.meta.get("version") if lead.category == "Applications" else None,
+        "version": lead.meta.get("version") if lead.category in ("Applications", "Homebrew") else None,
         "cost_tag": lead.cost_tag,
         "cost": lead.cost,
         "stale": core.stale_label(stale_days) if group == "time" else None,
@@ -119,7 +122,12 @@ def _row(rid, group, members, label, path):
 def build_rows(items: list, home: str) -> list:
     rows, projects = [], {}
     for it in items:
-        group = "apps" if it.category == "Applications" else GROUP_OF[it.tier]
+        if it.category == "Applications":
+            group = "apps"
+        elif it.key.startswith("brew:pkg:") or it.key == "brew:other-account":
+            group = "brew"
+        else:
+            group = GROUP_OF[it.tier]
         if it.project and it.meta.get("project_dir"):
             projects.setdefault((group, it.meta["project_dir"]), []).append(it)
         else:
@@ -164,6 +172,7 @@ def disk_map(res: core.ScanResult, extras: dict) -> list:
                 and not it.key.startswith("simdevice:")):
             size[seg] += it.size or 0
     size["apps"] = res.app_bytes
+    size["homebrew"] = res.homebrew_bytes
     size["sim"] += extras.get("sim_devices", 0)
     size["android"] = extras.get("android_sdk", 0) + extras.get("android_avd", 0)
     size["caches"] += extras.get("gradle_modules", 0)
@@ -201,7 +210,8 @@ def scan_payload(res: core.ScanResult, cfg: core.Config, scan_id: str, duration_
         # Trash moves (review tier) free nothing until the Trash is emptied, so the
         # headline leaves them out; "with no cost" counts only NO COST safe items.
         "headline": {
-            "reclaimable": sum(i.size or 0 for i in res.offerable if i.tier != core.REVIEW),
+            "reclaimable": sum(i.size or 0 for i in res.offerable
+                              if i.tier != core.REVIEW and not i.key.startswith("brew:pkg:")),
             "no_cost": sum(i.size or 0 for i in res.offerable
                            if i.tier == core.SAFE and i.cost_tag == "NO COST"),
         },

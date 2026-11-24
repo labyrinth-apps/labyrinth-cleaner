@@ -4,6 +4,7 @@ The real `xcrun` is never called; fixture mode is checked to refuse it.
 """
 
 import contextlib
+import dataclasses
 import http.client
 import io
 import json
@@ -26,6 +27,7 @@ sys.path.insert(0, ROOT)
 sys.path.insert(0, HERE)
 
 import devclean_core as core  # noqa: E402
+import devclean_brew  # noqa: E402
 import devclean_ui as ui  # noqa: E402
 from test_devclean import cfg_for, fixture_sim, make_home  # noqa: E402
 
@@ -766,6 +768,66 @@ class LifecycleTests(ServerTestCase):
         status, data = self.clean(p["scan_id"], ["docker:builder"])
         job = self.wait_job(data["job_id"])
         self.assertEqual(job["items"][0]["status"], "refused")   # fixture mode never prunes
+
+    def make_brew_dir(self):
+        import test_brew as tb
+        d = os.path.join(self.tmp, "fakebrew")
+        for name in ("info.json", "cleanup.txt", "autoremove.txt", "uninstall.txt"):
+            os.makedirs(d, exist_ok=True)
+            shutil.copy(os.path.join(tb.FIXTURES, name), os.path.join(d, name))
+        for name, size in tb.SIZES.items():
+            tb.write(os.path.join(d, "prefix", "Cellar", name, tb.VERSIONS[name], "bin", "x"), "x" * size)
+        return d
+
+    def test_brew_preview_endpoint(self):
+        d = self.make_brew_dir()
+        self.start(brew=ui.fake_brew(d))
+        p = self.scan()
+        self.assertTrue(any(r["id"] == "brew:pkg:ffmpeg@6" for r in p["rows"]))
+        status, data, _ = self.req("POST", "/api/brew-preview",
+                                   {"scan_id": p["scan_id"], "keys": ["brew:pkg:ffmpeg@6"]})
+        self.assertEqual(status, 200, data)
+        self.assertTrue(data["ok"])
+        self.assertEqual(data["libraries"], ["libonly6", "orphan"])
+        for keys in (["brew:cleanup"], ["brew:pkg:nope"], [], "x", ["brew:pkg:ffmpeg@6", "derived-data"]):
+            status, data, _ = self.req("POST", "/api/brew-preview", {"scan_id": p["scan_id"], "keys": keys})
+            self.assertEqual(status, 400, keys)
+        status, _, _ = self.req("POST", "/api/brew-preview", {"scan_id": "old", "keys": ["brew:pkg:ffmpeg@6"]})
+        self.assertEqual(status, 409)
+        status, _, _ = self.req("POST", "/api/brew-preview",
+                                {"scan_id": p["scan_id"], "keys": ["brew:pkg:ffmpeg@6"]}, token=False)
+        self.assertEqual(status, 403)
+
+    def test_brew_preview_without_brew(self):
+        self.start(brew=ui.fake_brew(self.make_brew_dir()))
+        p = self.scan()
+        self.srv.env = dataclasses.replace(self.srv.env, brew=None)
+        status, data, _ = self.req("POST", "/api/brew-preview",
+                                   {"scan_id": p["scan_id"], "keys": ["brew:pkg:ffmpeg@6"]})
+        self.assertEqual((status, data), (200, {"ok": False, "error": devclean_brew.PREVIEW_FAILED}))
+
+    def test_fake_brew_refuses_writes(self):
+        d = self.make_brew_dir()
+        b = ui.fake_brew(d)
+        self.assertEqual(b.prefix, os.path.realpath(os.path.join(d, "prefix")))
+        self.assertEqual(b.service_dirs, (os.path.join(d, "services"),))
+        for args in (["uninstall", "--formula", "x"], ["cleanup"], ["autoremove"], ["install", "x"],
+                     ["uninstall", "--dry-run", "--formula"]):
+            r = b.run([b.path, *args], capture_output=True, text=True)
+            self.assertEqual(r.returncode, 1, args)
+            self.assertEqual(r.stderr, "fake brew: only read-only commands are answered")
+        r = b.run([b.path, "uninstall", "--dry-run", "--formula", "x"], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0)
+        self.assertNotIn("/PREFIX", r.stdout)
+        r = b.run([b.path, "cleanup", "-n"], capture_output=True, text=True)
+        self.assertIn(b.prefix, r.stdout)
+
+    def test_fake_brew_needs_home(self):
+        d = self.make_brew_dir()
+        r = subprocess.run([sys.executable, os.path.join(ROOT, "devclean"), "ui", "--no-open",
+                            "--fake-brew", d], capture_output=True, text=True, timeout=30)
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertIn("--fake-brew needs --home", r.stderr)
 
     def test_cli_dispatches_ui(self):
         r = subprocess.run([sys.executable, os.path.join(ROOT, "devclean"), "ui", "--help"],
