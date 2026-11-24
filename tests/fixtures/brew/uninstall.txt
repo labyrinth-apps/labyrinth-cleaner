@@ -1,0 +1,4 @@
+Would uninstall ffmpeg@6 6.1.6
+==> Would autoremove 2 unneeded formulae:
+libonly6
+orphan

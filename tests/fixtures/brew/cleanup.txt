@@ -1,0 +1,6 @@
+Would remove: /PREFIX/Cellar/ffmpeg@6/6.1.5 (12 files, 34.6MB)
+Would remove: /PREFIX/Cellar/toolx/0.9 (1 file, 64B)
+Would remove: ~/Library/Caches/Homebrew/downloads/abc--x.tar.gz (3 files, 9.9MB)
+==> This operation would free approximately 44.5MB of disk space.
+==> Would autoremove 1 unneeded formulae:
+orphan

@@ -24,7 +24,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 # ---------------------------------------------------------------- tiers
 
@@ -514,6 +514,12 @@ def _general():
     return devclean_general
 
 
+def _brew():
+    """devclean_brew, imported on first use (it imports this module)."""
+    import devclean_brew
+    return devclean_brew
+
+
 def _apps():
     """devclean_apps, imported on first use (it imports this module)."""
     import devclean_apps
@@ -564,6 +570,8 @@ class Env:
     running_apps: Callable[[], list] = lambda: []
     # A runner for docker commands (never the general runner); None = no docker.
     docker: Optional[Callable] = None
+    # The Homebrew runner (devclean_brew.BrewRunner); None = no Homebrew, or fixture mode.
+    brew: Optional[Any] = None
     # path -> {"last_used": float|None, "size": int|None, "archs": list|None}; missing = unknown.
     app_metadata: Callable[[list], dict] = lambda paths: {}
     apple_silicon: Callable[[], bool] = lambda: False
@@ -574,8 +582,9 @@ class Env:
     active_developer_dir: Callable[[], Optional[str]] = lambda: None
 
     @classmethod
-    def real(cls) -> "Env":
-        return cls(dev_tools=_dev_tools_installed, xcode_running=xcode_running,
+    def real(cls, home: Optional[str] = None) -> "Env":
+        home = home or os.path.expanduser("~")
+        return cls(brew=_brew().find_brew(home), dev_tools=_dev_tools_installed, xcode_running=xcode_running,
                    last_used=_last_used, running_apps=_real_running_apps,
                    app_metadata=_real_app_metadata, apple_silicon=_real_apple_silicon,
                    running_app_paths=_real_running_app_paths, user_uid=os.getuid,
@@ -591,12 +600,12 @@ def fixture_env(cfg: Config, xcode_running: Callable[[], bool], fixture: bool) -
     """The env a CLI/UI run uses. Fixture mode never gets a docker runner, even when the
     config points at the real home (--simctl-fixture without --home)."""
     env = dataclasses.replace(default_env(cfg), xcode_running=xcode_running)
-    return dataclasses.replace(env, docker=None) if fixture else env
+    return dataclasses.replace(env, docker=None, brew=None) if fixture else env
 
 
 def default_env(cfg: Config) -> Env:
     """Only the real home may query the real Mac; fixture homes never do."""
-    return Env.real() if cfg.home == os.path.realpath(os.path.expanduser("~")) else Env.fake()
+    return Env.real(cfg.home) if cfg.home == os.path.realpath(os.path.expanduser("~")) else Env.fake()
 
 
 def resolve_providers(cfg: Config, sim: Optional["SimctlProvider"], env: Optional[Env]):
@@ -1444,6 +1453,8 @@ def fixture_runner(argv: list, **kw) -> subprocess.CompletedProcess:
     """Runner for fixture mode: never touches the real simulators, Trash or Docker."""
     if argv and argv[0] in ("xcrun", "osascript", "docker"):
         return subprocess.CompletedProcess(argv, 1, "", f"fixture mode: {argv[0]} disabled")
+    if argv and os.path.basename(argv[0]) == "brew":
+        return subprocess.CompletedProcess(argv, 1, "", "fixture mode: brew disabled")
     return subprocess.run(argv, **kw)
 
 

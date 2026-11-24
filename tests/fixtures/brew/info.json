@@ -1,0 +1,199 @@
+{
+ "formulae": [
+  {
+   "name": "ffmpeg@6",
+   "full_name": "ffmpeg@6",
+   "installed": [
+    {
+     "version": "6.1.6",
+     "time": 1700000000,
+     "installed_on_request": true,
+     "runtime_dependencies": [
+      {
+       "full_name": "libonly6"
+      },
+      {
+       "full_name": "libshared"
+      }
+     ]
+    }
+   ],
+   "linked_keg": "6.1.6",
+   "deprecated": false,
+   "disabled": false
+  },
+  {
+   "name": "ffmpeg@8",
+   "full_name": "ffmpeg@8",
+   "installed": [
+    {
+     "version": "8.0.1",
+     "time": 1700000000,
+     "installed_on_request": true,
+     "runtime_dependencies": [
+      {
+       "full_name": "libshared"
+      }
+     ]
+    }
+   ],
+   "linked_keg": "8.0.1",
+   "deprecated": false,
+   "disabled": false
+  },
+  {
+   "name": "python@3.11",
+   "full_name": "python@3.11",
+   "installed": [
+    {
+     "version": "3.11.14",
+     "time": 1700000000,
+     "installed_on_request": true,
+     "runtime_dependencies": [
+      {
+       "full_name": "openssl@3"
+      }
+     ]
+    }
+   ],
+   "linked_keg": "3.11.14",
+   "deprecated": false,
+   "disabled": false
+  },
+  {
+   "name": "postgresql@15",
+   "full_name": "postgresql@15",
+   "installed": [
+    {
+     "version": "15.14",
+     "time": 1700000000,
+     "installed_on_request": true,
+     "runtime_dependencies": []
+    }
+   ],
+   "linked_keg": "15.14",
+   "deprecated": false,
+   "disabled": false
+  },
+  {
+   "name": "oldtool",
+   "full_name": "oldtool",
+   "installed": [
+    {
+     "version": "1.0",
+     "time": 1700000000,
+     "installed_on_request": true,
+     "runtime_dependencies": []
+    }
+   ],
+   "linked_keg": "1.0",
+   "deprecated": true,
+   "disabled": false
+  },
+  {
+   "name": "toolx",
+   "full_name": "toolx",
+   "installed": [
+    {
+     "version": "1.0",
+     "time": 1700000000,
+     "installed_on_request": true,
+     "runtime_dependencies": []
+    },
+    {
+     "version": "2.0",
+     "time": 1710000000,
+     "installed_on_request": true,
+     "runtime_dependencies": []
+    }
+   ],
+   "linked_keg": "1.0",
+   "deprecated": false,
+   "disabled": false
+  },
+  {
+   "name": "emptyf",
+   "full_name": "emptyf",
+   "installed": [],
+   "linked_keg": null,
+   "deprecated": false,
+   "disabled": false
+  },
+  {
+   "name": "Weird_Name",
+   "full_name": "Weird_Name",
+   "installed": [
+    {
+     "version": "1.0",
+     "time": 1700000000,
+     "installed_on_request": true,
+     "runtime_dependencies": []
+    }
+   ],
+   "linked_keg": "1.0",
+   "deprecated": false,
+   "disabled": false
+  },
+  {
+   "name": "libonly6",
+   "full_name": "libonly6",
+   "installed": [
+    {
+     "version": "1.0",
+     "time": 1700000000,
+     "installed_on_request": false,
+     "runtime_dependencies": []
+    }
+   ],
+   "linked_keg": "1.0",
+   "deprecated": false,
+   "disabled": false
+  },
+  {
+   "name": "libshared",
+   "full_name": "libshared",
+   "installed": [
+    {
+     "version": "1.0",
+     "time": 1700000000,
+     "installed_on_request": false,
+     "runtime_dependencies": []
+    }
+   ],
+   "linked_keg": "1.0",
+   "deprecated": false,
+   "disabled": false
+  },
+  {
+   "name": "openssl@3",
+   "full_name": "openssl@3",
+   "installed": [
+    {
+     "version": "3.5.0",
+     "time": 1700000000,
+     "installed_on_request": false,
+     "runtime_dependencies": []
+    }
+   ],
+   "linked_keg": "3.5.0",
+   "deprecated": false,
+   "disabled": false
+  },
+  {
+   "name": "orphan",
+   "full_name": "orphan",
+   "installed": [
+    {
+     "version": "0.1",
+     "time": 1700000000,
+     "installed_on_request": false,
+     "runtime_dependencies": []
+    }
+   ],
+   "linked_keg": "0.1",
+   "deprecated": false,
+   "disabled": false
+  }
+ ],
+ "casks": []
+}
