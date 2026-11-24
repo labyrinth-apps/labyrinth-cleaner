@@ -1522,6 +1522,7 @@ class CliBrewTests(BrewBase):
     def test_cli_yes_runs_only_brew_cleanup(self):
         record = []
         rc, out = self.cli("--yes", "--select", "all", record=record)
+        self.assertEqual(rc, 0, out)
         argvs = [a for a, _ in record]
         self.assertIn([self.brew_path, "cleanup"], argvs)
         self.assertFalse([a for a in argvs if "uninstall" in a and "--dry-run" not in a], argvs)
@@ -1529,13 +1530,18 @@ class CliBrewTests(BrewBase):
 
     def test_cli_preview_failure_deletes_nothing(self):
         record = []
+        cache = os.path.join(self.home, ".npm", "_cacache")
+        write(os.path.join(cache, "content", "blob"), "x" * 100)
         rc, out = self.cli("--dry-run", "--select", "all", record=record, broken="uninstall")
         self.assertEqual(rc, 0, out)
+        self.assertTrue(os.path.exists(cache))
         self.assertIn("Couldn't ask Homebrew what this would remove. Scan again.", out)
         rc, out = self.cli("--select", "all", record=record, broken="uninstall")
         self.assertEqual(rc, 1, out)
         self.assertIn("Couldn't ask Homebrew what this would remove. Scan again.", out)
         self.assertIn("Nothing deleted.", out)
+        self.assertIn("npm", out)   # the cache really was among the chosen items
+        self.assertTrue(os.path.exists(os.path.join(cache, "content", "blob")))
         self.assertFalse([a for a, _ in record if a[1:2] == ["cleanup"] and len(a) == 2], record)
         self.assertFalse([a for a, _ in record if a[1:3] == ["uninstall", "--formula"]], record)
 
