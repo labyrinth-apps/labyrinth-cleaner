@@ -1699,6 +1699,9 @@ RESCANNERS = {
     "log:": lambda key, cfg, sim, env, now: _general().scan_logs(cfg, now),
     "empty-trash": lambda key, cfg, sim, env, now: _general().scan_trash(cfg),
     "docker:": lambda key, cfg, sim, env, now: _general().scan_docker(cfg, env),
+    # A package's gate reads `info` only: a slow `cleanup -n` must not refuse every package.
+    "brew:pkg:": lambda key, cfg, sim, env, now: _brew().scan_brew(cfg, env, [], sizes=False,
+                                                                   full=False)[0],
     "brew:": lambda key, cfg, sim, env, now: _brew().scan_brew(cfg, env, [], sizes=False)[0],
     "flutter:": _rescan_projects,
     "web:": _rescan_projects,
@@ -1843,14 +1846,19 @@ def validate_item(it: Item, cfg: Config, sim: Optional[SimctlProvider] = None,
         raise UnsafeTarget(f"{it.label} is not offerable ({it.tier})")
     sim, env = resolve_providers(cfg, sim, env)
     now = time.time() if now is None else now
-    fresh = rescan_item(it, cfg, sim, env, now)
-    if fresh is None and it.key == "brew:cleanup":
-        # Earlier uninstalls in this clean may have autoremoved the only libraries, so a rescan
-        # finds nothing to clean. `brew cleanup` is always safe; the gate still pins the argv.
-        _brew().validate(it, None, env)
-        if not _brew().read_cleanly(cfg, env):
-            raise UnsafeTarget(SITUATION_CHANGED)   # not read, not ours, or no Cellar: not "nothing to clean"
-        return
+    if it.key == "brew:cleanup":
+        # One full read decides both what is there now and whether Homebrew was read at all.
+        fresh, read_cleanly = _brew().rescan_cleanup(cfg, env)
+        if fresh is None:
+            # Earlier uninstalls in this clean may have autoremoved the only libraries, so a
+            # rescan finds nothing to clean. `brew cleanup` is always safe; the gate still pins
+            # the argv.
+            _brew().validate(it, None, env)
+            if not read_cleanly:
+                raise UnsafeTarget(SITUATION_CHANGED)   # not read, not ours, or no Cellar
+            return
+    else:
+        fresh = rescan_item(it, cfg, sim, env, now)
     if fresh is None and it.key.startswith("brew:"):
         raise UnsafeTarget(SITUATION_CHANGED)
     if fresh is None:

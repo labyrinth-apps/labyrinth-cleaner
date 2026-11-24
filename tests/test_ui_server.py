@@ -822,6 +822,12 @@ class LifecycleTests(ServerTestCase):
         r = b.run([b.path, "cleanup", "-n"], capture_output=True, text=True)
         self.assertIn(b.prefix, r.stdout)
 
+    def test_fake_brew_dry_run_names_each_requested_package(self):
+        b = ui.fake_brew(self.make_brew_dir())
+        r = b.run([b.path, "uninstall", "--dry-run", "--formula", "ffmpeg@6", "ffmpeg@8", "nope"])
+        self.assertEqual(devclean_brew.parse_would_uninstall(r.stdout), ["ffmpeg@6", "ffmpeg@8"])
+        self.assertEqual(devclean_brew.parse_would_autoremove(r.stdout), ["libonly6", "orphan"])
+
     def test_fake_brew_needs_home(self):
         d = self.make_brew_dir()
         r = subprocess.run([sys.executable, os.path.join(ROOT, "devclean"), "ui", "--no-open",

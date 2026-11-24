@@ -17,7 +17,8 @@ BREW_ENV = {
     "HOMEBREW_NO_ENV_HINTS": "1",
     "HOMEBREW_NO_COLOR": "1",
 }
-NAME_RE = re.compile(r"^[a-z0-9][a-z0-9@+._-]*$")
+# \Z, not $: "$" also matches before a trailing newline, so "x\n" would pass.
+NAME_RE = re.compile(r"^[a-z0-9][a-z0-9@+._-]*\Z")
 SCAN_TIMEOUT = 20
 CLEAN_TIMEOUT = 300
 BREW_PATHS = ("/opt/homebrew/bin/brew", "/usr/local/bin/brew")
@@ -61,6 +62,7 @@ class Formula:
     on_request: bool
     deps: frozenset = field(default_factory=frozenset)
     deprecated: bool = False
+    pinned: bool = False
 
 
 def parse_info(text: str) -> dict:
@@ -81,7 +83,7 @@ def parse_info(text: str) -> dict:
             name=name, version=keg.get("version", ""),
             time=float(t) if isinstance(t, (int, float)) else None,
             on_request=bool(keg.get("installed_on_request")), deps=deps,
-            deprecated=bool(f.get("deprecated") or f.get("disabled")))
+            deprecated=bool(f.get("deprecated") or f.get("disabled")), pinned=bool(f.get("pinned")))
     return out
 
 
@@ -143,23 +145,37 @@ def SERVICE_BLOCK(name: str) -> str:
     return f"{name} runs as a background service. Stop it with `brew services stop {name}` first."
 
 
+def PINNED_NOTE(name: str) -> str:
+    return f"Pinned: run `brew unpin {name}` first."
+
+
+def _short(name: str) -> str:
+    """A tap formula's short name (user/tap/x -> x): the name of its Cellar rack and service."""
+    return name.rsplit("/", 1)[-1]
+
+
 def _has_service(brew: BrewRunner, name: str) -> bool:
-    return any(os.path.exists(os.path.join(d, f"homebrew.mxcl.{name}.plist"))
+    return any(os.path.exists(os.path.join(d, f"homebrew.mxcl.{_short(name)}.plist"))
                for d in brew.service_dirs)
 
 
 def _keg_dir(brew: BrewRunner, name: str) -> str:
-    return os.path.join(brew.cellar, name.rsplit("/", 1)[-1])
+    return os.path.join(brew.cellar, _short(name))
 
 
-def _read_brew(brew: BrewRunner):
-    """(formulae, cleanup bytes, autoremove names), or None when any call fails."""
-    forms = [["info", "--json=v2", "--installed"], ["cleanup", "-n"], ["autoremove", "-n"]]
+def _read_brew(brew: BrewRunner, full: bool = True):
+    """(formulae, cleanup bytes, autoremove names), or None when any call fails.
+    Not `full`: `info` only, and no cleanup bytes or autoremove names (a package's gate)."""
+    forms = [["info", "--json=v2", "--installed"]]
+    if full:
+        forms += [["cleanup", "-n"], ["autoremove", "-n"]]
     try:
-        with ThreadPoolExecutor(max_workers=3) as ex:
+        with ThreadPoolExecutor(max_workers=len(forms)) as ex:
             results = list(ex.map(lambda a: call(brew, a, SCAN_TIMEOUT), forms))
         if any(r.returncode != 0 for r in results):
             return None
+        if not full:
+            return parse_info(results[0].stdout), 0, []
         return (parse_info(results[0].stdout), parse_cleanup(results[1].stdout, brew.prefix),
                 parse_would_autoremove(results[2].stdout))
     except Exception:
@@ -181,7 +197,9 @@ def _family_note(f: Formula, listed: dict) -> Optional[str]:
     return "also installed: " + ", ".join(sorted(g.name for g in others))
 
 
-def scan_brew(cfg, env, warnings: list, sizes: bool = True) -> tuple:
+def scan_brew(cfg, env, warnings: list, sizes: bool = True, full: bool = True) -> tuple:
+    """(items, Cellar + Caskroom bytes). Not `full`: package rows only, from `info` alone, with
+    the same listing rules (a package's gate needs no `cleanup -n` or `autoremove -n`)."""
     brew = env.brew
     if brew is None or not os.path.isdir(brew.cellar):
         return [], 0
@@ -198,7 +216,7 @@ def scan_brew(cfg, env, warnings: list, sizes: bool = True) -> tuple:
                          tier=core.PROTECTED, kind="info", note=OTHER_ACCOUNT_NOTE)
         return [item], (total_bytes() if sizes else 0)
 
-    read = _read_brew(brew)
+    read = _read_brew(brew, full)
     if read is None:
         warnings.append(SCAN_WARNING)
         return [], 0
@@ -217,6 +235,11 @@ def scan_brew(cfg, env, warnings: list, sizes: bool = True) -> tuple:
         if _has_service(brew, name):
             items.append(core.Item(key=key, category=CATEGORY, label=name, tier=core.PROTECTED,
                                    kind="info", note=SERVICE_NOTE(name)))
+            continue
+        if f.pinned:
+            # `brew uninstall` exits 0 for a pinned formula and removes nothing.
+            items.append(core.Item(key=key, category=CATEGORY, label=name, tier=core.PROTECTED,
+                                   kind="info", note=PINNED_NOTE(name)))
             continue
         if not NAME_RE.match(name):
             items.append(core.Item(
@@ -242,7 +265,7 @@ def scan_brew(cfg, env, warnings: list, sizes: bool = True) -> tuple:
             argv=[brew.path, "uninstall", "--formula", name], size=size, note=" · ".join(notes),
             preselect=False, meta={"version": f.version, "installed": f.time, "libraries": libs}))
 
-    if cleanup_bytes or autoremove:
+    if full and (cleanup_bytes or autoremove):
         size = cleanup_bytes + (kegs_bytes(autoremove) if sizes else 0)
         blocked = next((n for n in autoremove if _has_service(brew, n)), None)
         if blocked:
@@ -284,18 +307,56 @@ def validate(it, fresh, env) -> None:
         raise core.UnsafeTarget(core.SITUATION_CHANGED)
 
 
+def _refusal(text: str) -> Optional[str]:
+    """Homebrew's own "Refusing to uninstall ... because ..." lines, without the advice that
+    follows them (it suggests --ignore-dependencies, which this app never passes)."""
+    lines = [ln.strip() for ln in (text or "").splitlines()]
+    start = next((i for i, ln in enumerate(lines) if "Refusing to uninstall" in ln), None)
+    if start is None:
+        return None
+    out = []
+    for ln in lines[start:]:
+        if not ln or ln.startswith("You can override"):
+            break
+        out.append(ln)
+    out[0] = out[0][out[0].index("Refusing to uninstall"):]
+    return " ".join(out)
+
+
+def _still_installed(text: str) -> Optional[str]:
+    """Homebrew's "<name> <versions> is still installed." line(s), if it printed any."""
+    lines = [ln.strip() for ln in (text or "").splitlines() if "still installed" in ln]
+    return " ".join(lines) or None
+
+
 def run_item(it, env) -> tuple:
     """Run a validated brew item through env.brew. Returns (ok, message)."""
     try:
         r = call(env.brew, list(it.argv[1:]), CLEAN_TIMEOUT)
     except (OSError, subprocess.SubprocessError) as e:
         return False, str(e) or "brew failed"
+    out, err = (r.stdout or ""), (r.stderr or "")
+    refused = _refusal(err) or _refusal(out)
+    if refused:
+        return False, refused
     if r.returncode != 0:
-        err = (r.stderr or "").strip()
+        err = err.strip()
         if "already locked" in err or "Operation already in progress" in err:
             return False, BREW_BUSY
         return False, err or f"exit {r.returncode}"
+    if it.key.startswith("brew:pkg:"):
+        # Exit 0 isn't proof: a pinned formula, or one of several kegs, leaves the package in place.
+        name = it.key[len("brew:pkg:"):]
+        if os.path.lexists(_keg_dir(env.brew, name)):
+            if "is pinned" in err:
+                return False, PINNED_NOTE(name)
+            return False, (_still_installed(out) or _still_installed(err)
+                           or f"{name} is still installed.")
     return True, "ok"
+
+
+def MISSING_FROM_PREVIEW(name: str) -> str:
+    return f"{name} can't be removed right now. Scan again."
 
 
 def preview_uninstall(names: list, env) -> dict:
@@ -309,22 +370,38 @@ def preview_uninstall(names: list, env) -> dict:
         r = call(brew, ["uninstall", "--dry-run", "--formula", *names], SCAN_TIMEOUT)
     except (OSError, subprocess.SubprocessError):
         return {"ok": False, "error": PREVIEW_FAILED}
+    refused = _refusal(r.stderr) or _refusal(r.stdout)
+    if refused:
+        return {"ok": False, "error": refused}
     if r.returncode != 0:
         return {"ok": False, "error": PREVIEW_FAILED}
     packages = parse_would_uninstall(r.stdout)
     libraries = parse_would_autoremove(r.stdout)
+    # A name Homebrew wouldn't uninstall (pinned, say) must not pass as previewed.
+    missing = next((n for n in names if n not in packages), None)
+    if missing:
+        return {"ok": False, "error": MISSING_FROM_PREVIEW(missing)}
     for n in [*names, *packages, *libraries]:
         if _has_service(brew, n):
             return {"ok": False, "error": SERVICE_BLOCK(n)}
     return {"ok": True, "packages": packages, "libraries": libraries}
 
 
-def read_cleanly(cfg, env) -> bool:
-    """True only when Homebrew was actually read (own Cellar, every call answered), so an empty
-    rescan means "nothing to clean" and not "couldn't look"."""
+def rescan_cleanup(cfg, env) -> tuple:
+    """(fresh `brew:cleanup` item or None, read cleanly), from ONE full scan. Read cleanly:
+    own Cellar, every call answered, so a missing item means "nothing to clean", not
+    "couldn't look"."""
     brew = env.brew
     if brew is None or not os.path.isdir(brew.cellar):
-        return False
+        return None, False
     warnings = []
     items, _ = scan_brew(cfg, env, warnings, sizes=False)
-    return not warnings and not any(i.key == "brew:other-account" for i in items)
+    fresh = next((i for i in items if i.key == "brew:cleanup"), None)
+    return fresh, not warnings and not any(i.key == "brew:other-account" for i in items)
+
+
+def read_cleanly(cfg, env) -> bool:
+    """True only when Homebrew was read cleanly and has nothing for `brew cleanup` (no item,
+    offered or kept): the case where a ticked cleanup may still run."""
+    fresh, clean = rescan_cleanup(cfg, env)
+    return clean and fresh is None

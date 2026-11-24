@@ -468,13 +468,21 @@ def fake_brew(dir: str):
         with open(os.path.join(root, name), encoding="utf-8") as f:
             answers[name] = f.read().replace("/PREFIX", prefix)
 
+    # The dry run names each requested package that info.json has (as Homebrew would), then
+    # the "Would autoremove" part of uninstall.txt.
+    versions = {f.name.rsplit("/", 1)[-1]: f.version
+                for f in devclean_brew.parse_info(answers["info.json"]).values()}
+    text = answers["uninstall.txt"]
+    autoremove = text[text.index("==>"):] if "==>" in text else ""
+
     def run(argv, **kw):
         argv = list(argv)
         name = None
         if argv[:1] == [path]:
             name = BREW_READ_ONLY.get(tuple(argv[1:]))
             if name is None and argv[1:4] == ["uninstall", "--dry-run", "--formula"] and len(argv) > 4:
-                name = "uninstall.txt"
+                out = "".join(f"Would uninstall {n} {versions[n]}\n" for n in argv[4:] if n in versions)
+                return subprocess.CompletedProcess(argv, 0, out + autoremove, "")
         if name is None:
             return subprocess.CompletedProcess(argv, 1, "", "fake brew: only read-only commands are answered")
         return subprocess.CompletedProcess(argv, 0, answers[name], "")
