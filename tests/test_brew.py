@@ -389,6 +389,45 @@ class RunBrewTests(BrewBase):
         self.assertTrue(ok_, msg)
         self.assertEqual(rec[-1][0], [self.brew_path, "cleanup"])
 
+    def quiet_env(self, rec, **kw):
+        return self.env(record=rec, cleanup="", autoremove="==> Would autoremove 0 unneeded formulae:\n", **kw)
+
+    def test_no_fresh_cleanup_refused_when_homebrew_unreadable(self):
+        it = self.item(self.env(), "brew:cleanup")
+        for broken in ("info", "cleanup", "autoremove"):
+            rec = []
+            env = self.env(record=rec, broken=broken)
+            ok_, msg = core.execute_item(it, self.cfg, env=env, now=self.now)
+            self.assertFalse(ok_, broken)
+            self.assertTrue(msg.startswith("REFUSED"), msg)
+            self.assertNotIn([self.brew_path, "cleanup"], [a for a, _ in rec], broken)
+
+    def test_no_fresh_cleanup_refused_for_other_account_and_missing_cellar(self):
+        it = self.item(self.env(), "brew:cleanup")
+        rec = []
+        env = self.quiet_env(rec)
+        with mock.patch.object(os, "access", lambda p, m, **kw: False if p == env.brew.cellar else True):
+            ok_, msg = core.execute_item(it, self.cfg, env=env, now=self.now)
+        self.assertFalse(ok_)
+        self.assertTrue(msg.startswith("REFUSED"), msg)
+        shutil.rmtree(os.path.join(self.prefix, "Cellar"))
+        ok_, msg = core.execute_item(it, self.cfg, env=env, now=self.now)
+        self.assertFalse(ok_)
+        self.assertTrue(msg.startswith("REFUSED"), msg)
+        self.assertNotIn([self.brew_path, "cleanup"], [a for a, _ in rec])
+
+    def test_no_fresh_cleanup_refuses_forged_argv(self):
+        rec = []
+        env = self.quiet_env(rec)
+        for argv in ([self.brew_path, "cleanup", "--prune=all"], ["/tmp/brew", "cleanup"]):
+            forged = core.Item(key="brew:cleanup", category="Homebrew", label="x", tier=core.SAFE,
+                               kind="brew", argv=argv)
+            ok_, msg = core.execute_item(forged, self.cfg, env=env, now=self.now)
+            self.assertFalse(ok_)
+            self.assertTrue(msg.startswith("REFUSED"), msg)
+        self.assertNotIn([self.brew_path, "cleanup"], [a for a, _ in rec])
+        self.assertFalse([a for a, _ in rec if a[1:2] == ["cleanup"] and "-n" not in a])
+
     def test_cleanup_refused_when_a_library_became_a_service(self):
         env = self.env()
         it = self.item(env, "brew:cleanup")

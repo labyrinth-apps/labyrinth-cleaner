@@ -317,3 +317,14 @@ def preview_uninstall(names: list, env) -> dict:
         if _has_service(brew, n):
             return {"ok": False, "error": SERVICE_BLOCK(n)}
     return {"ok": True, "packages": packages, "libraries": libraries}
+
+
+def read_cleanly(cfg, env) -> bool:
+    """True only when Homebrew was actually read (own Cellar, every call answered), so an empty
+    rescan means "nothing to clean" and not "couldn't look"."""
+    brew = env.brew
+    if brew is None or not os.path.isdir(brew.cellar):
+        return False
+    warnings = []
+    items, _ = scan_brew(cfg, env, warnings, sizes=False)
+    return not warnings and not any(i.key == "brew:other-account" for i in items)

@@ -1848,6 +1848,8 @@ def validate_item(it: Item, cfg: Config, sim: Optional[SimctlProvider] = None,
         # Earlier uninstalls in this clean may have autoremoved the only libraries, so a rescan
         # finds nothing to clean. `brew cleanup` is always safe; the gate still pins the argv.
         _brew().validate(it, None, env)
+        if not _brew().read_cleanly(cfg, env):
+            raise UnsafeTarget(SITUATION_CHANGED)   # not read, not ours, or no Cellar: not "nothing to clean"
         return
     if fresh is None and it.key.startswith("brew:"):
         raise UnsafeTarget(SITUATION_CHANGED)
