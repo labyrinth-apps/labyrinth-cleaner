@@ -251,6 +251,16 @@ class LockedTests(BrowserBase):
                          "Chrome's folder is locked by macOS. Its AI models and caches can't be measured.")
         self.assertIsNone(it.path)
 
+    def test_locked_and_running_says_quit_first(self):
+        self.make_chrome()
+        os.chmod(self.chrome, 0)
+        self.addCleanup(os.chmod, self.chrome, stat.S_IRWXU)
+        d = self.rows(running=RUNNING_CHROME)
+        self.assertEqual(list(d), [f"browser:{CHROME}:locked"])
+        it = d[f"browser:{CHROME}:locked"]
+        self.assertEqual((it.tier, it.kind, it.note, it.path),
+                         (core.PROTECTED, "info", "Quit Chrome first", None))
+
 
 class OperaTests(BrowserBase):
     def test_opera_own_profile(self):
@@ -316,9 +326,11 @@ class GateTests(BrowserBase):
         self.assertNotIn(self.c("Profile 2", "GPUCache"), self.rows()[f"browser:{CHROME}:caches"].argv)
         self.assertFalse(browsers.allowed_path(self.c("Profile 2", "GPUCache"), self.cfg))
         self.assertTrue(os.path.isfile(os.path.join(target, "precious")))
+        # (b) "Google/Chrome" itself a symlink
+        shutil.rmtree(self.appsup)
+        self._check_symlinked_data_folder()
 
-    def test_symlinked_data_folder_skipped(self):
-        # (b) "Google/Chrome" itself is a symlink
+    def _check_symlinked_data_folder(self):
         real = os.path.join(self.home, "elsewhere", "Chrome")
         write(os.path.join(real, "GrShaderCache", "x"), "x" * 4096)
         write(os.path.join(real, "SODA", "x"), "x" * 4096)
@@ -329,6 +341,8 @@ class GateTests(BrowserBase):
         self.assertFalse([k for k in d if k.startswith("browser:")])
         for p in (self.c("GrShaderCache"), self.c("SODA"), os.path.join(real, "SODA")):
             self.assertFalse(browsers.allowed_path(p, self.cfg), p)
+            with self.assertRaises(core.UnsafeTarget, msg=p):
+                core.validate_path(p, self.cfg)
 
     def test_symlinked_parent_folder_skipped(self):
         # "Google" (between the data folder and Application Support) is a symlink

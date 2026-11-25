@@ -169,8 +169,9 @@ def scan_browsers(cfg: core.Config, env: core.Env, warnings: Optional[list] = No
         try:
             os.listdir(data)
         except PermissionError:
+            note = (RUNNING_NOTE if bid.casefold() in running else LOCKED_NOTE).format(name=name)
             items.append(Item(key=f"browser:{bid}:locked", category=CATEGORY, label=name,
-                              tier=PROTECTED, kind="info", note=LOCKED_NOTE.format(name=name)))
+                              tier=PROTECTED, kind="info", note=note))
             continue
         except OSError:
             continue
