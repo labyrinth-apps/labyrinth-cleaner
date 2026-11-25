@@ -154,6 +154,9 @@ def scan_browsers(cfg: core.Config, env: core.Env, warnings: Optional[list] = No
     symlinked folder above it) is skipped. A running browser's rows are kept, not offered.
     When the running apps can't be listed nothing is offered and a warning is added.
     `only` limits the scan to one bundle ID (the gate's rescan)."""
+    # A stat of each data folder is fine: macOS blocks listing an app's data, not a stat of
+    # the folder entry. Reading Info.plists only when some browser folder exists keeps Macs
+    # without browsers from paying for it.
     present = [b for b in BROWSERS
                if (only is None or b[1] == only)
                and os.path.lexists(_data_folder(cfg, b[2]))]
