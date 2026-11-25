@@ -2,6 +2,7 @@
 only: never the real ~/Library/Application Support or any real browser folder."""
 
 import os
+import plistlib
 import shutil
 import stat
 import subprocess
@@ -20,6 +21,23 @@ from test_devclean import cfg_for, write  # noqa: E402
 
 CHROME = "com.google.Chrome"
 RUNNING_CHROME = [(CHROME, "Google Chrome")]
+# The app each browser installs as. setUp installs them all; tests remove what they need gone.
+APP_NAMES = {
+    "com.google.Chrome": "Google Chrome", "com.google.Chrome.beta": "Google Chrome Beta",
+    "com.google.Chrome.canary": "Google Chrome Canary", "com.brave.Browser": "Brave Browser",
+    "com.microsoft.edgemac": "Microsoft Edge", "company.thebrowser.Browser": "Arc",
+    "com.vivaldi.Vivaldi": "Vivaldi", "com.operasoftware.Opera": "Opera",
+    "com.operasoftware.OperaGX": "Opera GX", "org.chromium.Chromium": "Chromium",
+}
+
+
+def install_app(apps_dir, name, bundle_id):
+    """A minimal .app bundle: just an Info.plist with the bundle ID."""
+    contents = os.path.join(apps_dir, f"{name}.app", "Contents")
+    os.makedirs(contents, exist_ok=True)
+    with open(os.path.join(contents, "Info.plist"), "wb") as f:
+        plistlib.dump({"CFBundleIdentifier": bundle_id, "CFBundleName": name}, f)
+    return os.path.dirname(contents)
 
 
 class BrowserBase(unittest.TestCase):
@@ -31,6 +49,11 @@ class BrowserBase(unittest.TestCase):
         self.cfg = cfg_for(self.home)
         self.appsup = os.path.join(self.home, "Library", "Application Support")
         self.chrome = os.path.join(self.appsup, "Google", "Chrome")
+        self.apps = os.path.join(self.home, "Applications")
+        self.app_paths = {bid: install_app(self.apps, name, bid) for bid, name in APP_NAMES.items()}
+
+    def uninstall(self, bundle_id):
+        shutil.rmtree(self.app_paths.pop(bundle_id))
 
     def c(self, *parts):
         return os.path.join(self.chrome, *parts)
@@ -245,10 +268,10 @@ class LockedTests(BrowserBase):
         rows = {k: i for k, i in d.items() if k.startswith("browser:")}
         self.assertEqual(list(rows), [f"browser:{CHROME}:locked"])
         it = rows[f"browser:{CHROME}:locked"]
-        self.assertEqual((it.label, it.tier, it.kind, it.category, it.note),
-                         ("Chrome", core.PROTECTED, "info", "Browser", browsers.LOCKED_NOTE.format(name="Chrome")))
-        self.assertEqual(browsers.LOCKED_NOTE.format(name="Chrome"),
-                         "Chrome's folder is locked by macOS. Its AI models and caches can't be measured.")
+        self.assertEqual((it.label, it.tier, it.kind, it.category),
+                         ("Chrome", core.PROTECTED, "info", "Browser"))
+        self.assertEqual(it.note, "Chrome's folder is locked by macOS. To include it, turn on Google Chrome "
+                                  "in System Settings › Privacy & Security › Files & Folders › Labyrinth Cleaner.")
         self.assertIsNone(it.path)
 
     def test_locked_and_running_still_says_locked(self):
@@ -259,7 +282,61 @@ class LockedTests(BrowserBase):
         self.assertEqual(list(d), [f"browser:{CHROME}:locked"])
         it = d[f"browser:{CHROME}:locked"]
         self.assertEqual((it.tier, it.kind, it.note, it.path),
-                         (core.PROTECTED, "info", browsers.LOCKED_NOTE.format(name="Chrome"), None))
+                         (core.PROTECTED, "info", browsers.LOCKED_NOTE.format(name="Chrome", app="Google Chrome"),
+                          None))
+
+
+class InstalledTests(BrowserBase):
+    def test_uninstalled_browser_is_skipped_without_reading_its_folder(self):
+        edge = os.path.join(self.appsup, "Microsoft Edge")
+        write(os.path.join(edge, "Default", "Preferences"), "{}")
+        os.chmod(edge, 0)
+        self.addCleanup(os.chmod, edge, stat.S_IRWXU)
+        self.uninstall("com.microsoft.edgemac")
+        listed = []
+        real_listdir = os.listdir
+
+        def spy(path="."):
+            listed.append(os.fspath(path))
+            return real_listdir(path)
+        with mock.patch.object(browsers.os, "listdir", spy):
+            d = self.rows()
+        self.assertEqual([k for k in d if "edgemac" in k], [])
+        self.assertFalse([p for p in listed if p.startswith(edge)], listed)
+
+    def test_uninstalled_browser_with_readable_folder_has_no_rows(self):
+        self.make_chrome()
+        self.uninstall(CHROME)
+        self.assertEqual(self.rows(), {})
+
+    def test_app_found_by_bundle_id_one_folder_down_under_any_name(self):
+        self.make_chrome()
+        self.uninstall(CHROME)
+        install_app(os.path.join(self.apps, "Browsers"), "Chrome Work", CHROME)
+        self.assertIn(f"browser:{CHROME}:caches", self.rows())
+
+    def test_app_with_the_name_but_another_bundle_id_does_not_count(self):
+        self.make_chrome()
+        self.uninstall(CHROME)
+        install_app(self.apps, "Google Chrome", "com.example.notchrome")
+        self.assertEqual(self.rows(), {})
+
+    def test_locked_note_uses_the_installed_app_name(self):
+        self.make_chrome()
+        self.uninstall(CHROME)
+        install_app(self.apps, "Chrome Work", CHROME)
+        os.chmod(self.chrome, 0)
+        self.addCleanup(os.chmod, self.chrome, stat.S_IRWXU)
+        it = self.rows()[f"browser:{CHROME}:locked"]
+        self.assertIn("turn on Chrome Work in System Settings", it.note)
+
+    def test_gate_refuses_when_app_removed_after_scan(self):
+        self.make_chrome()
+        d, _ = self.scan()
+        it = d[f"browser:{CHROME}:caches"]
+        self.uninstall(CHROME)
+        with self.assertRaises(core.UnsafeTarget):
+            core.validate_item(it, self.cfg, core.NoSimctl(), self.env())
 
 
 class OperaTests(BrowserBase):

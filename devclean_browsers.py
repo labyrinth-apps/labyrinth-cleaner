@@ -62,7 +62,9 @@ PROFILE_CACHES = ("Cache", "Code Cache", "GPUCache", "DawnGraphiteCache", "DawnW
 HIDDEN_PROFILES = ("System Profile", "Guest Profile")
 _HIDDEN = frozenset(p.casefold() for p in HIDDEN_PROFILES)
 
-LOCKED_NOTE = "{name}'s folder is locked by macOS. Its AI models and caches can't be measured."
+# macOS blocks the read and offers one switch per browser app under Files & Folders.
+LOCKED_NOTE = ("{name}'s folder is locked by macOS. To include it, turn on {app} in "
+               "System Settings › Privacy & Security › Files & Folders › Labyrinth Cleaner.")
 RUNNING_NOTE = "Quit {name} first"
 PAGE_CACHE_COST = "Pages and scripts load a bit slower the first time. You stay logged in."
 SCAM_WARNING = "Scam and phishing warnings may be weaker until the browser downloads it again."
@@ -144,15 +146,24 @@ def _browser_of(key: str):
 
 def scan_browsers(cfg: core.Config, env: core.Env, warnings: Optional[list] = None,
                   only: Optional[str] = None) -> list:
-    """AI model rows and one page-cache row per Chromium browser whose data folder exists.
+    """AI model rows and one page-cache row per installed Chromium browser whose data folder
+    exists. A browser whose app isn't installed is skipped without reading its folder: macOS
+    would block the read and offer no switch to allow it.
 
     A folder macOS won't let us list gets one locked row. A symlinked data folder (or a
     symlinked folder above it) is skipped. A running browser's rows are kept, not offered.
     When the running apps can't be listed nothing is offered and a warning is added.
     `only` limits the scan to one bundle ID (the gate's rescan)."""
+    # A stat of each data folder is fine: macOS blocks listing an app's data, not a stat of
+    # the folder entry. Reading Info.plists only when some browser folder exists keeps Macs
+    # without browsers from paying for it.
     present = [b for b in BROWSERS
                if (only is None or b[1] == only)
                and os.path.lexists(_data_folder(cfg, b[2]))]
+    if not present:
+        return []
+    installed = core._apps().installed_names(cfg)
+    present = [b for b in present if b[1].casefold() in installed]
     if not present:
         return []
     try:
@@ -169,7 +180,7 @@ def scan_browsers(cfg: core.Config, env: core.Env, warnings: Optional[list] = No
         try:
             os.listdir(data)
         except PermissionError:
-            note = LOCKED_NOTE.format(name=name)
+            note = LOCKED_NOTE.format(name=name, app=installed[bid.casefold()])
             items.append(Item(key=f"browser:{bid}:locked", category=CATEGORY, label=name,
                               tier=PROTECTED, kind="info", note=note))
             continue

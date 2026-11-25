@@ -242,6 +242,21 @@ On package caches:
 6. **The user checks the macOS prompt before publishing,** with a signed debug build that only scans.
 7. **uv and pnpm run with a minimal environment** from the home folder. That worked for the Volta pnpm on the user's Mac.
 
+## Changes after the user's check on the real Mac (2026-11-25, approved)
+
+The user ran a signed debug build on their Mac (scan only). What they saw:
+- **macOS doesn't ask.** It blocks the read and shows a notification: "Data Access Blocked. “Labyrinth Cleaner.app” tried to access your data from other apps and was blocked. You can manage this at any time in Files & Folders settings."
+- **Each browser gets its own switch.** In System Settings › Privacy & Security › Files & Folders › Labyrinth Cleaner.app, there's one switch per browser app, named after it ("Google Chrome.app", "Brave Browser.app"). After the user turned on Google Chrome, the rescan listed Chrome's rows: small feature models 55.1 MB and page caches 27.7 MB, kept with "Quit Chrome first" while Chrome ran.
+- **An uninstalled browser can't be unlocked.** Edge's folder is still there, but Edge isn't installed. There's no switch for it, so its locked row could never be acted on.
+
+The user approved three changes:
+1. **The locked note names the switch.** "{Browser}'s folder is locked by macOS. To include it, turn on {App} in System Settings › Privacy & Security › Files & Folders › Labyrinth Cleaner." {App} is the installed app's name, such as "Google Chrome".
+2. **A browser whose app isn't installed is skipped completely.**
+   - Its folder isn't read, so there's no notification and no row.
+   - "Installed" means an app bundle with the browser's bundle ID in the app folders the Applications scan already uses (`cfg.app_roots`, directly or one folder down).
+   - What this costs: leftover caches of a removed browser aren't shown. They couldn't be read anyway without Full Disk Access.
+3. **The CLI table header lines up** with the wider size column.
+
 ## Left to the builder
 
 - The module layout. A new `devclean_browsers.py` and a `~/.cache` scan in `devclean_general.py` are the obvious places.

@@ -51,8 +51,8 @@ def trunc(s, n):
 
 
 def print_table(res, numbered, selected):
-    print(f"{'#':>3}  {'':3} {'tier':8} {'item':46} {'size':>9}  {'modified':10}  note")
-    print("-" * 110)
+    print(f"{'#':>3}  {'':3} {'tier':8} {'item':46} {'size':>12}  {'modified':10}  note")
+    print("-" * 113)
     for it in res.items:
         num = numbered.get(it.key)
         mark = ("[x]" if it.key in selected else "[ ]") if num else "   "

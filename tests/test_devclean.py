@@ -7,6 +7,7 @@ touched.
 
 import json
 import os
+import plistlib
 import shutil
 import stat
 import subprocess
@@ -1162,6 +1163,10 @@ class CliTests(unittest.TestCase):
         write(os.path.join(self.home, ".cache", "uv", "f"), "x" * 4096)
         write(os.path.join(self.home, "Library", "pnpm", "store", "f"), "x" * 4096)
         chrome = os.path.join(self.home, "Library", "Application Support", "Google", "Chrome")
+        info = os.path.join(self.home, "Applications", "Google Chrome.app", "Contents", "Info.plist")
+        os.makedirs(os.path.dirname(info))
+        with open(info, "wb") as f:
+            plistlib.dump({"CFBundleIdentifier": "com.google.Chrome"}, f)
         write(os.path.join(chrome, "OptGuideOnDeviceModel", "m.bin"), "x" * 4096)
         write(os.path.join(chrome, "Default", "Cache", "c"), "x" * 4096)
         code, out = self.cli_with_tools("--yes", "--dry-run")
@@ -1171,6 +1176,17 @@ class CliTests(unittest.TestCase):
         self.assertIn("Cache: pnpm", run)
         self.assertNotIn("Browser:", run)
         self.assertNotIn("Chrome", run)
+
+    def test_table_header_lines_up_with_up_to_rows(self):
+        write(os.path.join(self.home, "Library", "pnpm", "store", "f"), "x" * 900000)
+        code, out = self.cli_with_tools("--dry-run", "--min-size", "0")
+        self.assertEqual(code, 0, out)
+        lines = out.splitlines()
+        header = next(l for l in lines if "modified" in l and "tier" in l)
+        row = next(l for l in lines if "Cache: pnpm" in l)
+        self.assertIn("up to", row)
+        self.assertEqual(header.index("modified"), row.index("today"))
+        self.assertEqual(header.index("size") + len("size"), row.index("today") - 2)
 
     def test_cli_total_skips_upper_bound(self):
         write(os.path.join(self.home, ".cache", "uv", "f"), "x" * 5000)
