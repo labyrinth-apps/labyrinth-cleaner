@@ -575,6 +575,9 @@ class DotCacheTests(GeneralBase):
         self.assertFalse(d["dotcache:torch"].preselect)
         self.assertEqual((d["dotcache:mystery"].tier, d["dotcache:mystery"].warning),
                          (core.CAUTION, general.UNKNOWN_TOOL_CACHE_WARNING))
+        self.assertEqual(d["dotcache:mystery"].cost, "Depends on the tool that made it.")
+        self.assertEqual(d["dotcache:mystery"].restore, "Depends on the tool that made it.")
+        self.assertEqual(d["dotcache:torch"].restore, "Downloaded again on demand.")
         hf = d["dotcache:huggingface"]
         self.assertEqual((hf.kind, hf.argv),
                          ("paths", ["rm", "-rf", "--", os.path.join(dc, "huggingface", "hub"),
@@ -663,6 +666,8 @@ class DotCacheTests(GeneralBase):
             it = self.by_key(self.scan())["dotcache:huggingface"]
         self.assertEqual((it.tier, it.kind, it.preselect), (core.PROTECTED, "info", False))
         self.assertIn("refused by safety gate", it.note)
+        self.assertIsNone(it.argv)
+        self.assertIsNone(it.to_dict()["command"])
 
     def test_case_variants_never_offered_whole_and_refused(self):
         dc = self.dc()

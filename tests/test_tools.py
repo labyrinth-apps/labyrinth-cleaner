@@ -145,10 +145,13 @@ class ToolsTests(unittest.TestCase):
         env = self.env(runner=FakeRunner(returncode=2, stderr="boom"))
         it = self.items(env)["tool:pnpm"]
         self.assertEqual(tools.run_item(it, env, self.home),
-                         (False, "boom Run `pnpm store prune` in Terminal."))
+                         (False, "boom. Run `pnpm store prune` in Terminal."))
+        env = self.env(runner=FakeRunner(returncode=2, stderr="boom.\n"))
+        self.assertEqual(tools.run_item(it, env, self.home),
+                         (False, "boom. Run `pnpm store prune` in Terminal."))
         env = self.env(runner=FakeRunner(returncode=3))
         self.assertEqual(tools.run_item(it, env, self.home),
-                         (False, "exit 3 Run `pnpm store prune` in Terminal."))
+                         (False, "exit 3. Run `pnpm store prune` in Terminal."))
 
     def test_execute_runs_through_tool_runner_only(self):
         runner = FakeRunner()

@@ -258,7 +258,7 @@ def scan_app_caches(cfg: core.Config, env: core.Env, warnings: Optional[list] = 
 # ---------------------------------------------------------------- ~/.cache
 
 UNKNOWN_TOOL_CACHE_WARNING = "A tool may use this cache."
-UNKNOWN_TOOL_CACHE_COST = ("NO COST", "The tool rebuilds it as needed.")
+UNKNOWN_TOOL_CACHE_COST = ("NO COST", "Depends on the tool that made it.")
 HF_DOWNLOAD_DIRS = ("hub", "datasets", "xet")
 # uv belongs to its own item (a tool command), devclean is this app's own folder.
 DOT_CACHE_SKIP = frozenset({"devclean", "uv"})   # compared casefolded
@@ -301,7 +301,7 @@ def scan_dot_cache(cfg: core.Config, env: core.Env, warnings: Optional[list] = N
         if signin_like(name):
             tier, warning = CAUTION, SIGNIN_WARNING
         kw = dict(key=f"dotcache:{name}", category="Cache", label=label, tier=tier, path=path,
-                  preselect=(tier == SAFE), warning=warning, meta={"dot_cost": (tag, cost)})
+                  preselect=(tier == SAFE), warning=warning, meta={"dot_cost": (tag, cost), **({} if known else {"dot_unknown": True})})
         if low == "huggingface":
             try:
                 kids = sorted(os.listdir(path))

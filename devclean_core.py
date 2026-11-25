@@ -1396,6 +1396,8 @@ def explain_for(it: Item, home: Optional[str] = None) -> tuple:
         restore = "Nothing to get back: they can't run any more."
     elif it.key in RESTORE_FIXED:
         restore = RESTORE_FIXED[it.key]
+    elif it.key.startswith("dotcache:") and it.meta.get("dot_unknown"):
+        restore = "Depends on the tool that made it."
     elif it.category == "Cache":          # the fixed download caches
         restore = "Downloaded again on demand."
     elif it.category == "Flutter" or it.key.endswith("/.next"):
@@ -1596,6 +1598,7 @@ def scan(cfg: Config, sim: Optional[SimctlProvider] = None,
                 _validate_paths_of(it, cfg)
             except UnsafeTarget as e:
                 it.tier, it.kind, it.preselect = PROTECTED, "info", False
+                it.argv = None
                 it.note = f"refused by safety gate: {e}"
 
     for it in items:

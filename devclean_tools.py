@@ -96,8 +96,8 @@ def run_item(it, env, home: str) -> tuple:
     except subprocess.TimeoutExpired:
         return False, BUSY(name)
     except (OSError, subprocess.SubprocessError) as e:
-        return False, f"{str(e) or name + ' failed'} Run `{_command(name)}` in Terminal."
+        return False, f"{(str(e) or name + ' failed').rstrip('. \t\r\n')}. Run `{_command(name)}` in Terminal."
     if r.returncode != 0:
         err = (r.stderr or "").strip() or f"exit {r.returncode}"
-        return False, f"{err} Run `{_command(name)}` in Terminal."
+        return False, f"{err.rstrip('. \t\r\n')}. Run `{_command(name)}` in Terminal."
     return True, "ok"

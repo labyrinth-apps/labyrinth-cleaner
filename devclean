@@ -59,7 +59,7 @@ def print_table(res, numbered, selected):
         label = trunc(f"{it.category}: {it.label}", 46)
         note = f"{it.note} (moves to Trash)" if it.kind in core.TRASH_KINDS else it.note
         line = (f"{num if num else '':>3}  {mark} {it.tier:8} {label:46} "
-                f"{('up to ' if it.meta.get('upper_bound') else '') + human(it.size):>9}  {age(it.mtime):10}  {note}")
+                f"{('up to ' if it.meta.get('upper_bound') else '') + human(it.size):>12}  {age(it.mtime):10}  {note}")
         print(c(line, TIER_COLOR.get(it.tier, "0")))
         if it.warning:
             print(c(f"{'':8} ! {it.warning}", "31"))
