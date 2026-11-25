@@ -515,6 +515,12 @@ def _general():
     return devclean_general
 
 
+def _tools():
+    """devclean_tools, imported on first use (it imports this module)."""
+    import devclean_tools
+    return devclean_tools
+
+
 def _brew():
     """devclean_brew, imported on first use (it imports this module)."""
     import devclean_brew
@@ -573,6 +579,10 @@ class Env:
     docker: Optional[Callable] = None
     # The Homebrew runner (devclean_brew.BrewRunner); None = no Homebrew, or fixture mode.
     brew: Optional[Any] = None
+    # The real path of a command-line tool by name ("uv", "pnpm"), or None.
+    find_tool: Callable[[str], Optional[str]] = lambda name: None
+    # Runs a tool's own clean command (never the general runner); None = no tools can run.
+    tool_runner: Optional[Callable] = None
     # path -> {"last_used": float|None, "size": int|None, "archs": list|None}; missing = unknown.
     app_metadata: Callable[[list], dict] = lambda paths: {}
     apple_silicon: Callable[[], bool] = lambda: False
@@ -590,7 +600,8 @@ class Env:
                    app_metadata=_real_app_metadata, apple_silicon=_real_apple_silicon,
                    running_app_paths=_real_running_app_paths, user_uid=os.getuid,
                    active_developer_dir=_real_active_developer_dir,
-                   docker=subprocess.run if shutil.which("docker") else None)
+                   docker=subprocess.run if shutil.which("docker") else None,
+                   find_tool=lambda n: _tools().find_tool(n, home), tool_runner=subprocess.run)
 
     @classmethod
     def fake(cls, **overrides) -> "Env":
@@ -601,7 +612,7 @@ def fixture_env(cfg: Config, xcode_running: Callable[[], bool], fixture: bool) -
     """The env a CLI/UI run uses. Fixture mode never gets a docker runner, even when the
     config points at the real home (--simctl-fixture without --home)."""
     env = dataclasses.replace(default_env(cfg), xcode_running=xcode_running)
-    return dataclasses.replace(env, docker=None, brew=None) if fixture else env
+    return dataclasses.replace(env, docker=None, brew=None, tool_runner=None) if fixture else env
 
 
 def default_env(cfg: Config) -> Env:
@@ -1343,6 +1354,8 @@ def cost_for(it: Item) -> tuple:
             else "Homebrew doesn't use them."
     if it.key.startswith("brew:pkg:"):
         return "REINSTALL", it.note
+    if it.kind == "tool":
+        return _tools().COSTS[it.key[5:]]
     return "?", it.note
 
 
@@ -1482,8 +1495,8 @@ def fixture_runner(argv: list, **kw) -> subprocess.CompletedProcess:
     """Runner for fixture mode: never touches the real simulators, Trash or Docker."""
     if argv and argv[0] in ("xcrun", "osascript", "docker"):
         return subprocess.CompletedProcess(argv, 1, "", f"fixture mode: {argv[0]} disabled")
-    if argv and os.path.basename(argv[0]) == "brew":
-        return subprocess.CompletedProcess(argv, 1, "", "fixture mode: brew disabled")
+    if argv and os.path.basename(argv[0]) in ("brew", "uv", "pnpm"):
+        return subprocess.CompletedProcess(argv, 1, "", f"fixture mode: {os.path.basename(argv[0])} disabled")
     return subprocess.run(argv, **kw)
 
 
@@ -1541,11 +1554,12 @@ def scan(cfg: Config, sim: Optional[SimctlProvider] = None,
     items += g.scan_docker(cfg, env)
     brew_items, brew_bytes = _brew().scan_brew(cfg, env, warnings)
     items += brew_items
+    items += _tools().scan_tools(cfg, env)
     items += scan_info(cfg)
 
     if measure:
         def size_of(it: Item):
-            if (it.kind in ("path", "info", "simdevice", "trash") and it.path and it.size is None
+            if (it.kind in ("path", "info", "simdevice", "trash", "tool") and it.path and it.size is None
                     and not it.key.startswith(("app:", "brew:"))
                     and os.path.isdir(it.path)):
                 it.size = du_bytes(it.path)
@@ -1750,6 +1764,7 @@ RESCANNERS = {
     "empty-trash": lambda key, cfg, sim, env, now: _general().scan_trash(cfg),
     "docker:": lambda key, cfg, sim, env, now: _general().scan_docker(cfg, env),
     # A package's gate reads `info` only: a slow `cleanup -n` must not refuse every package.
+    "tool:": lambda key, cfg, sim, env, now: _tools().scan_tools(cfg, env),
     "brew:pkg:": lambda key, cfg, sim, env, now: _brew().scan_brew(cfg, env, [], sizes=False,
                                                                    full=False)[0],
     "brew:": lambda key, cfg, sim, env, now: _brew().scan_brew(cfg, env, [], sizes=False)[0],
@@ -1956,6 +1971,9 @@ def validate_item(it: Item, cfg: Config, sim: Optional[SimctlProvider] = None,
     if it.kind == "brew":
         _brew().validate(it, fresh, env)
         return
+    if it.kind == "tool":
+        _tools().validate(it, fresh, env)
+        return
     raise UnsafeTarget(f"unknown item kind {it.kind}")
 
 
@@ -2059,6 +2077,13 @@ def execute_item(it: Item, cfg: Config, sim: Optional[SimctlProvider] = None,
         return False, f"REFUSED: fixture mode never runs {it.argv[0] if it.argv else it.kind}"
     if it.kind == "docker" and env.docker is None:
         return False, "REFUSED: docker is not available"
+    if it.kind == "tool":
+        # uv and pnpm only ever run through env.tool_runner (via run_item), never `runner`.
+        name = it.key[5:]
+        if runner is fixture_runner:
+            return False, f"REFUSED: fixture mode never runs {name}"
+        if env.tool_runner is None:
+            return False, f"REFUSED: {name} is not available"
     if it.kind == "brew":
         # Homebrew only ever runs through env.brew (via run_item), never the general runner.
         if runner is fixture_runner:
@@ -2071,6 +2096,8 @@ def execute_item(it: Item, cfg: Config, sim: Optional[SimctlProvider] = None,
         return False, f"REFUSED: {e}"
     if it.kind == "brew":
         return _brew().run_item(it, env)
+    if it.kind == "tool":
+        return _tools().run_item(it, env, cfg.home)
     if it.kind == "trash":
         argv = [helper, "--home", cfg.home, it.path]
     else:
