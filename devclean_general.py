@@ -261,7 +261,7 @@ UNKNOWN_TOOL_CACHE_WARNING = "A tool may use this cache."
 UNKNOWN_TOOL_CACHE_COST = ("NO COST", "The tool rebuilds it as needed.")
 HF_DOWNLOAD_DIRS = ("hub", "datasets", "xet")
 # uv belongs to its own item (a tool command), devclean is this app's own folder.
-DOT_CACHE_SKIP = frozenset({"devclean", "uv"})
+DOT_CACHE_SKIP = frozenset({"devclean", "uv"})   # compared casefolded
 # name -> (label, tier, cost tag or None for "<size> DL", cost text)
 DOT_CACHE_KNOWN = {
     "puppeteer": ("Puppeteer browsers", SAFE, "~1 MIN",
@@ -291,19 +291,24 @@ def scan_dot_cache(cfg: core.Config, env: core.Env, warnings: Optional[list] = N
     items = []
     for name in names:
         path = os.path.join(root, name)
-        if (name in DOT_CACHE_SKIP or os.path.islink(path) or not os.path.isdir(path)
+        low = name.casefold()
+        if (low in DOT_CACHE_SKIP or os.path.islink(path) or not os.path.isdir(path)
                 or os.path.realpath(path) in fixed):
             continue
-        known = DOT_CACHE_KNOWN.get(name)
+        known = DOT_CACHE_KNOWN.get(low)
         label, tier, tag, cost = known or (name, CAUTION, *UNKNOWN_TOOL_CACHE_COST)
         warning = "" if known else UNKNOWN_TOOL_CACHE_WARNING
         if signin_like(name):
             tier, warning = CAUTION, SIGNIN_WARNING
         kw = dict(key=f"dotcache:{name}", category="Cache", label=label, tier=tier, path=path,
                   preselect=(tier == SAFE), warning=warning, meta={"dot_cost": (tag, cost)})
-        if name == "huggingface":
-            dirs = [os.path.join(path, d) for d in HF_DOWNLOAD_DIRS
-                    if os.path.isdir(os.path.join(path, d))
+        if low == "huggingface":
+            try:
+                kids = sorted(os.listdir(path))
+            except OSError:
+                continue
+            dirs = [os.path.join(path, d) for want in HF_DOWNLOAD_DIRS for d in kids
+                    if d.casefold() == want and os.path.isdir(os.path.join(path, d))
                     and not os.path.islink(os.path.join(path, d))]
             if not dirs:
                 continue

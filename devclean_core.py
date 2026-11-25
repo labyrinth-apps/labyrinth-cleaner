@@ -1663,16 +1663,19 @@ def validate_path(path: str, cfg: Config) -> str:
         return real
     # 4d. ~/.cache: a direct child, except this app's own folder, uv's (its own item) and
     # Hugging Face (only its download folders, below). Never through a symlinked ~/.cache.
+    # Names compare casefolded: on a case-insensitive volume ~/.cache/HuggingFace is it too.
     g = _general()
     dot_cache = cfg.p(".cache")
-    if (not os.path.islink(dot_cache) and parent == os.path.realpath(dot_cache)
-            and base not in g.DOT_CACHE_SKIP and base != "huggingface"):
-        return real
-    # 4e. Hugging Face: only its hub, datasets and xet folders, never the login token
-    hf = os.path.join(dot_cache, "huggingface")
-    if (not os.path.islink(dot_cache) and not os.path.islink(hf)
-            and parent == os.path.realpath(hf) and base in g.HF_DOWNLOAD_DIRS):
-        return real
+    dc_real = os.path.realpath(dot_cache).casefold()
+    if not os.path.islink(dot_cache):
+        if (parent.casefold() == dc_real and base.casefold() not in g.DOT_CACHE_SKIP
+                and base.casefold() != "huggingface"):
+            return real
+        # 4e. Hugging Face: only its hub, datasets and xet folders, never the login token
+        if (os.path.basename(parent).casefold() == "huggingface"
+                and os.path.dirname(parent).casefold() == dc_real
+                and not os.path.islink(parent) and base.casefold() in g.HF_DOWNLOAD_DIRS):
+            return real
     # 4c. Logs: a direct child of ~/Library/Logs or its DiagnosticReports folder
     logs = os.path.realpath(cfg.p("Library/Logs"))
     if (parent == logs and base != "DiagnosticReports") or parent == os.path.join(logs, "DiagnosticReports"):

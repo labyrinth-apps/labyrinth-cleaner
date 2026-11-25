@@ -632,6 +632,58 @@ class DotCacheTests(GeneralBase):
         with self.assertRaises(core.UnsafeTarget):
             core.validate_item(hf, self.cfg, env=core.Env.fake())
 
+    def _hf_item(self):
+        write(os.path.join(self.dc(), "huggingface", "hub", "m.bin"), "x" * 4096)
+        return self.by_key(self.scan())["dotcache:huggingface"]
+
+    def test_paths_gate_direct_checks(self):
+        hf = self._hf_item()
+        hub = hf.argv[3]
+        core._validate_paths_of(hf, self.cfg)          # the real item passes
+        for argv in (hf.argv + [os.path.join(self.home, "Documents")],   # (a) foreign path
+                     ["rm", "-rf", "--"],                                 # (b) nothing to delete
+                     ["rm", "-r", "--", hub]):                            # (c) wrong prefix
+            hf.argv = argv
+            with self.assertRaises(core.UnsafeTarget, msg=argv):
+                core._validate_paths_of(hf, self.cfg)
+            # validate_item with the rescan returning the same forged item reaches the gate
+            with mock.patch.object(core, "rescan_item", return_value=hf):
+                with self.assertRaises(core.UnsafeTarget, msg=argv):
+                    core.validate_item(hf, self.cfg, env=core.Env.fake())
+
+    def test_scan_gate_turns_failing_paths_item_into_refused_row(self):
+        hf = self._hf_item()
+        real = core.validate_path
+
+        def fake(path, cfg):
+            if path.endswith(os.path.join("huggingface", "hub")):
+                raise core.UnsafeTarget("nope")
+            return real(path, cfg)
+        with mock.patch.object(core, "validate_path", fake):
+            it = self.by_key(self.scan())["dotcache:huggingface"]
+        self.assertEqual((it.tier, it.kind, it.preselect), (core.PROTECTED, "info", False))
+        self.assertIn("refused by safety gate", it.note)
+
+    def test_case_variants_never_offered_whole_and_refused(self):
+        dc = self.dc()
+        write(os.path.join(dc, "HuggingFace", "token"), "hf_secret")
+        write(os.path.join(dc, "HuggingFace", "hub", "m.bin"), "x" * 4096)
+        write(os.path.join(dc, "DevClean", "f"), "x")
+        write(os.path.join(dc, "UV", "f"), "x")
+        d = self.by_key(self.scan())
+        self.assertNotIn("dotcache:DevClean", d)
+        self.assertNotIn("dotcache:UV", d)
+        hf = d["dotcache:HuggingFace"]
+        self.assertEqual((hf.kind, hf.argv),
+                         ("paths", ["rm", "-rf", "--", os.path.join(dc, "HuggingFace", "hub")]))
+        for n in ("HuggingFace", "DevClean", "UV"):
+            with self.assertRaises(core.UnsafeTarget, msg=n):
+                core.validate_path(os.path.join(dc, n), self.cfg)
+        write(os.path.join(dc, "HuggingFace", "HUB", "f"), "x")
+        core.validate_path(os.path.join(dc, "HuggingFace", "HUB"), self.cfg)
+        with self.assertRaises(core.UnsafeTarget):
+            core.validate_path(os.path.join(dc, "HuggingFace", "token"), self.cfg)
+
     def test_validate_path_rules_4d_4e(self):
         dc = self.dc()
         for n in ("puppeteer", "devclean", "uv"):
