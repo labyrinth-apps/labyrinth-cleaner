@@ -630,6 +630,8 @@ const MAX_POLL_FAILS = 10;
 function rowsOf(group) { return S.data.rows.filter(r => r.group === group); }
 function selectedRows() { return S.data ? S.data.rows.filter(r => S.sel.has(r.id)) : []; }
 // An upper bound (pnpm's whole store) says "up to" and adds nothing to a total.
+// A size as shown: an upper bound reads "up to ...".
+function sizeText(x) { return (x.upper_bound ? "up to " : "") + human(x.size); }
 function sum(rows) { return rows.reduce((a, r) => a + (r.upper_bound ? 0 : (r.size || 0)), 0); }
 // Moving to the Trash frees nothing until the Trash is emptied.
 // Both kinds go to the Trash: "trash" through the helper, "finder-trash" through Finder.
@@ -850,7 +852,7 @@ function rowEl(g, r, max) {
     "aria-controls": wid, "aria-label": "What happens: " + r.label, title: "What happens", text: "›",
     onclick: e => toggleWhat(r.id, e.currentTarget, wid) });
   // A kept Homebrew row (a service, a pinned package) isn't measured: no size, not "?".
-  const size = el("div", { class: "size" }, kept && g.id === "brew" && r.size == null ? null : (r.upper_bound ? "up to " : "") + human(r.size));
+  const size = el("div", { class: "size" }, kept && g.id === "brew" && r.size == null ? null : sizeText(r));
   if (isTrashMove(r)) size.append(el("span", { class: "totrash", text: "Moves to Trash" }));
   else if (!kept) size.append(el("div", { class: "mini" }, el("div", { style: "width:" + pct.toFixed(1) + "%;background:" + g.color })));
   size.append(el("small", { text: age(r.mtime) }));
@@ -961,7 +963,7 @@ async function openModal() {
       list.append(el("div", { class: "mrow" },
         el("span", { class: "l" }, m.label, r.group === "check" ? el("span", { style: "color:var(--check)", text: " · check first" }) : null,
           last && r.warning ? el("span", { class: "msg", text: "⚠ " + r.warning }) : null),
-        el("span", { class: "c", text: human(m.size) })));
+        el("span", { class: "c", text: sizeText(m) })));
     });
   };
   section("Deleted permanently", toDelete);
@@ -1110,7 +1112,7 @@ async function pollJob() {
       el("span", { class: "l" }, el("span", { class: "st " + it.status, text: STATUS_ICON[it.status] || "?" }), it.label,
         it.status === "trashed" ? el("span", { style: "color:var(--review)", text: " · Moved to Trash" }) : null,
         it.message ? el("span", { class: "msg", text: it.message.replace(/^REFUSED: /, "Refused: ") }) : null),
-      el("span", { class: "c", text: human(it.size) })));
+      el("span", { class: "c", text: sizeText(it) })));
   }
   if (job.state !== "done") { setTimeout(pollJob, 500); return; }
   finishJob(job);
@@ -1130,7 +1132,7 @@ async function finishJob(job) {
   const problems = job.items.filter(i => i.status !== "done" && i.status !== "trashed");
   const trashed = job.items.filter(i => i.status === "trashed").length;
   // Only real deletes free space; moving to the Trash doesn't.
-  const expected = job.items.filter(i => i.status === "done").reduce((a, i) => a + (i.size || 0), 0);
+  const expected = job.items.filter(i => i.status === "done" && !i.upper_bound).reduce((a, i) => a + (i.size || 0), 0);
   await new Promise(r => setTimeout(r, 600));
   S.job = null;
   hideModal();

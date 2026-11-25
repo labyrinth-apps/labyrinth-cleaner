@@ -271,6 +271,7 @@ class UIServer:
             job = {"job_id": job_id, "state": "running",
                    "free_before": core.free_space(self.cfg.home),
                    "items": [{"key": it.key, "label": it.label, "size": it.size,
+                              "upper_bound": bool(it.meta.get("upper_bound")),
                               "status": "pending", "message": ""} for it in chosen]}
             self._jobs[job_id] = job
             self._latest = None          # the same scan can never be cleaned twice

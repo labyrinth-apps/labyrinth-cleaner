@@ -1037,13 +1037,14 @@ BREW_TAIL = r"""
 UPPER_TAIL = r"""
 ;(async () => {
   const row = (id, extra) => Object.assign({ id, group: "safe", kind: "path", keys: [id], size: 1000, warning: "",
-    members: [{ key: id, label: id, size: 1000, deletes: "" }], label: id, cost: "", restore: "", deletes: "",
-    category: "Cache" }, extra);
+    members: [{ key: id, label: id, size: (extra || {}).size || 1000, deletes: "", upper_bound: !!(extra || {}).upper_bound }],
+    label: id, cost: "", restore: "", deletes: "", category: "Cache" }, extra);
   S.data = { scan_id: "s1", trash_helper: true, disk: { free: 10, total: 100 }, small_bytes: 0, segments: [],
     rows: [row("a"), row("tool:pnpm", { size: 4000000000, upper_bound: true, kind: "tool" }),
       row("browser:x:caches", { category: "Browser", segment: "browsers" })] };
   const find = (n, f) => { const out = []; (function w(x) { if (!x) return; if (f(x)) out.push(x); (x.kids || []).forEach(w); })(n); return out; };
   const res = {};
+  const textOf = n => n.text !== undefined ? n.text : (n.textContent || "") + (n.kids || []).map(textOf).join("");
   const g = GROUPS.find(x => x.id === "safe");
   const card = groupCard(g, rowsOf("safe"));
   res.sizes = find(card, x => x.className === "size").map(x => (x.kids || []).filter(k => typeof k === "string")[0]);
@@ -1052,6 +1053,17 @@ UPPER_TAIL = r"""
   S.sel = new Set(["tool:pnpm", "a"]);
   res.sel_total_mixed = sum(selectedRows());
   res.browsers_color = SEG_COLOR.browsers; res.icon = ICON.Browser;
+  S.sel = new Set(["tool:pnpm", "a"]); await openModal();
+  res.modal = find($("mlist"), x => x.className === "c").map(textOf);
+  closeModal();
+  // a finished job: the upper-bound item doesn't count toward "expected"
+  scan = async () => ({ disk: { free: 1000 } });
+  const job = { free_before: 1000, free_now: 1000, items: [
+    { key: "tool:pnpm", label: "pnpm", size: 4000000000, upper_bound: true, status: "done", message: "" }] };
+  S.job = "j"; await finishJob(job);
+  res.sub_upper = textOf($("bSub"));
+  job.items[0].upper_bound = false; S.job = "j"; await finishJob(job);
+  res.sub_exact = textOf($("bSub"));
   console.log(JSON.stringify(res));
 })().catch(e => { console.error(e && e.stack || e); process.exit(1); });
 """
@@ -1211,6 +1223,10 @@ class PageTests(unittest.TestCase):
         self.assertIn("up to " + core.human(4000000000), r["sizes"])
         self.assertEqual(r["sel_total_upper"], 0)
         self.assertEqual(r["sel_total_mixed"], 1000)
+        self.assertIn("up to " + core.human(4000000000), r["modal"])
+        self.assertIn(core.human(1000), r["modal"])
+        self.assertNotIn("lazily", r["sub_upper"])
+        self.assertIn("lazily", r["sub_exact"])
         self.assertEqual(r["browsers_color"], "var(--browsers)")
         self.assertEqual(r["icon"], "Br")
 

@@ -118,7 +118,8 @@ def _row(rid, group, members, label, path):
         "restore": lead.restore,
         "kind": lead.kind,
         "preselect": False,          # the page never ticks anything for the user
-        "members": [{"key": m.key, "label": m.label, "size": m.size, "deletes": m.deletes}
+        "members": [{"key": m.key, "label": m.label, "size": m.size, "deletes": m.deletes,
+                     "upper_bound": bool(m.meta.get("upper_bound"))}
                     for m in members],
     }
 

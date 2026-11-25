@@ -289,7 +289,10 @@ devclean menubar uninstall
 - `~/Library/Developer/Xcode/Archives`, `~/Downloads`, `~/.Trash`, `~/Desktop`, `~/Pictures`, `~/Movies`, `~/Music`, `~/.ssh`, `~/.android/avd`, and any folder that *contains* one of these (for example `~/Library/Developer/Xcode`). Archives and Downloads files can only be moved to the Trash.
 - `$HOME`, `/`, symlinks, and anything outside `$HOME`.
 - Everything under `~/Documents`, except folders named `build`, `.dart_tool`, `node_modules` or `.next` that sit inside one of your project folders next to a `pubspec.yaml` (for `build` and `.dart_tool`) or a `package.json` (for `node_modules` and `.next`). A web project's `build/` is never touched.
-- Inside `~/Library/Application Support`, only the exact AI model and cache folder names of a known browser's data folder may be deleted, never in `System Profile` or `Guest Profile`, and never while that browser runs.
+- Inside `~/Library/Application Support`, only these exact folder names in a known browser's data folder may be deleted, never in `System Profile` or `Guest Profile`, and never while that browser runs:
+  - models: `OptGuideOnDeviceModel`, `OptGuideOnDeviceClassifierModel`, `optimization_guide_model_store`, `OnDeviceHeadSuggestModel`, `screen_ai`, `SODA`, `SODALanguagePacks`;
+  - shared: `GrShaderCache`, `ShaderCache`, `GraphiteDawnCache`;
+  - per profile: `Cache`, `Code Cache`, `GPUCache`, `DawnGraphiteCache`, `DawnWebGPUCache`.
 - `~/.cache/huggingface` is never deleted whole, and its login is kept.
 - The uv and pnpm commands are pinned like Docker's: exactly `uv cache clean` and `pnpm store prune`, run from the home folder with a minimal environment.
 - Files moved to the Trash must be regular files (not folders or symlinks) directly in `~/Downloads` or one level down, must still match their rule when re-checked just before the move, and must be the same file the scan saw (same inode, size and modification time). A file written to since it was last opened counts as used then.
