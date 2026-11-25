@@ -147,6 +147,7 @@ class Config:
              "old bottles/downloads"),
             ("playwright-cache", "Playwright browsers", "Library/Caches/ms-playwright", SAFE,
              "`npx playwright install` restores"),
+            ("pip-cache", "pip cache", "Library/Caches/pip", SAFE, "re-downloaded on demand"),
         ]
 
     @property
@@ -345,7 +346,7 @@ class Item:
     size: Optional[int] = None           # bytes; None = unknown
     mtime: Optional[float] = None        # epoch seconds
     preselect: bool = False
-    kind: str = "path"                   # path | runtime | simdevice | simctl-unavailable | trash | info
+    kind: str = "path"                   # path | paths | runtime | simdevice | simctl-unavailable | trash | info
     meta: dict = field(default_factory=dict)
     cost_tag: str = ""                   # NO COST, ~2 MIN, 9.9 GB DL ...
     cost: str = ""                       # plain-language cost of deleting it
@@ -1276,6 +1277,7 @@ FIXED_COSTS = {
     "playwright-cache": ("~1 MIN", "Run `npx playwright install` before the next e2e run."),
     "gradle-build-cache": ("~2 MIN", "The first Android build after this takes longer."),
     "shorebird-cache": ("~2 MIN", "Re-downloaded on the next shorebird command."),
+    "pip-cache": ("NO COST", "Re-downloaded on demand."),
 }
 
 
@@ -1291,6 +1293,9 @@ def cost_for(it: Item) -> tuple:
         return "", it.note
     if it.key in FIXED_COSTS:
         return FIXED_COSTS[it.key]
+    if it.key.startswith("dotcache:") and it.meta.get("dot_cost"):
+        tag, text = it.meta["dot_cost"]
+        return (tag or f"{human(it.size)} DL"), text
     if it.key.startswith("gradle:"):
         return "~2 MIN", f"Re-downloaded only if a project still uses Gradle {it.key[7:]}."
     if it.key == "derived-data":
@@ -1355,7 +1360,10 @@ def explain_for(it: Item, home: Optional[str] = None) -> tuple:
     if not it.offerable:
         return "", ""
     home = home or os.path.realpath(os.path.expanduser("~"))
-    deletes = tilde(it.path, home) if it.kind in ("path", "trash", "finder-trash") else (it.command or "")
+    if it.kind == "paths":
+        deletes = ", ".join(tilde(p, home) for p in (it.argv or [])[3:])
+    else:
+        deletes = tilde(it.path, home) if it.kind in ("path", "trash", "finder-trash") else (it.command or "")
     if it.kind in ("trash", "finder-trash"):
         restore = (DOWNLOAD_RESTORE if it.key.startswith(("download:", "app:"))
                    else TRASH_RESTORE)
@@ -1524,6 +1532,7 @@ def scan(cfg: Config, sim: Optional[SimctlProvider] = None,
     items += scan_downloads(cfg, env, now)
     g = _general()
     items += g.scan_app_caches(cfg, env, warnings)
+    items += g.scan_dot_cache(cfg, env, warnings)
     app_items, app_bytes = _apps().scan_apps(cfg, env, now, warnings)
     items += app_items
     items += g.scan_logs(cfg, now)
@@ -1544,15 +1553,17 @@ def scan(cfg: Config, sim: Optional[SimctlProvider] = None,
                     it.mtime = mtime_of(it.path)
             elif it.kind == "simctl-unavailable":
                 it.size = sum(du_bytes(p) or 0 for p in it.meta.get("paths", []) if os.path.isdir(p))
+            elif it.kind == "paths" and it.size is None:
+                it.size = sum(du_bytes(p) or 0 for p in (it.argv or [])[3:] if os.path.isdir(p))
         with ThreadPoolExecutor(max_workers=8) as ex:
             list(ex.map(size_of, items))
 
     # Assign every offerable path item through the gate now, so the table
     # never shows something the executor would refuse.
     for it in items:
-        if it.offerable and it.kind == "path":
+        if it.offerable and it.kind in ("path", "paths"):
             try:
-                validate_path(it.path, cfg)
+                _validate_paths_of(it, cfg)
             except UnsafeTarget as e:
                 it.tier, it.kind, it.preselect = PROTECTED, "info", False
                 it.note = f"refused by safety gate: {e}"
@@ -1584,6 +1595,18 @@ def deny_paths(cfg: Config) -> list:
     """Never rm'd, nor any folder containing them. Android images used by an emulator
     are no longer here: they are offered with a warning that validate_item re-checks."""
     return [os.path.realpath(p) for p in cfg.static_deny()]
+
+
+def _validate_paths_of(it: Item, cfg: Config) -> None:
+    """The gate for a "path" item, or a "paths" item (argv rm -rf -- p1 p2 ...): every
+    path goes through validate_path. Raises UnsafeTarget."""
+    if it.kind == "paths":
+        if (it.argv or [])[:3] != ["rm", "-rf", "--"] or len(it.argv) <= 3:
+            raise UnsafeTarget("unexpected delete command")
+        for p in it.argv[3:]:
+            validate_path(p, cfg)
+    else:
+        validate_path(it.path, cfg)
 
 
 def validate_path(path: str, cfg: Config) -> str:
@@ -1637,6 +1660,18 @@ def validate_path(path: str, cfg: Config) -> str:
     if (parent == os.path.realpath(cfg.p("Library/Caches"))
             and not _general().is_system_cache(base)
             and base.casefold() != _general().OWN_CACHE.casefold()):
+        return real
+    # 4d. ~/.cache: a direct child, except this app's own folder, uv's (its own item) and
+    # Hugging Face (only its download folders, below). Never through a symlinked ~/.cache.
+    g = _general()
+    dot_cache = cfg.p(".cache")
+    if (not os.path.islink(dot_cache) and parent == os.path.realpath(dot_cache)
+            and base not in g.DOT_CACHE_SKIP and base != "huggingface"):
+        return real
+    # 4e. Hugging Face: only its hub, datasets and xet folders, never the login token
+    hf = os.path.join(dot_cache, "huggingface")
+    if (not os.path.islink(dot_cache) and not os.path.islink(hf)
+            and parent == os.path.realpath(hf) and base in g.HF_DOWNLOAD_DIRS):
         return real
     # 4c. Logs: a direct child of ~/Library/Logs or its DiagnosticReports folder
     logs = os.path.realpath(cfg.p("Library/Logs"))
@@ -1705,6 +1740,7 @@ RESCANNERS = {
     "download:": _rescan_download,
     "archive:": lambda key, cfg, sim, env, now: scan_archives(cfg),
     "appcache:": lambda key, cfg, sim, env, now: _general().scan_app_caches(cfg, env),
+    "dotcache:": lambda key, cfg, sim, env, now: _general().scan_dot_cache(cfg, env),
     # The gate never uses sizes: no du for every app on each ticked app.
     "app:": lambda key, cfg, sim, env, now: _apps().scan_apps(cfg, env, now, sizes=False)[0],
     "log:": lambda key, cfg, sim, env, now: _general().scan_logs(cfg, now),
@@ -1723,6 +1759,7 @@ RESCANNERS = {
     "cocoapods-cache": _rescan_fixed,
     "homebrew-cache": _rescan_fixed,
     "playwright-cache": _rescan_fixed,
+    "pip-cache": _rescan_fixed,
 }
 
 
@@ -1885,8 +1922,8 @@ def validate_item(it: Item, cfg: Config, sim: Optional[SimctlProvider] = None,
         raise UnsafeTarget(SITUATION_CHANGED)   # a warning the user never saw
     if (fresh.kind, fresh.path, fresh.argv) != (it.kind, it.path, it.argv):
         raise UnsafeTarget(SITUATION_CHANGED)
-    if it.kind == "path":
-        validate_path(it.path, cfg)
+    if it.kind in ("path", "paths"):
+        _validate_paths_of(it, cfg)
         return
     if it.kind == "runtime":
         uuid = it.key.split(":", 1)[1]
@@ -2034,7 +2071,7 @@ def execute_item(it: Item, cfg: Config, sim: Optional[SimctlProvider] = None,
     if it.kind == "trash":
         argv = [helper, "--home", cfg.home, it.path]
     else:
-        argv = ["rm", "-rf", "--", it.path] if it.kind == "path" else it.argv
+        argv = ["rm", "-rf", "--", it.path] if it.kind == "path" else it.argv   # "paths": its own argv
     if it.kind == "docker":
         # Docker only ever runs through env.docker, never the general runner.
         try:

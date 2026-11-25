@@ -255,6 +255,64 @@ def scan_app_caches(cfg: core.Config, env: core.Env, warnings: Optional[list] = 
     return items
 
 
+# ---------------------------------------------------------------- ~/.cache
+
+UNKNOWN_TOOL_CACHE_WARNING = "A tool may use this cache."
+UNKNOWN_TOOL_CACHE_COST = ("NO COST", "The tool rebuilds it as needed.")
+HF_DOWNLOAD_DIRS = ("hub", "datasets", "xet")
+# uv belongs to its own item (a tool command), devclean is this app's own folder.
+DOT_CACHE_SKIP = frozenset({"devclean", "uv"})
+# name -> (label, tier, cost tag or None for "<size> DL", cost text)
+DOT_CACHE_KNOWN = {
+    "puppeteer": ("Puppeteer browsers", SAFE, "~1 MIN",
+                  "Puppeteer downloads its browser again on the next run."),
+    "huggingface": ("Hugging Face models", CAUTION, None,
+                    "Downloaded AI models. Scripts that use them download them again, which can "
+                    "take a long time. Your huggingface-cli login is kept."),
+    "torch": ("PyTorch models", CAUTION, None,
+              "Downloaded AI models. Scripts that use them download them again, which can "
+              "take a long time."),
+    "pip": ("pip cache", SAFE, "NO COST", "Re-downloaded on demand."),
+}
+
+
+def scan_dot_cache(cfg: core.Config, env: core.Env, warnings: Optional[list] = None) -> list:
+    """One item per folder of ~/.cache. Known tools get a label and a cost; unknown folders are
+    "Check first". Hugging Face is only ever its download folders (the login token stays).
+    Nothing is offered through a symlinked ~/.cache or a symlinked child."""
+    root = cfg.p(".cache")
+    if not os.path.isdir(root) or os.path.islink(root):
+        return []
+    fixed = {os.path.realpath(cfg.p(rel)) for _, _, rel, _, _ in cfg.fixed_targets}
+    try:
+        names = sorted(os.listdir(root))
+    except OSError:
+        return []
+    items = []
+    for name in names:
+        path = os.path.join(root, name)
+        if (name in DOT_CACHE_SKIP or os.path.islink(path) or not os.path.isdir(path)
+                or os.path.realpath(path) in fixed):
+            continue
+        known = DOT_CACHE_KNOWN.get(name)
+        label, tier, tag, cost = known or (name, CAUTION, *UNKNOWN_TOOL_CACHE_COST)
+        warning = "" if known else UNKNOWN_TOOL_CACHE_WARNING
+        if signin_like(name):
+            tier, warning = CAUTION, SIGNIN_WARNING
+        kw = dict(key=f"dotcache:{name}", category="Cache", label=label, tier=tier, path=path,
+                  preselect=(tier == SAFE), warning=warning, meta={"dot_cost": (tag, cost)})
+        if name == "huggingface":
+            dirs = [os.path.join(path, d) for d in HF_DOWNLOAD_DIRS
+                    if os.path.isdir(os.path.join(path, d))
+                    and not os.path.islink(os.path.join(path, d))]
+            if not dirs:
+                continue
+            items.append(Item(kind="paths", argv=["rm", "-rf", "--", *dirs], **kw))
+        else:
+            items.append(Item(kind="path", **kw))
+    return items
+
+
 # ---------------------------------------------------------------- logs
 
 def scan_logs(cfg: core.Config, now: float) -> list:

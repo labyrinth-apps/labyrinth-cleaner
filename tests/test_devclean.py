@@ -1127,6 +1127,17 @@ class CliTests(unittest.TestCase):
         for k in kept:
             self.assertTrue(os.path.exists(k), k)
 
+    def test_yes_includes_pip_and_puppeteer(self):
+        for rel in ("Library/Caches/pip", ".cache/puppeteer", ".cache/torch", ".cache/mystery"):
+            write(os.path.join(self.home, rel, "f.bin"), "x" * 4096)
+        code, out = self.run_cli("--yes", "--dry-run")
+        self.assertEqual(code, 0, out)
+        run = out.split("Would run")[1]
+        self.assertIn("Library/Caches/pip", run)
+        self.assertIn(".cache/puppeteer", run)
+        self.assertNotIn(".cache/torch", run)
+        self.assertNotIn(".cache/mystery", run)
+
     def test_cli_yes_never_deletes_new_categories(self):
         cache = mkdir(f"{self.home}/Library/Caches/com.example.tool")
         write(f"{cache}/blob", "x" * 100)
