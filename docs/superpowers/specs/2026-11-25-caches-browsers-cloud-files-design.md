@@ -1,6 +1,6 @@
 # Package caches, browser AI models and caches, sign-in caches, cloud-only files
 
-Status: draft for the user's review, 2026-11-25. Extends `2026-11-13-labyrinth-cleaner-app-design.md`. Ships as version 0.4.0, before the Windows version.
+Status: approved by the user, 2026-11-25. Extends `2026-11-13-labyrinth-cleaner-app-design.md`. Ships as version 0.4.0, before the Windows version.
 
 ## Why
 
@@ -189,9 +189,7 @@ Tests pin both lists, including `author` and `authority`, which don't match.
 
 ### 5. Cloud-only files in Downloads
 
-**During the scan, a file is skipped** before any rule is checked when either is true:
-- `st_flags` has `SF_DATALESS` (0x40000000);
-- `st_blocks == 0` and `st_size > 0`.
+**During the scan, a file is skipped** before any rule is checked when its `st_flags` has `SF_DATALESS` (0x40000000). That's the flag macOS sets on files whose content is only in iCloud, Dropbox or OneDrive. `st_blocks == 0` isn't used: an ordinary sparse file also has it, and the Downloads tests rely on sparse files (changed while planning, 2026-11-25).
 
 **The gate re-checks it:** a file that became cloud-only after the scan is refused with "Situation changed: scan again".
 
