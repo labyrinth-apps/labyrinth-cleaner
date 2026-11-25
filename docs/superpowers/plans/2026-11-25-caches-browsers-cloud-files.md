@@ -88,7 +88,7 @@ def test_dataless_file_not_listed(self):
     def fake(p, *a, **k):
         st = real(p, *a, **k)
         if p == path:
-            return os.stat_result(st[:10] + (0,) * 0, {"st_flags": core.SF_DATALESS}) if False else _with_flags(st, core.SF_DATALESS)
+            return _with_flags(st, core.SF_DATALESS)
         return st
     with mock.patch.object(core.os, "lstat", fake):
         keys = {i.key for i in core.scan_downloads(self.cfg, core.Env.fake(), self.now)}
@@ -99,7 +99,7 @@ def test_gate_refuses_file_that_became_dataless(self):
     ...  # scan → item; patch os.lstat as above; assertRaisesRegex(core.UnsafeTarget, "Situation changed")
 ```
 
-Write `_with_flags(st, flags)` in the test module. It returns a `types.SimpleNamespace` copying `st_mode`, `st_size`, `st_mtime`, `st_ino`, `st_blocks` and `st_dev` from `st`, with `st_flags=flags`. Use it in place of the placeholder expression above.
+Write `_with_flags(st, flags)` in the test module. It returns a `types.SimpleNamespace` copying `st_mode`, `st_size`, `st_mtime`, `st_ino`, `st_blocks` and `st_dev` from `st`, with `st_flags=flags`.
 
 - [ ] **Step 2: Run them.** Expected: FAIL. The file is listed, and the gate says "is gone" or passes.
 
@@ -205,6 +205,7 @@ Check before relying on `"accountant-ish"` and `"loginitems"`: they must not mat
     - `size_of` sums `du_bytes` over `argv[3:]` that are folders.
     - `explain_for` sets `deletes` to `", ".join(tilde(p) for p in argv[3:])`.
     - `validate_item` requires `it.argv[:3] == ["rm", "-rf", "--"]` and `len(it.argv) > 3`, then runs `validate_path` on each of `argv[3:]`.
+    - The scan's own gate loop in `scan()` checks offerable `"paths"` items the same way. Today it checks only kind `"path"`. A failing path turns the item into a PROTECTED info row "refused by safety gate: …".
     - `execute_item` runs `it.argv` through `runner`, like a path item.
   - **`validate_path` rule 4d:** a direct child of `realpath(~/.cache)` whose name isn't in `DOT_CACHE_SKIP` or `"huggingface"`.
   - **`validate_path` rule 4e:** a direct child of `realpath(~/.cache/huggingface)` whose name is in `HF_DOWNLOAD_DIRS`.
