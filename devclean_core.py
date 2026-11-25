@@ -147,6 +147,7 @@ class Config:
              "old bottles/downloads"),
             ("playwright-cache", "Playwright browsers", "Library/Caches/ms-playwright", SAFE,
              "`npx playwright install` restores"),
+            ("pip-cache", "pip cache", "Library/Caches/pip", SAFE, "re-downloaded on demand"),
         ]
 
     @property
@@ -345,7 +346,7 @@ class Item:
     size: Optional[int] = None           # bytes; None = unknown
     mtime: Optional[float] = None        # epoch seconds
     preselect: bool = False
-    kind: str = "path"                   # path | runtime | simdevice | simctl-unavailable | trash | info
+    kind: str = "path"                   # path | paths | runtime | simdevice | simctl-unavailable | trash | info
     meta: dict = field(default_factory=dict)
     cost_tag: str = ""                   # NO COST, ~2 MIN, 9.9 GB DL ...
     cost: str = ""                       # plain-language cost of deleting it
@@ -514,6 +515,12 @@ def _general():
     return devclean_general
 
 
+def _tools():
+    """devclean_tools, imported on first use (it imports this module)."""
+    import devclean_tools
+    return devclean_tools
+
+
 def _brew():
     """devclean_brew, imported on first use (it imports this module)."""
     import devclean_brew
@@ -524,6 +531,12 @@ def _apps():
     """devclean_apps, imported on first use (it imports this module)."""
     import devclean_apps
     return devclean_apps
+
+
+def _browsers():
+    """devclean_browsers, imported on first use (it imports this module)."""
+    import devclean_browsers
+    return devclean_browsers
 
 
 def _real_running_apps() -> list:
@@ -572,6 +585,10 @@ class Env:
     docker: Optional[Callable] = None
     # The Homebrew runner (devclean_brew.BrewRunner); None = no Homebrew, or fixture mode.
     brew: Optional[Any] = None
+    # The real path of a command-line tool by name ("uv", "pnpm"), or None.
+    find_tool: Callable[[str], Optional[str]] = lambda name: None
+    # Runs a tool's own clean command (never the general runner); None = no tools can run.
+    tool_runner: Optional[Callable] = None
     # path -> {"last_used": float|None, "size": int|None, "archs": list|None}; missing = unknown.
     app_metadata: Callable[[list], dict] = lambda paths: {}
     apple_silicon: Callable[[], bool] = lambda: False
@@ -589,7 +606,8 @@ class Env:
                    app_metadata=_real_app_metadata, apple_silicon=_real_apple_silicon,
                    running_app_paths=_real_running_app_paths, user_uid=os.getuid,
                    active_developer_dir=_real_active_developer_dir,
-                   docker=subprocess.run if shutil.which("docker") else None)
+                   docker=subprocess.run if shutil.which("docker") else None,
+                   find_tool=lambda n: _tools().find_tool(n, home), tool_runner=subprocess.run)
 
     @classmethod
     def fake(cls, **overrides) -> "Env":
@@ -600,7 +618,7 @@ def fixture_env(cfg: Config, xcode_running: Callable[[], bool], fixture: bool) -
     """The env a CLI/UI run uses. Fixture mode never gets a docker runner, even when the
     config points at the real home (--simctl-fixture without --home)."""
     env = dataclasses.replace(default_env(cfg), xcode_running=xcode_running)
-    return dataclasses.replace(env, docker=None, brew=None) if fixture else env
+    return dataclasses.replace(env, docker=None, brew=None, tool_runner=None) if fixture else env
 
 
 def default_env(cfg: Config) -> Env:
@@ -1126,13 +1144,21 @@ def scan_archives(cfg: Config) -> list:
     return items
 
 
+SF_DATALESS = 0x40000000   # macOS: the content lives only in the cloud (iCloud, Dropbox, OneDrive)
+
+
+def is_dataless(st: os.stat_result) -> bool:
+    """True for a cloud-only placeholder. st_blocks is not used: sparse files have none."""
+    return bool(getattr(st, "st_flags", 0) & SF_DATALESS)
+
+
 def _download_item(cfg: Config, env: Env, now: float, path: str) -> Optional[Item]:
     """The REVIEW item for one Downloads file if it matches a rule right now, else None."""
     try:
         st = os.lstat(path)
     except OSError:
         return None
-    if not stat.S_ISREG(st.st_mode):
+    if not stat.S_ISREG(st.st_mode) or is_dataless(st):
         return None
     name = os.path.basename(path)
     ext = os.path.splitext(name)[1].lower()
@@ -1268,6 +1294,7 @@ FIXED_COSTS = {
     "playwright-cache": ("~1 MIN", "Run `npx playwright install` before the next e2e run."),
     "gradle-build-cache": ("~2 MIN", "The first Android build after this takes longer."),
     "shorebird-cache": ("~2 MIN", "Re-downloaded on the next shorebird command."),
+    "pip-cache": ("NO COST", "Re-downloaded on demand."),
 }
 
 
@@ -1283,6 +1310,9 @@ def cost_for(it: Item) -> tuple:
         return "", it.note
     if it.key in FIXED_COSTS:
         return FIXED_COSTS[it.key]
+    if it.key.startswith("dotcache:") and it.meta.get("dot_cost"):
+        tag, text = it.meta["dot_cost"]
+        return (tag or f"{human(it.size)} DL"), text
     if it.key.startswith("gradle:"):
         return "~2 MIN", f"Re-downloaded only if a project still uses Gradle {it.key[7:]}."
     if it.key == "derived-data":
@@ -1312,6 +1342,8 @@ def cost_for(it: Item) -> tuple:
         return "TRASH", it.note              # the row says why the app is listed
     if it.kind in ("trash", "finder-trash"):
         return "TRASH", "Moved to the Trash. You can Put Back."
+    if it.category == "Browser":
+        return _browsers().cost(it)
     if it.key.startswith("appcache:"):
         g = _general()
         return ("SLOWER", g.BROWSER_CACHE_COST) if it.meta.get("browser") else ("NO COST", g.CACHE_COST)
@@ -1330,6 +1362,8 @@ def cost_for(it: Item) -> tuple:
             else "Homebrew doesn't use them."
     if it.key.startswith("brew:pkg:"):
         return "REINSTALL", it.note
+    if it.kind == "tool":
+        return _tools().COSTS[it.key[5:]]
     return "?", it.note
 
 
@@ -1347,7 +1381,10 @@ def explain_for(it: Item, home: Optional[str] = None) -> tuple:
     if not it.offerable:
         return "", ""
     home = home or os.path.realpath(os.path.expanduser("~"))
-    deletes = tilde(it.path, home) if it.kind in ("path", "trash", "finder-trash") else (it.command or "")
+    if it.kind == "paths":
+        deletes = ", ".join(tilde(p, home) for p in (it.argv or [])[3:])
+    else:
+        deletes = tilde(it.path, home) if it.kind in ("path", "trash", "finder-trash") else (it.command or "")
     if it.kind in ("trash", "finder-trash"):
         restore = (DOWNLOAD_RESTORE if it.key.startswith(("download:", "app:"))
                    else TRASH_RESTORE)
@@ -1359,6 +1396,8 @@ def explain_for(it: Item, home: Optional[str] = None) -> tuple:
         restore = "Nothing to get back: they can't run any more."
     elif it.key in RESTORE_FIXED:
         restore = RESTORE_FIXED[it.key]
+    elif it.key.startswith("dotcache:") and it.meta.get("dot_unknown"):
+        restore = "Depends on the tool that made it."
     elif it.category == "Cache":          # the fixed download caches
         restore = "Downloaded again on demand."
     elif it.category == "Flutter" or it.key.endswith("/.next"):
@@ -1371,6 +1410,8 @@ def explain_for(it: Item, home: Optional[str] = None) -> tuple:
         restore = "Re-copied from the iPhone the next time you debug on it."
     elif it.category == "Android":
         restore = "Download it again in Android Studio › SDK Manager."
+    elif it.category == "Browser":
+        restore = _browsers().restore(it)
     elif it.key.startswith("appcache:"):
         restore = "The app rebuilds it as needed."
     elif it.key.startswith("log:"):
@@ -1466,12 +1507,17 @@ def fixture_runner(argv: list, **kw) -> subprocess.CompletedProcess:
     """Runner for fixture mode: never touches the real simulators, Trash or Docker."""
     if argv and argv[0] in ("xcrun", "osascript", "docker"):
         return subprocess.CompletedProcess(argv, 1, "", f"fixture mode: {argv[0]} disabled")
-    if argv and os.path.basename(argv[0]) == "brew":
-        return subprocess.CompletedProcess(argv, 1, "", "fixture mode: brew disabled")
+    if argv and os.path.basename(argv[0]) in ("brew", "uv", "pnpm"):
+        return subprocess.CompletedProcess(argv, 1, "", f"fixture mode: {os.path.basename(argv[0])} disabled")
     return subprocess.run(argv, **kw)
 
 
 # ---------------------------------------------------------------- scan
+
+def counted_size(it) -> int:
+    """The bytes an item adds to a total. An upper bound (pnpm's whole store) adds none."""
+    return 0 if it.meta.get("upper_bound") else (it.size or 0)
+
 
 @dataclass
 class ScanResult:
@@ -1488,7 +1534,7 @@ class ScanResult:
         return [i for i in self.items if i.offerable]
 
     def reclaimable(self) -> int:
-        return sum(i.size or 0 for i in self.offerable)
+        return sum(counted_size(i) for i in self.offerable)
 
 
 TIER_ORDER = {SAFE: 0, OPTIN: 1, CAUTION: 2, REVIEW: 3, PROTECTED: 4}
@@ -1516,6 +1562,8 @@ def scan(cfg: Config, sim: Optional[SimctlProvider] = None,
     items += scan_downloads(cfg, env, now)
     g = _general()
     items += g.scan_app_caches(cfg, env, warnings)
+    items += _browsers().scan_browsers(cfg, env, warnings)
+    items += g.scan_dot_cache(cfg, env, warnings)
     app_items, app_bytes = _apps().scan_apps(cfg, env, now, warnings)
     items += app_items
     items += g.scan_logs(cfg, now)
@@ -1524,11 +1572,12 @@ def scan(cfg: Config, sim: Optional[SimctlProvider] = None,
     items += g.scan_docker(cfg, env)
     brew_items, brew_bytes = _brew().scan_brew(cfg, env, warnings)
     items += brew_items
+    items += _tools().scan_tools(cfg, env)
     items += scan_info(cfg)
 
     if measure:
         def size_of(it: Item):
-            if (it.kind in ("path", "info", "simdevice", "trash") and it.path and it.size is None
+            if (it.kind in ("path", "info", "simdevice", "trash", "tool") and it.path and it.size is None
                     and not it.key.startswith(("app:", "brew:"))
                     and os.path.isdir(it.path)):
                 it.size = du_bytes(it.path)
@@ -1536,17 +1585,20 @@ def scan(cfg: Config, sim: Optional[SimctlProvider] = None,
                     it.mtime = mtime_of(it.path)
             elif it.kind == "simctl-unavailable":
                 it.size = sum(du_bytes(p) or 0 for p in it.meta.get("paths", []) if os.path.isdir(p))
+            elif it.kind == "paths" and it.size is None:
+                it.size = sum(du_bytes(p) or 0 for p in (it.argv or [])[3:] if os.path.isdir(p))
         with ThreadPoolExecutor(max_workers=8) as ex:
             list(ex.map(size_of, items))
 
     # Assign every offerable path item through the gate now, so the table
     # never shows something the executor would refuse.
     for it in items:
-        if it.offerable and it.kind == "path":
+        if it.offerable and it.kind in ("path", "paths"):
             try:
-                validate_path(it.path, cfg)
+                _validate_paths_of(it, cfg)
             except UnsafeTarget as e:
                 it.tier, it.kind, it.preselect = PROTECTED, "info", False
+                it.argv = None
                 it.note = f"refused by safety gate: {e}"
 
     for it in items:
@@ -1576,6 +1628,18 @@ def deny_paths(cfg: Config) -> list:
     """Never rm'd, nor any folder containing them. Android images used by an emulator
     are no longer here: they are offered with a warning that validate_item re-checks."""
     return [os.path.realpath(p) for p in cfg.static_deny()]
+
+
+def _validate_paths_of(it: Item, cfg: Config) -> None:
+    """The gate for a "path" item, or a "paths" item (argv rm -rf -- p1 p2 ...): every
+    path goes through validate_path. Raises UnsafeTarget."""
+    if it.kind == "paths":
+        if (it.argv or [])[:3] != ["rm", "-rf", "--"] or len(it.argv) <= 3:
+            raise UnsafeTarget("unexpected delete command")
+        for p in it.argv[3:]:
+            validate_path(p, cfg)
+    else:
+        validate_path(it.path, cfg)
 
 
 def validate_path(path: str, cfg: Config) -> str:
@@ -1629,6 +1693,26 @@ def validate_path(path: str, cfg: Config) -> str:
     if (parent == os.path.realpath(cfg.p("Library/Caches"))
             and not _general().is_system_cache(base)
             and base.casefold() != _general().OWN_CACHE.casefold()):
+        return real
+    # 4d. ~/.cache: a direct child, except this app's own folder, uv's (its own item) and
+    # Hugging Face (only its download folders, below). Never through a symlinked ~/.cache.
+    # Names compare casefolded: on a case-insensitive volume ~/.cache/HuggingFace is it too.
+    g = _general()
+    dot_cache = cfg.p(".cache")
+    dc_real = os.path.realpath(dot_cache).casefold()
+    if not os.path.islink(dot_cache):
+        if (parent.casefold() == dc_real and base.casefold() not in g.DOT_CACHE_SKIP
+                and base.casefold() != "huggingface"):
+            return real
+        # 4e. Hugging Face: only its hub, datasets and xet folders, never the login token
+        if (os.path.basename(parent).casefold() == "huggingface"
+                and os.path.dirname(parent).casefold() == dc_real
+                and not os.path.islink(parent) and base.casefold() in g.HF_DOWNLOAD_DIRS):
+            return real
+    # 4f. Chromium browsers: only the exact model and cache folder names, never through a
+    # symlink, never in System Profile or Guest Profile. (Running browsers: validate_item's
+    # rescan.)
+    if _browsers().allowed_path(real, cfg):
         return real
     # 4c. Logs: a direct child of ~/Library/Logs or its DiagnosticReports folder
     logs = os.path.realpath(cfg.p("Library/Logs"))
@@ -1697,12 +1781,15 @@ RESCANNERS = {
     "download:": _rescan_download,
     "archive:": lambda key, cfg, sim, env, now: scan_archives(cfg),
     "appcache:": lambda key, cfg, sim, env, now: _general().scan_app_caches(cfg, env),
+    "dotcache:": lambda key, cfg, sim, env, now: _general().scan_dot_cache(cfg, env),
     # The gate never uses sizes: no du for every app on each ticked app.
     "app:": lambda key, cfg, sim, env, now: _apps().scan_apps(cfg, env, now, sizes=False)[0],
     "log:": lambda key, cfg, sim, env, now: _general().scan_logs(cfg, now),
     "empty-trash": lambda key, cfg, sim, env, now: _general().scan_trash(cfg),
     "docker:": lambda key, cfg, sim, env, now: _general().scan_docker(cfg, env),
+    "browser:": lambda key, cfg, sim, env, now: _browsers().rescan(key, cfg, env),
     # A package's gate reads `info` only: a slow `cleanup -n` must not refuse every package.
+    "tool:": lambda key, cfg, sim, env, now: _tools().scan_tools(cfg, env),
     "brew:pkg:": lambda key, cfg, sim, env, now: _brew().scan_brew(cfg, env, [], sizes=False,
                                                                    full=False)[0],
     "brew:": lambda key, cfg, sim, env, now: _brew().scan_brew(cfg, env, [], sizes=False)[0],
@@ -1715,6 +1802,7 @@ RESCANNERS = {
     "cocoapods-cache": _rescan_fixed,
     "homebrew-cache": _rescan_fixed,
     "playwright-cache": _rescan_fixed,
+    "pip-cache": _rescan_fixed,
 }
 
 
@@ -1867,7 +1955,10 @@ def validate_item(it: Item, cfg: Config, sim: Optional[SimctlProvider] = None,
     if fresh is None:
         # An app that is still there but no longer listed (running apps unreadable, or now
         # kept): the situation changed, it isn't gone.
-        if it.key.startswith("app:") and it.path and os.path.lexists(it.path):
+        # A download that went cloud-only after the scan is the same case.
+        # So is a browser row whose running apps can't be listed now.
+        if (it.key.startswith(("app:", "download:", "browser:")) and it.path
+                and os.path.lexists(it.path)):
             raise UnsafeTarget(SITUATION_CHANGED)
         raise UnsafeTarget(f"{it.label} is gone")
     if not fresh.offerable:
@@ -1876,8 +1967,8 @@ def validate_item(it: Item, cfg: Config, sim: Optional[SimctlProvider] = None,
         raise UnsafeTarget(SITUATION_CHANGED)   # a warning the user never saw
     if (fresh.kind, fresh.path, fresh.argv) != (it.kind, it.path, it.argv):
         raise UnsafeTarget(SITUATION_CHANGED)
-    if it.kind == "path":
-        validate_path(it.path, cfg)
+    if it.kind in ("path", "paths"):
+        _validate_paths_of(it, cfg)
         return
     if it.kind == "runtime":
         uuid = it.key.split(":", 1)[1]
@@ -1906,6 +1997,9 @@ def validate_item(it: Item, cfg: Config, sim: Optional[SimctlProvider] = None,
         return
     if it.kind == "brew":
         _brew().validate(it, fresh, env)
+        return
+    if it.kind == "tool":
+        _tools().validate(it, fresh, env)
         return
     raise UnsafeTarget(f"unknown item kind {it.kind}")
 
@@ -2010,6 +2104,13 @@ def execute_item(it: Item, cfg: Config, sim: Optional[SimctlProvider] = None,
         return False, f"REFUSED: fixture mode never runs {it.argv[0] if it.argv else it.kind}"
     if it.kind == "docker" and env.docker is None:
         return False, "REFUSED: docker is not available"
+    if it.kind == "tool":
+        # uv and pnpm only ever run through env.tool_runner (via run_item), never `runner`.
+        name = it.key[5:]
+        if runner is fixture_runner:
+            return False, f"REFUSED: fixture mode never runs {name}"
+        if env.tool_runner is None:
+            return False, f"REFUSED: {name} is not available"
     if it.kind == "brew":
         # Homebrew only ever runs through env.brew (via run_item), never the general runner.
         if runner is fixture_runner:
@@ -2022,10 +2123,12 @@ def execute_item(it: Item, cfg: Config, sim: Optional[SimctlProvider] = None,
         return False, f"REFUSED: {e}"
     if it.kind == "brew":
         return _brew().run_item(it, env)
+    if it.kind == "tool":
+        return _tools().run_item(it, env, cfg.home)
     if it.kind == "trash":
         argv = [helper, "--home", cfg.home, it.path]
     else:
-        argv = ["rm", "-rf", "--", it.path] if it.kind == "path" else it.argv
+        argv = ["rm", "-rf", "--", it.path] if it.kind == "path" else it.argv   # "paths": its own argv
     if it.kind == "docker":
         # Docker only ever runs through env.docker, never the general runner.
         try:

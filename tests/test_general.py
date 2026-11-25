@@ -5,6 +5,7 @@ import shutil
 import sys
 import tempfile
 import time
+import types
 import unittest
 from unittest import mock
 
@@ -29,6 +30,12 @@ def sparse(path, size, age_days=0, now=None):
 def age(path, days, now=None):
     t = (now or time.time()) - days * DAY
     os.utime(path, (t, t))
+
+
+def _with_flags(st, flags):
+    return types.SimpleNamespace(st_mode=st.st_mode, st_size=st.st_size, st_mtime=st.st_mtime,
+                                 st_ino=st.st_ino, st_blocks=st.st_blocks, st_dev=st.st_dev,
+                                 st_flags=flags)
 
 
 class DownloadsBase(unittest.TestCase):
@@ -72,6 +79,27 @@ class DownloadsBase(unittest.TestCase):
 
 
 class DownloadsTests(DownloadsBase):
+    def _as_dataless(self, path):
+        real = os.lstat
+
+        def fake(p, *a, **k):
+            st = real(p, *a, **k)
+            return _with_flags(st, core.SF_DATALESS) if p == path else st
+        return mock.patch.object(core.os, "lstat", fake)
+
+    def test_dataless_file_not_listed(self):
+        path = f"{self.dl}/old.dmg"
+        sparse(path, 10 * MB, 30, self.now)
+        self.assertIn("download:old.dmg", self.downloads())
+        with self._as_dataless(path):
+            self.assertNotIn("download:old.dmg", self.downloads())
+
+    def test_gate_refuses_file_that_became_dataless(self):
+        it = self.downloads()["download:Setup.dmg"]
+        with self._as_dataless(it.path):
+            with self.assertRaisesRegex(core.UnsafeTarget, "Situation changed"):
+                core.validate_item(it, self.cfg, core.NoSimctl(), self.env(), self.now)
+
     def test_installer_rule(self):
         d = self.downloads()
         self.assertEqual(set(d), {"download:Setup.dmg", "download:big.zip", "download:movie.mkv"})
@@ -501,6 +529,188 @@ class AppCacheTests(GeneralBase):
         with mock.patch.object(general.subprocess, "run", side_effect=OSError):
             with self.assertRaises(OSError):
                 general.running_apps()
+
+
+class SignInCacheTests(GeneralBase):
+    def test_signin_like_lists(self):
+        for n in ("com.agilebits.onepassword7", "Bitwarden", "oauth-cache", "com.example.login",
+                  "my_tokens", "SSO", "KeychainHelper"):
+            self.assertTrue(general.signin_like(n), n)
+        for n in ("author", "authority", "com.spotify.client", "Google", "accountant-ish",
+                  "loginitems"):
+            self.assertFalse(general.signin_like(n), n)
+
+    def test_signin_cache_becomes_caution_with_warning(self):
+        for n in ("com.example.login", "oauth-cache"):
+            os.makedirs(os.path.join(self.caches, n))
+            write(os.path.join(self.caches, n, "f"), "x")
+        d = self.by_key(self.scan())
+        it = d["appcache:com.example.login"]
+        self.assertEqual((it.tier, it.warning), (core.CAUTION, general.SIGNIN_WARNING))
+        self.assertEqual(d["appcache:oauth-cache"].warning, general.SIGNIN_WARNING)
+
+    def test_signin_cache_of_running_app_stays_kept(self):
+        os.makedirs(os.path.join(self.caches, "com.example.login"))
+        write(os.path.join(self.caches, "com.example.login", "f"), "x")
+        d = self.by_key(self.scan(running_apps=lambda: [("com.example.login", "Example")]))
+        it = d["appcache:com.example.login"]
+        self.assertEqual((it.tier, it.note), (core.PROTECTED, "Quit Example first"))
+
+
+class DotCacheTests(GeneralBase):
+    def dc(self):
+        return os.path.join(self.home, ".cache")
+
+    def test_dot_cache_rows(self):
+        dc = self.dc()
+        for n in ("puppeteer", "torch", "mystery", "devclean", "uv"):
+            write(os.path.join(dc, n, "f.bin"), "x" * 4096)
+        for n in ("hub", "datasets"):
+            write(os.path.join(dc, "huggingface", n, "f.bin"), "x" * 4096)
+        write(os.path.join(dc, "huggingface", "token"), "hf_secret")
+        d = self.by_key(self.scan())
+        self.assertEqual((d["dotcache:puppeteer"].tier, d["dotcache:puppeteer"].preselect),
+                         (core.SAFE, True))
+        self.assertEqual(d["dotcache:torch"].tier, core.CAUTION)
+        self.assertFalse(d["dotcache:torch"].preselect)
+        self.assertEqual((d["dotcache:mystery"].tier, d["dotcache:mystery"].warning),
+                         (core.CAUTION, general.UNKNOWN_TOOL_CACHE_WARNING))
+        self.assertEqual(d["dotcache:mystery"].cost, "Depends on the tool that made it.")
+        self.assertEqual(d["dotcache:mystery"].restore, "Depends on the tool that made it.")
+        self.assertEqual(d["dotcache:torch"].restore, "Downloaded again on demand.")
+        hf = d["dotcache:huggingface"]
+        self.assertEqual((hf.kind, hf.argv),
+                         ("paths", ["rm", "-rf", "--", os.path.join(dc, "huggingface", "hub"),
+                                    os.path.join(dc, "huggingface", "datasets")]))
+        self.assertFalse(hf.preselect)
+        self.assertIn("huggingface-cli login is kept", hf.cost)
+        self.assertIn("~/.cache/huggingface/hub", hf.deletes)
+        self.assertGreater(hf.size, 0)
+        self.assertNotIn("dotcache:devclean", d)
+        self.assertNotIn("dotcache:uv", d)
+
+    def test_huggingface_without_download_folders_has_no_row(self):
+        write(os.path.join(self.dc(), "huggingface", "token"), "hf_secret")
+        self.assertNotIn("dotcache:huggingface", self.by_key(self.scan()))
+
+    def test_signin_like_names_get_the_sign_in_warning(self):
+        write(os.path.join(self.dc(), "puppeteer-auth", "f"), "x")
+        write(os.path.join(self.dc(), "pip", "f"), "x")
+        d = self.by_key(self.scan())
+        self.assertEqual((d["dotcache:puppeteer-auth"].tier, d["dotcache:puppeteer-auth"].warning),
+                         (core.CAUTION, general.SIGNIN_WARNING))
+        self.assertEqual((d["dotcache:pip"].tier, d["dotcache:pip"].preselect), (core.SAFE, True))
+
+    def test_huggingface_clean_keeps_token(self):
+        dc = self.dc()
+        write(os.path.join(dc, "huggingface", "hub", "m.bin"), "x" * 4096)
+        write(os.path.join(dc, "huggingface", "xet", "m.bin"), "x" * 4096)
+        write(os.path.join(dc, "huggingface", "token"), "hf_secret")
+        hf = self.by_key(self.scan())["dotcache:huggingface"]
+        ok, msg = core.execute_item(hf, self.cfg, runner=subprocess.run, env=core.Env.fake())
+        self.assertTrue(ok, msg)
+        self.assertTrue(os.path.isfile(os.path.join(dc, "huggingface", "token")))
+        self.assertFalse(os.path.exists(os.path.join(dc, "huggingface", "hub")))
+        self.assertFalse(os.path.exists(os.path.join(dc, "huggingface", "xet")))
+
+    def test_dot_cache_symlinks_not_offered(self):
+        dc = self.dc()
+        os.makedirs(dc)
+        os.symlink(self.home, os.path.join(dc, "linked"))
+        self.assertFalse([k for k in self.by_key(self.scan()) if k.startswith("dotcache:")])
+        shutil.rmtree(dc)
+        real = os.path.join(self.base, "elsewhere")
+        write(os.path.join(real, "puppeteer", "f"), "x")
+        os.symlink(real, dc)
+        self.assertFalse([k for k in self.by_key(self.scan()) if k.startswith("dotcache:")])
+
+    def test_paths_gate_refuses_foreign_path(self):
+        dc = self.dc()
+        write(os.path.join(dc, "huggingface", "hub", "m.bin"), "x" * 4096)
+        hf = self.by_key(self.scan())["dotcache:huggingface"]
+        hf.argv = hf.argv + [os.path.join(self.home, "Documents")]
+        with self.assertRaises(core.UnsafeTarget):
+            core.validate_item(hf, self.cfg, env=core.Env.fake())
+        hf.argv = ["rm", "-rf", "--"]
+        with self.assertRaises(core.UnsafeTarget):
+            core.validate_item(hf, self.cfg, env=core.Env.fake())
+
+    def _hf_item(self):
+        write(os.path.join(self.dc(), "huggingface", "hub", "m.bin"), "x" * 4096)
+        return self.by_key(self.scan())["dotcache:huggingface"]
+
+    def test_paths_gate_direct_checks(self):
+        hf = self._hf_item()
+        hub = hf.argv[3]
+        core._validate_paths_of(hf, self.cfg)          # the real item passes
+        for argv in (hf.argv + [os.path.join(self.home, "Documents")],   # (a) foreign path
+                     ["rm", "-rf", "--"],                                 # (b) nothing to delete
+                     ["rm", "-r", "--", hub]):                            # (c) wrong prefix
+            hf.argv = argv
+            with self.assertRaises(core.UnsafeTarget, msg=argv):
+                core._validate_paths_of(hf, self.cfg)
+            # validate_item with the rescan returning the same forged item reaches the gate
+            with mock.patch.object(core, "rescan_item", return_value=hf):
+                with self.assertRaises(core.UnsafeTarget, msg=argv):
+                    core.validate_item(hf, self.cfg, env=core.Env.fake())
+
+    def test_scan_gate_turns_failing_paths_item_into_refused_row(self):
+        hf = self._hf_item()
+        real = core.validate_path
+
+        def fake(path, cfg):
+            if path.endswith(os.path.join("huggingface", "hub")):
+                raise core.UnsafeTarget("nope")
+            return real(path, cfg)
+        with mock.patch.object(core, "validate_path", fake):
+            it = self.by_key(self.scan())["dotcache:huggingface"]
+        self.assertEqual((it.tier, it.kind, it.preselect), (core.PROTECTED, "info", False))
+        self.assertIn("refused by safety gate", it.note)
+        self.assertIsNone(it.argv)
+        self.assertIsNone(it.to_dict()["command"])
+
+    def test_case_variants_never_offered_whole_and_refused(self):
+        dc = self.dc()
+        write(os.path.join(dc, "HuggingFace", "token"), "hf_secret")
+        write(os.path.join(dc, "HuggingFace", "hub", "m.bin"), "x" * 4096)
+        write(os.path.join(dc, "DevClean", "f"), "x")
+        write(os.path.join(dc, "UV", "f"), "x")
+        d = self.by_key(self.scan())
+        self.assertNotIn("dotcache:DevClean", d)
+        self.assertNotIn("dotcache:UV", d)
+        hf = d["dotcache:HuggingFace"]
+        self.assertEqual((hf.kind, hf.argv),
+                         ("paths", ["rm", "-rf", "--", os.path.join(dc, "HuggingFace", "hub")]))
+        for n in ("HuggingFace", "DevClean", "UV"):
+            with self.assertRaises(core.UnsafeTarget, msg=n):
+                core.validate_path(os.path.join(dc, n), self.cfg)
+        write(os.path.join(dc, "HuggingFace", "HUB", "f"), "x")
+        core.validate_path(os.path.join(dc, "HuggingFace", "HUB"), self.cfg)
+        with self.assertRaises(core.UnsafeTarget):
+            core.validate_path(os.path.join(dc, "HuggingFace", "token"), self.cfg)
+
+    def test_validate_path_rules_4d_4e(self):
+        dc = self.dc()
+        for n in ("puppeteer", "devclean", "uv"):
+            write(os.path.join(dc, n, "f"), "x")
+        write(os.path.join(dc, "huggingface", "hub", "f"), "x")
+        write(os.path.join(dc, "huggingface", "token"), "x")
+        write(os.path.join(dc, "huggingface", "other", "f"), "x")
+        core.validate_path(os.path.join(dc, "puppeteer"), self.cfg)
+        core.validate_path(os.path.join(dc, "huggingface", "hub"), self.cfg)
+        for p in (dc, os.path.join(dc, "devclean"), os.path.join(dc, "uv"),
+                  os.path.join(dc, "huggingface"), os.path.join(dc, "huggingface", "token"),
+                  os.path.join(dc, "huggingface", "other")):
+            with self.assertRaises(core.UnsafeTarget, msg=p):
+                core.validate_path(p, self.cfg)
+
+    def test_pip_fixed_target(self):
+        os.makedirs(os.path.join(self.caches, "pip"))
+        write(os.path.join(self.caches, "pip", "f"), "x" * 2048)
+        d = self.by_key(self.scan())
+        self.assertEqual((d["pip-cache"].tier, d["pip-cache"].preselect), (core.SAFE, True))
+        self.assertEqual(d["pip-cache"].cost_tag, "NO COST")
+        self.assertNotIn("appcache:pip", d)
 
 
 class WarnedTagTests(GeneralBase):

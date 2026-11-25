@@ -303,7 +303,7 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(rep.SEGMENTS, [
             ("sim", "Simulators"), ("android", "Android"), ("xcode", "Xcode"),
             ("web", "node_modules"), ("caches", "Caches & builds"), ("appcache", "App caches"),
-            ("docker", "Docker"), ("downloads", "Downloads (reviewable)"), ("trash", "Trash"),
+            ("browsers", "Browsers"), ("docker", "Docker"), ("downloads", "Downloads (reviewable)"), ("trash", "Trash"),
             ("apps", "Applications"), ("homebrew", "Homebrew"),
             ("other", "System, apps & other files"), ("free", "Free")])
         h = self.home
@@ -403,6 +403,47 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(ex["android_sdk"], 0)
         self.assertEqual(ex["sim_devices"], 0)
         self.assertGreater(ex["gradle_modules"], 0)
+
+
+class NewSegmentTests(unittest.TestCase):
+    def res(self, items):
+        return core.ScanResult(items=items, warnings=[], free_bytes=500, total_bytes=1000, xcode_running=False)
+
+    def item(self, key, size, category="Cache", tier=core.SAFE, kind="path", **kw):
+        return core.Item(key=key, category=category, label=key, tier=tier, kind=kind,
+                         path="/x/" + key, size=size, cost_tag="NO COST", **kw)
+
+    def payload(self, items):
+        res = self.res(items)
+        cfg = mock.Mock(home="/h", project_roots=[])
+        with mock.patch.object(rep, "auto_project_folders", return_value=[]):
+            return rep.scan_payload(res, cfg, "s", 0.1, ZERO)
+
+    def test_upper_bound_not_in_totals(self):
+        base = [self.item("a", 1000)]
+        pnpm = self.item("tool:pnpm", 4_000_000_000, kind="tool", meta={"upper_bound": True})
+        p0, p1 = self.payload(base), self.payload(base + [pnpm])
+        self.assertEqual(p0["headline"], p1["headline"])
+        seg = lambda p, sid: next(s for s in p["segments"] if s["id"] == sid)
+        self.assertEqual(seg(p0, "caches")["reclaimable"], seg(p1, "caches")["reclaimable"])
+        self.assertEqual(seg(p1, "caches")["bytes"] - seg(p0, "caches")["bytes"], 4_000_000_000)
+        self.assertEqual(self.res(base + [pnpm]).reclaimable(), 1000)
+        row = next(r for r in p1["rows"] if r["id"] == "tool:pnpm")
+        self.assertTrue(row["upper_bound"])
+        self.assertFalse(next(r for r in p1["rows"] if r["id"] == "a")["upper_bound"])
+
+    def test_browser_segment(self):
+        it = self.item("browser:com.x:caches", 500, category="Browser", tier=core.OPTIN, kind="paths",
+                       meta={"version": "1.2"})
+        self.assertEqual(rep.segment_of(it), "browsers")
+        ids = [sid for sid, _ in rep.SEGMENTS]
+        self.assertEqual(ids[ids.index("appcache") + 1], "browsers")
+        p = self.payload([it])
+        seg = next(s for s in p["segments"] if s["id"] == "browsers")
+        self.assertEqual(seg["bytes"], 500)
+        self.assertEqual(seg["label"], "Browsers")
+        self.assertEqual(p["rows"][0]["segment"], "browsers")
+        self.assertEqual(p["rows"][0]["version"], "1.2")
 
 
 if __name__ == "__main__":

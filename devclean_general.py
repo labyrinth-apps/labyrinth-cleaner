@@ -19,6 +19,15 @@ LOG_MIN_AGE_DAYS = 7
 DOCKER_TIMEOUT = 3
 RUNNING_APPS_WARNING = "couldn't list running apps; app caches are not offered"
 UNKNOWN_CACHE_WARNING = "macOS or a background tool may use this cache."
+SIGNIN_WARNING = "It may hold sign-in data. Deleting it can sign you out."
+
+# Names that look like password or sign-in storage. Substrings match anywhere in the
+# lower-cased name; words must match a whole piece of the name split on non-alphanumerics
+# (so "author" and "loginitems" don't match).
+SIGNIN_SUBSTRINGS = ("password", "1password", "bitwarden", "lastpass", "dashlane", "keychain",
+                     "credential")
+SIGNIN_WORDS = frozenset({"auth", "oauth", "oauth2", "token", "tokens", "account", "accounts",
+                          "login", "logins", "signin", "sso"})
 
 # Caches of macOS daemons and frameworks that aren't named com.apple.*: never shown.
 # Compared casefolded.
@@ -193,6 +202,14 @@ def owner_identified(name: str) -> bool:
     return bool(REVERSE_DNS_RE.match(n)) and n.split(".", 1)[0] in BUNDLE_TLDS
 
 
+def signin_like(name: str) -> bool:
+    """True when a cache folder's name looks like password or sign-in storage."""
+    low = name.lower()
+    if any(sub in low for sub in SIGNIN_SUBSTRINGS):
+        return True
+    return any(w in SIGNIN_WORDS for w in re.split(r"[^a-z0-9]+", low))
+
+
 def scan_app_caches(cfg: core.Config, env: core.Env, warnings: Optional[list] = None) -> list:
     """One item per top-level folder of ~/Library/Caches, except macOS's own. Safe when the
     folder names its app, "Check first" with a warning when it doesn't. Fails closed (offers
@@ -225,12 +242,79 @@ def scan_app_caches(cfg: core.Config, env: core.Env, warnings: Optional[list] = 
         if owner:
             items.append(Item(label=owner[1], tier=PROTECTED, kind="info",
                               note=f"Quit {owner[1]} first", **base))
+        elif signin_like(name):
+            # Looks like sign-in storage: never no-cost, with its own warning.
+            items.append(Item(label=name, tier=CAUTION, kind="path",
+                              warning=SIGNIN_WARNING, **base))
         elif owner_identified(name):
             items.append(Item(label=name, tier=SAFE, kind="path", **base))
         else:
             # Nobody we can name owns it: offered, never as no-cost, with a warning.
             items.append(Item(label=name, tier=CAUTION, kind="path",
                               warning=UNKNOWN_CACHE_WARNING, **base))
+    return items
+
+
+# ---------------------------------------------------------------- ~/.cache
+
+UNKNOWN_TOOL_CACHE_WARNING = "A tool may use this cache."
+UNKNOWN_TOOL_CACHE_COST = ("NO COST", "Depends on the tool that made it.")
+HF_DOWNLOAD_DIRS = ("hub", "datasets", "xet")
+# uv belongs to its own item (a tool command), devclean is this app's own folder.
+DOT_CACHE_SKIP = frozenset({"devclean", "uv"})   # compared casefolded
+# name -> (label, tier, cost tag or None for "<size> DL", cost text)
+DOT_CACHE_KNOWN = {
+    "puppeteer": ("Puppeteer browsers", SAFE, "~1 MIN",
+                  "Puppeteer downloads its browser again on the next run."),
+    "huggingface": ("Hugging Face models", CAUTION, None,
+                    "Downloaded AI models. Scripts that use them download them again, which can "
+                    "take a long time. Your huggingface-cli login is kept."),
+    "torch": ("PyTorch models", CAUTION, None,
+              "Downloaded AI models. Scripts that use them download them again, which can "
+              "take a long time."),
+    "pip": ("pip cache", SAFE, "NO COST", "Re-downloaded on demand."),
+}
+
+
+def scan_dot_cache(cfg: core.Config, env: core.Env, warnings: Optional[list] = None) -> list:
+    """One item per folder of ~/.cache. Known tools get a label and a cost; unknown folders are
+    "Check first". Hugging Face is only ever its download folders (the login token stays).
+    Nothing is offered through a symlinked ~/.cache or a symlinked child."""
+    root = cfg.p(".cache")
+    if not os.path.isdir(root) or os.path.islink(root):
+        return []
+    fixed = {os.path.realpath(cfg.p(rel)) for _, _, rel, _, _ in cfg.fixed_targets}
+    try:
+        names = sorted(os.listdir(root))
+    except OSError:
+        return []
+    items = []
+    for name in names:
+        path = os.path.join(root, name)
+        low = name.casefold()
+        if (low in DOT_CACHE_SKIP or os.path.islink(path) or not os.path.isdir(path)
+                or os.path.realpath(path) in fixed):
+            continue
+        known = DOT_CACHE_KNOWN.get(low)
+        label, tier, tag, cost = known or (name, CAUTION, *UNKNOWN_TOOL_CACHE_COST)
+        warning = "" if known else UNKNOWN_TOOL_CACHE_WARNING
+        if signin_like(name):
+            tier, warning = CAUTION, SIGNIN_WARNING
+        kw = dict(key=f"dotcache:{name}", category="Cache", label=label, tier=tier, path=path,
+                  preselect=(tier == SAFE), warning=warning, meta={"dot_cost": (tag, cost), **({} if known else {"dot_unknown": True})})
+        if low == "huggingface":
+            try:
+                kids = sorted(os.listdir(path))
+            except OSError:
+                continue
+            dirs = [os.path.join(path, d) for want in HF_DOWNLOAD_DIRS for d in kids
+                    if d.casefold() == want and os.path.isdir(os.path.join(path, d))
+                    and not os.path.islink(os.path.join(path, d))]
+            if not dirs:
+                continue
+            items.append(Item(kind="paths", argv=["rm", "-rf", "--", *dirs], **kw))
+        else:
+            items.append(Item(kind="path", **kw))
     return items
 
 

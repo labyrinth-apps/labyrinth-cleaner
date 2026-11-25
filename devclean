@@ -59,7 +59,7 @@ def print_table(res, numbered, selected):
         label = trunc(f"{it.category}: {it.label}", 46)
         note = f"{it.note} (moves to Trash)" if it.kind in core.TRASH_KINDS else it.note
         line = (f"{num if num else '':>3}  {mark} {it.tier:8} {label:46} "
-                f"{human(it.size):>9}  {age(it.mtime):10}  {note}")
+                f"{('up to ' if it.meta.get('upper_bound') else '') + human(it.size):>12}  {age(it.mtime):10}  {note}")
         print(c(line, TIER_COLOR.get(it.tier, "0")))
         if it.warning:
             print(c(f"{'':8} ! {it.warning}", "31"))
@@ -68,7 +68,7 @@ def print_table(res, numbered, selected):
 def summarize(res, selected_items):
     free = res.free_bytes
     reclaim = res.reclaimable()
-    sel = sum(i.size or 0 for i in selected_items)
+    sel = sum(core.counted_size(i) for i in selected_items)
     print()
     print(f"Disk free now:        {human(free)} of {human(res.total_bytes)}")
     print(f"Reclaimable (all offered items): {human(reclaim)}")
@@ -230,11 +230,12 @@ def main(argv=None):
             print_unselected(numbered_items, selected)
         return 0
 
-    total = sum(i.size or 0 for i in chosen)
+    total = sum(core.counted_size(i) for i in chosen)
     print(c(f"\n{'Would run' if args.dry_run else 'Will delete'} ({human(total)}):", "1"))
     for it in chosen:
         tag = " (moves to Trash)" if it.kind in core.TRASH_KINDS else ""
-        print(f"  {human(it.size):>9}  [{it.tier}] {it.category}: {it.label}{tag}")
+        shown = ("up to " if it.meta.get("upper_bound") else "") + human(it.size)
+        print(f"  {shown:>9}  [{it.tier}] {it.category}: {it.label}{tag}")
         if it.warning:
             print(c(f"             ! {it.warning}", "31"))
     brew_names = [i.key[len("brew:pkg:"):] for i in chosen if i.key.startswith("brew:pkg:")]
