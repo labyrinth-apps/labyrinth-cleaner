@@ -5,6 +5,7 @@ import shutil
 import sys
 import tempfile
 import time
+import types
 import unittest
 from unittest import mock
 
@@ -29,6 +30,12 @@ def sparse(path, size, age_days=0, now=None):
 def age(path, days, now=None):
     t = (now or time.time()) - days * DAY
     os.utime(path, (t, t))
+
+
+def _with_flags(st, flags):
+    return types.SimpleNamespace(st_mode=st.st_mode, st_size=st.st_size, st_mtime=st.st_mtime,
+                                 st_ino=st.st_ino, st_blocks=st.st_blocks, st_dev=st.st_dev,
+                                 st_flags=flags)
 
 
 class DownloadsBase(unittest.TestCase):
@@ -72,6 +79,27 @@ class DownloadsBase(unittest.TestCase):
 
 
 class DownloadsTests(DownloadsBase):
+    def _as_dataless(self, path):
+        real = os.lstat
+
+        def fake(p, *a, **k):
+            st = real(p, *a, **k)
+            return _with_flags(st, core.SF_DATALESS) if p == path else st
+        return mock.patch.object(core.os, "lstat", fake)
+
+    def test_dataless_file_not_listed(self):
+        path = f"{self.dl}/old.dmg"
+        sparse(path, 10 * MB, 30, self.now)
+        self.assertIn("download:old.dmg", self.downloads())
+        with self._as_dataless(path):
+            self.assertNotIn("download:old.dmg", self.downloads())
+
+    def test_gate_refuses_file_that_became_dataless(self):
+        it = self.downloads()["download:Setup.dmg"]
+        with self._as_dataless(it.path):
+            with self.assertRaisesRegex(core.UnsafeTarget, "Situation changed"):
+                core.validate_item(it, self.cfg, core.NoSimctl(), self.env(), self.now)
+
     def test_installer_rule(self):
         d = self.downloads()
         self.assertEqual(set(d), {"download:Setup.dmg", "download:big.zip", "download:movie.mkv"})

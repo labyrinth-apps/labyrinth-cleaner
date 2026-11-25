@@ -1126,13 +1126,21 @@ def scan_archives(cfg: Config) -> list:
     return items
 
 
+SF_DATALESS = 0x40000000   # macOS: the content lives only in the cloud (iCloud, Dropbox, OneDrive)
+
+
+def is_dataless(st: os.stat_result) -> bool:
+    """True for a cloud-only placeholder. st_blocks is not used: sparse files have none."""
+    return bool(getattr(st, "st_flags", 0) & SF_DATALESS)
+
+
 def _download_item(cfg: Config, env: Env, now: float, path: str) -> Optional[Item]:
     """The REVIEW item for one Downloads file if it matches a rule right now, else None."""
     try:
         st = os.lstat(path)
     except OSError:
         return None
-    if not stat.S_ISREG(st.st_mode):
+    if not stat.S_ISREG(st.st_mode) or is_dataless(st):
         return None
     name = os.path.basename(path)
     ext = os.path.splitext(name)[1].lower()
@@ -1867,7 +1875,8 @@ def validate_item(it: Item, cfg: Config, sim: Optional[SimctlProvider] = None,
     if fresh is None:
         # An app that is still there but no longer listed (running apps unreadable, or now
         # kept): the situation changed, it isn't gone.
-        if it.key.startswith("app:") and it.path and os.path.lexists(it.path):
+        # A download that went cloud-only after the scan is the same case.
+        if it.key.startswith(("app:", "download:")) and it.path and os.path.lexists(it.path):
             raise UnsafeTarget(SITUATION_CHANGED)
         raise UnsafeTarget(f"{it.label} is gone")
     if not fresh.offerable:
