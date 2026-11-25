@@ -19,6 +19,15 @@ LOG_MIN_AGE_DAYS = 7
 DOCKER_TIMEOUT = 3
 RUNNING_APPS_WARNING = "couldn't list running apps; app caches are not offered"
 UNKNOWN_CACHE_WARNING = "macOS or a background tool may use this cache."
+SIGNIN_WARNING = "It may hold sign-in data. Deleting it can sign you out."
+
+# Names that look like password or sign-in storage. Substrings match anywhere in the
+# lower-cased name; words must match a whole piece of the name split on non-alphanumerics
+# (so "author" and "loginitems" don't match).
+SIGNIN_SUBSTRINGS = ("password", "1password", "bitwarden", "lastpass", "dashlane", "keychain",
+                     "credential")
+SIGNIN_WORDS = frozenset({"auth", "oauth", "oauth2", "token", "tokens", "account", "accounts",
+                          "login", "logins", "signin", "sso"})
 
 # Caches of macOS daemons and frameworks that aren't named com.apple.*: never shown.
 # Compared casefolded.
@@ -193,6 +202,14 @@ def owner_identified(name: str) -> bool:
     return bool(REVERSE_DNS_RE.match(n)) and n.split(".", 1)[0] in BUNDLE_TLDS
 
 
+def signin_like(name: str) -> bool:
+    """True when a cache folder's name looks like password or sign-in storage."""
+    low = name.lower()
+    if any(sub in low for sub in SIGNIN_SUBSTRINGS):
+        return True
+    return any(w in SIGNIN_WORDS for w in re.split(r"[^a-z0-9]+", low))
+
+
 def scan_app_caches(cfg: core.Config, env: core.Env, warnings: Optional[list] = None) -> list:
     """One item per top-level folder of ~/Library/Caches, except macOS's own. Safe when the
     folder names its app, "Check first" with a warning when it doesn't. Fails closed (offers
@@ -225,6 +242,10 @@ def scan_app_caches(cfg: core.Config, env: core.Env, warnings: Optional[list] = 
         if owner:
             items.append(Item(label=owner[1], tier=PROTECTED, kind="info",
                               note=f"Quit {owner[1]} first", **base))
+        elif signin_like(name):
+            # Looks like sign-in storage: never no-cost, with its own warning.
+            items.append(Item(label=name, tier=CAUTION, kind="path",
+                              warning=SIGNIN_WARNING, **base))
         elif owner_identified(name):
             items.append(Item(label=name, tier=SAFE, kind="path", **base))
         else:

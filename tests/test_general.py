@@ -531,6 +531,32 @@ class AppCacheTests(GeneralBase):
                 general.running_apps()
 
 
+class SignInCacheTests(GeneralBase):
+    def test_signin_like_lists(self):
+        for n in ("com.agilebits.onepassword7", "Bitwarden", "oauth-cache", "com.example.login",
+                  "my_tokens", "SSO", "KeychainHelper"):
+            self.assertTrue(general.signin_like(n), n)
+        for n in ("author", "authority", "com.spotify.client", "Google", "accountant-ish",
+                  "loginitems"):
+            self.assertFalse(general.signin_like(n), n)
+
+    def test_signin_cache_becomes_caution_with_warning(self):
+        for n in ("com.example.login", "oauth-cache"):
+            os.makedirs(os.path.join(self.caches, n))
+            write(os.path.join(self.caches, n, "f"), "x")
+        d = self.by_key(self.scan())
+        it = d["appcache:com.example.login"]
+        self.assertEqual((it.tier, it.warning), (core.CAUTION, general.SIGNIN_WARNING))
+        self.assertEqual(d["appcache:oauth-cache"].warning, general.SIGNIN_WARNING)
+
+    def test_signin_cache_of_running_app_stays_kept(self):
+        os.makedirs(os.path.join(self.caches, "com.example.login"))
+        write(os.path.join(self.caches, "com.example.login", "f"), "x")
+        d = self.by_key(self.scan(running_apps=lambda: [("com.example.login", "Example")]))
+        it = d["appcache:com.example.login"]
+        self.assertEqual((it.tier, it.note), (core.PROTECTED, "Quit Example first"))
+
+
 class WarnedTagTests(GeneralBase):
     def test_warned_no_cost_row_shows_see_warning(self):
         write(os.path.join(self.caches, "segment", "f.bin"), "x" * 3000)
