@@ -102,6 +102,18 @@ def _read_app(path: str):
                    background=flag("LSUIElement") or flag("LSBackgroundOnly"))
 
 
+def installed_names(cfg: "core.Config") -> dict:
+    """{bundle ID casefolded: app name} for the bundles in the app folders, without Spotlight
+    or sizes. The first bundle found for an ID wins."""
+    names = {}
+    for root in cfg.app_roots:
+        for path in _bundle_candidates(root):
+            info = _read_app(path)
+            if info:
+                names.setdefault(info.bundle_id.casefold(), info.name)
+    return names
+
+
 def find_apps(cfg: "core.Config", env: "core.Env", sizes: bool = True) -> list:
     """Every listed bundle with its Spotlight metadata. `sizes=False` leaves a size Spotlight
     doesn't know as None instead of running du (the gate's rescan never needs sizes)."""
