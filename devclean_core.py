@@ -533,6 +533,12 @@ def _apps():
     return devclean_apps
 
 
+def _browsers():
+    """devclean_browsers, imported on first use (it imports this module)."""
+    import devclean_browsers
+    return devclean_browsers
+
+
 def _real_running_apps() -> list:
     return _general().running_apps()
 
@@ -1336,6 +1342,8 @@ def cost_for(it: Item) -> tuple:
         return "TRASH", it.note              # the row says why the app is listed
     if it.kind in ("trash", "finder-trash"):
         return "TRASH", "Moved to the Trash. You can Put Back."
+    if it.category == "Browser":
+        return _browsers().cost(it)
     if it.key.startswith("appcache:"):
         g = _general()
         return ("SLOWER", g.BROWSER_CACHE_COST) if it.meta.get("browser") else ("NO COST", g.CACHE_COST)
@@ -1400,6 +1408,8 @@ def explain_for(it: Item, home: Optional[str] = None) -> tuple:
         restore = "Re-copied from the iPhone the next time you debug on it."
     elif it.category == "Android":
         restore = "Download it again in Android Studio › SDK Manager."
+    elif it.category == "Browser":
+        restore = _browsers().restore(it)
     elif it.key.startswith("appcache:"):
         restore = "The app rebuilds it as needed."
     elif it.key.startswith("log:"):
@@ -1545,6 +1555,7 @@ def scan(cfg: Config, sim: Optional[SimctlProvider] = None,
     items += scan_downloads(cfg, env, now)
     g = _general()
     items += g.scan_app_caches(cfg, env, warnings)
+    items += _browsers().scan_browsers(cfg, env, warnings)
     items += g.scan_dot_cache(cfg, env, warnings)
     app_items, app_bytes = _apps().scan_apps(cfg, env, now, warnings)
     items += app_items
@@ -1690,6 +1701,11 @@ def validate_path(path: str, cfg: Config) -> str:
                 and os.path.dirname(parent).casefold() == dc_real
                 and not os.path.islink(parent) and base.casefold() in g.HF_DOWNLOAD_DIRS):
             return real
+    # 4f. Chromium browsers: only the exact model and cache folder names, never through a
+    # symlink, never in System Profile or Guest Profile. (Running browsers: validate_item's
+    # rescan.)
+    if _browsers().allowed_path(real, cfg):
+        return real
     # 4c. Logs: a direct child of ~/Library/Logs or its DiagnosticReports folder
     logs = os.path.realpath(cfg.p("Library/Logs"))
     if (parent == logs and base != "DiagnosticReports") or parent == os.path.join(logs, "DiagnosticReports"):
@@ -1763,6 +1779,7 @@ RESCANNERS = {
     "log:": lambda key, cfg, sim, env, now: _general().scan_logs(cfg, now),
     "empty-trash": lambda key, cfg, sim, env, now: _general().scan_trash(cfg),
     "docker:": lambda key, cfg, sim, env, now: _general().scan_docker(cfg, env),
+    "browser:": lambda key, cfg, sim, env, now: _browsers().rescan(key, cfg, env),
     # A package's gate reads `info` only: a slow `cleanup -n` must not refuse every package.
     "tool:": lambda key, cfg, sim, env, now: _tools().scan_tools(cfg, env),
     "brew:pkg:": lambda key, cfg, sim, env, now: _brew().scan_brew(cfg, env, [], sizes=False,
@@ -1931,7 +1948,9 @@ def validate_item(it: Item, cfg: Config, sim: Optional[SimctlProvider] = None,
         # An app that is still there but no longer listed (running apps unreadable, or now
         # kept): the situation changed, it isn't gone.
         # A download that went cloud-only after the scan is the same case.
-        if it.key.startswith(("app:", "download:")) and it.path and os.path.lexists(it.path):
+        # So is a browser row whose running apps can't be listed now.
+        if (it.key.startswith(("app:", "download:", "browser:")) and it.path
+                and os.path.lexists(it.path)):
             raise UnsafeTarget(SITUATION_CHANGED)
         raise UnsafeTarget(f"{it.label} is gone")
     if not fresh.offerable:
