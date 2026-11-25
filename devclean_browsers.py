@@ -40,7 +40,7 @@ BROWSERS = [
 ]
 # Browsers whose model note names where the on-device AI setting is.
 SETTINGS_PATH_BROWSERS = ("Chrome", "Chrome Beta", "Chrome Canary")
-SETTINGS_PATH = " (Settings › System › On-device AI)"
+SETTINGS_PATH = " (Settings › AI innovations › On-device AI)"
 
 # (folder directly in the data folder, label, tier, what it does)
 MODELS = [
@@ -169,7 +169,7 @@ def scan_browsers(cfg: core.Config, env: core.Env, warnings: Optional[list] = No
         try:
             os.listdir(data)
         except PermissionError:
-            note = (RUNNING_NOTE if bid.casefold() in running else LOCKED_NOTE).format(name=name)
+            note = LOCKED_NOTE.format(name=name)
             items.append(Item(key=f"browser:{bid}:locked", category=CATEGORY, label=name,
                               tier=PROTECTED, kind="info", note=note))
             continue

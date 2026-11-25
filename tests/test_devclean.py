@@ -1138,6 +1138,53 @@ class CliTests(unittest.TestCase):
         self.assertNotIn(".cache/torch", run)
         self.assertNotIn(".cache/mystery", run)
 
+    def cli_with_tools(self, *args):
+        import importlib.machinery, importlib.util, io, contextlib
+        loader = importlib.machinery.SourceFileLoader("devclean_cli_tools_under_test", CLI)
+        spec = importlib.util.spec_from_loader(loader.name, loader)
+        mod = importlib.util.module_from_spec(spec)
+        loader.exec_module(mod)
+        bins = {"uv": os.path.join(self.tmp, "bin", "uv"), "pnpm": os.path.join(self.tmp, "bin", "pnpm")}
+        for b in bins.values():
+            write(b, "#!/bin/sh\n")
+            os.chmod(b, 0o755)
+        env = core.Env.fake(find_tool=lambda n: bins.get(n))
+        buf = io.StringIO()
+        with mock.patch.dict(os.environ, {"NO_COLOR": "1"}), \
+                mock.patch.object(core, "fixture_env", lambda cfg, xc, fixture: env), \
+                mock.patch.object(sys.stdin, "isatty", return_value=False), \
+                contextlib.redirect_stdout(buf), contextlib.redirect_stderr(io.StringIO()):
+            rc = mod.main(["--home", self.home, "--min-size", "0", "--projects",
+                           os.path.join(self.home, "Documents", "Projects"), *args])
+        return rc, buf.getvalue()
+
+    def test_yes_picks_uv_and_pnpm_never_browsers(self):
+        write(os.path.join(self.home, ".cache", "uv", "f"), "x" * 4096)
+        write(os.path.join(self.home, "Library", "pnpm", "store", "f"), "x" * 4096)
+        chrome = os.path.join(self.home, "Library", "Application Support", "Google", "Chrome")
+        write(os.path.join(chrome, "OptGuideOnDeviceModel", "m.bin"), "x" * 4096)
+        write(os.path.join(chrome, "Default", "Cache", "c"), "x" * 4096)
+        code, out = self.cli_with_tools("--yes", "--dry-run")
+        self.assertEqual(code, 0, out)
+        run = out.split("Would run")[1].split("Not selected")[0]
+        self.assertIn("Cache: uv", run)
+        self.assertIn("Cache: pnpm", run)
+        self.assertNotIn("Browser:", run)
+        self.assertNotIn("Chrome", run)
+
+    def test_cli_total_skips_upper_bound(self):
+        write(os.path.join(self.home, ".cache", "uv", "f"), "x" * 5000)
+        _, without = self.cli_with_tools("--yes", "--dry-run")
+        write(os.path.join(self.home, "Library", "pnpm", "store", "f"), "x" * 900000)
+        code, out = self.cli_with_tools("--yes", "--dry-run")
+        self.assertEqual(code, 0, out)
+        head = lambda o: o.split("Would run")[1].splitlines()[0]
+        self.assertEqual(head(out), head(without))
+        run = out.split("Would run")[1]
+        pnpm = [l for l in run.splitlines() if "Cache: pnpm" in l][0]
+        self.assertIn("up to ", pnpm)
+        self.assertNotIn("up to", [l for l in run.splitlines() if "Cache: uv" in l][0])
+
     def test_cli_yes_never_deletes_new_categories(self):
         cache = mkdir(f"{self.home}/Library/Caches/com.example.tool")
         write(f"{cache}/blob", "x" * 100)

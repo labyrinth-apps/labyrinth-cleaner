@@ -23,6 +23,7 @@ SEGMENTS = [
     ("web", "node_modules"),
     ("caches", "Caches & builds"),
     ("appcache", "App caches"),
+    ("browsers", "Browsers"),
     ("docker", "Docker"),
     ("downloads", "Downloads (reviewable)"),
     ("trash", "Trash"),
@@ -31,9 +32,9 @@ SEGMENTS = [
     ("other", "System, apps & other files"),
     ("free", "Free"),
 ]
-MEASURED = ("sim", "android", "xcode", "web", "caches", "appcache", "docker", "downloads", "trash", "apps", "homebrew")
+MEASURED = ("sim", "android", "xcode", "web", "caches", "appcache", "browsers", "docker", "downloads", "trash", "apps", "homebrew")
 # Segments sized from their scan items (Android is sized from extras only).
-ITEM_SIZED = ("sim", "xcode", "web", "caches", "appcache", "docker", "downloads", "trash")
+ITEM_SIZED = ("sim", "xcode", "web", "caches", "appcache", "browsers", "docker", "downloads", "trash")
 SMALL_BYTES = 20 * 1024 * 1024
 ARTIFACT_ORDER = {name: i for i, name in enumerate(core.FLUTTER_ARTIFACTS + core.WEB_ARTIFACTS)}
 
@@ -57,6 +58,8 @@ def segment_of(it: core.Item) -> str:
         return "web"
     if it.category == "App cache":
         return "appcache"
+    if it.category == "Browser":
+        return "browsers"
     if it.category == "Docker":
         return "docker"
     if it.category == "Downloads":
@@ -105,7 +108,8 @@ def _row(rid, group, members, label, path):
         "keys": [m.key for m in members] if offer else [],
         "size": sum(sizes) if sizes else None,
         "mtime": max(mtimes) if mtimes else None,
-        "version": lead.meta.get("version") if lead.category in ("Applications", "Homebrew") else None,
+        "version": lead.meta.get("version") if lead.category in ("Applications", "Homebrew", "Browser") else None,
+        "upper_bound": bool(lead.meta.get("upper_bound")),
         "cost_tag": lead.cost_tag,
         "cost": lead.cost,
         "stale": core.stale_label(stale_days) if group == "time" else None,
@@ -185,7 +189,7 @@ def disk_map(res: core.ScanResult, extras: dict) -> list:
     for it in res.items:
         seg = segment_of(it)
         if it.offerable:
-            reclaim[seg] += it.size or 0
+            reclaim[seg] += core.counted_size(it)
         # Simulator data folders are measured whole in extras["sim_devices"].
         # Docker has no separate total: its segment is the sum of its items.
         if (seg in ITEM_SIZED and it.kind != "simctl-unavailable"
@@ -230,9 +234,9 @@ def scan_payload(res: core.ScanResult, cfg: core.Config, scan_id: str, duration_
         # Trash moves (review tier) free nothing until the Trash is emptied, so the
         # headline leaves them out; "with no cost" counts only NO COST safe items.
         "headline": {
-            "reclaimable": sum(i.size or 0 for i in res.offerable
+            "reclaimable": sum(core.counted_size(i) for i in res.offerable
                               if i.tier != core.REVIEW and not i.key.startswith("brew:pkg:")),
-            "no_cost": sum(i.size or 0 for i in res.offerable
+            "no_cost": sum(core.counted_size(i) for i in res.offerable
                            if i.tier == core.SAFE and i.cost_tag == "NO COST"),
         },
         "segments": disk_map(res, extras),

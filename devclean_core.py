@@ -1512,6 +1512,11 @@ def fixture_runner(argv: list, **kw) -> subprocess.CompletedProcess:
 
 # ---------------------------------------------------------------- scan
 
+def counted_size(it) -> int:
+    """The bytes an item adds to a total. An upper bound (pnpm's whole store) adds none."""
+    return 0 if it.meta.get("upper_bound") else (it.size or 0)
+
+
 @dataclass
 class ScanResult:
     items: list
@@ -1527,7 +1532,7 @@ class ScanResult:
         return [i for i in self.items if i.offerable]
 
     def reclaimable(self) -> int:
-        return sum(i.size or 0 for i in self.offerable)
+        return sum(counted_size(i) for i in self.offerable)
 
 
 TIER_ORDER = {SAFE: 0, OPTIN: 1, CAUTION: 2, REVIEW: 3, PROTECTED: 4}

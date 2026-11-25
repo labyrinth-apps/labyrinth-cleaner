@@ -259,7 +259,7 @@ devclean menubar uninstall
 
 | tier | preselected | `--yes` | what |
 |---|---|---|---|
-| **safe** | CLI only, developer targets only | developer targets only | Flutter `build/` and `.dart_tool/` (a `pubspec.yaml` must be next to them), Xcode DerivedData (kept while Xcode runs), old `~/.gradle/caches/<version>` folders, Gradle `build-cache-1`, `~/.shorebird/bin/cache`, `~/.npm/_cacache`, CocoaPods / Homebrew / ms-playwright caches, old Homebrew versions and unneeded libraries (`brew cleanup`). Also safe, but never preselected: caches of apps it can name (a bundle-ID folder such as `com.spotify.client`, or a known browser) and old logs. |
+| **safe** | CLI only, developer targets only | developer targets only | Flutter `build/` and `.dart_tool/` (a `pubspec.yaml` must be next to them), Xcode DerivedData (kept while Xcode runs), old `~/.gradle/caches/<version>` folders, Gradle `build-cache-1`, `~/.shorebird/bin/cache`, `~/.npm/_cacache`, CocoaPods / Homebrew / ms-playwright caches, pip, uv, pnpm and Puppeteer caches, old Homebrew versions and unneeded libraries (`brew cleanup`). Also safe, but never preselected: caches of apps it can name (a bundle-ID folder such as `com.spotify.client`, or a known browser) and old logs. |
 | **opt-in** | no | never | `node_modules` and `.next` in web projects (you run `npm install` again), the Docker build cache. |
 | **caution** | no | never | iOS DeviceSupport builds, the newest Gradle version (older ones are safe), simulator runtimes, single simulators (`xcrun simctl delete <udid>`), Android system images, unavailable simulators, unused Docker images, Homebrew packages you installed (`brew uninstall`), emptying the Trash, app caches whose app it can't name ("macOS or a background tool may use this cache."). |
 | **review** | no | never | Old installers and large untouched files in `~/Downloads`, and Xcode archives. These are only ever **moved to the Trash** (Put Back works), never deleted with `rm`. The app and the command line tool installed from it do this; a source checkout's command line refuses. |
@@ -270,16 +270,18 @@ devclean menubar uninstall
 ## What it can clean
 
 - **Developer:** build folders and caches for Flutter, web, Xcode, Gradle, npm, CocoaPods, Homebrew, Playwright and Shorebird; simulator runtimes and single simulators; Android system images; DeviceSupport builds; Xcode archives (review tier). `xcrun` runs only when Xcode or its command-line tools are installed, so a Mac without them never sees the "install developer tools" prompt.
-- **App caches:** top-level folders in `~/Library/Caches`, except macOS's own (`com.apple.*` and daemon caches such as `CloudKit`, `GeoServices` or `SiriTTS`) and this app's own. A cache is shown but not selectable while its app is running ("Quit *App* first"). A cache whose app can't be named is offered under *Check first* with a warning.
+- **Caches in `~/.cache`, pip, uv and pnpm:** each folder in `~/.cache` is its own row. pip, uv (`uv cache clean`) and pnpm (`pnpm store prune`) are cleaned with their own commands, so they must be installed. pnpm's size is shown as "up to": its store is shared, so the command may free less. That size is left out of the totals. Hugging Face keeps its login: only its `hub`, `datasets` and `xet` folders are offered. An unknown `~/.cache` folder is under *Check first*.
+- **Browsers:** the on-device AI models and page caches of Chrome (also Beta and Canary), Brave, Edge, Arc, Vivaldi, Opera, Opera GX and Chromium. The rows of a browser are kept while it runs ("Quit *Browser* first"). macOS locks the folders of Chrome, Brave and Edge until you allow access. A locked folder shows a row saying so and is never forced.
+- **App caches:** top-level folders in `~/Library/Caches`, except macOS's own (`com.apple.*` and daemon caches such as `CloudKit`, `GeoServices` or `SiriTTS`) and this app's own. A cache is shown but not selectable while its app is running ("Quit *App* first"). A cache whose app can't be named is offered under *Check first* with a warning. So is a cache that may hold sign-in data: deleting it can sign you out.
 - **Logs and crash reports:** entries in `~/Library/Logs` and `~/Library/Logs/DiagnosticReports` older than 7 days.
 - **Homebrew:** old versions and libraries nothing needs any more (`brew cleanup`, safe), and the packages you installed (`brew uninstall`, under *Check first*, never preselected). Before you confirm, Homebrew's own dry run lists the libraries it would also remove. A package that runs as a background service, or is pinned, is shown but not offered; packages from a tap are uninstalled by their short name. Nothing runs when Homebrew isn't installed.
 - **Docker:** the build cache and unused images, only when Docker is installed and answers within 3 seconds. Containers and volumes are never pruned.
 - **Trash:** its size, and "Empty Trash" through Finder. When you clean, emptying the Trash runs first, so it can't remove Downloads files moved there in the same clean.
-- **Downloads (review):** installers (`.dmg`, `.pkg`, `.mpkg`, `.xip`, and `.zip` over 50 MB) older than 14 days, and files over 500 MB not opened for 90 days. They are moved to the Trash.
+- **Downloads (review):** installers (`.dmg`, `.pkg`, `.mpkg`, `.xip`, and `.zip` over 50 MB) older than 14 days, and files over 500 MB not opened for 90 days. They are moved to the Trash. Files that exist only in iCloud (cloud-only) are never listed.
 - **Applications (review):** extra copies of the same app, and apps not opened in 6 months or more. Each row says why it is listed, and one copy is suggested to keep (never offered). On Apple Silicon, Intel-only apps get a note. Apps move to the Trash, so Put Back works, including apps in `/Applications` that another user or macOS owns, which go through Finder. Finder may ask for your password; Labyrinth Cleaner never sees it. Safari, Labyrinth Cleaner itself and anything under `/System` are never listed. Support files an app leaves behind are not touched.
 - **iOS device backups:** size only. Manage them in Finder.
 
-**Never touched:** system folders, Mail and Messages, personal files outside the Downloads review list, removing app support files, apps that are part of macOS, removing languages from apps, and "memory cleaning". The app never asks for Full Disk Access; anything it can't read is skipped and the page says so.
+**Never touched:** system folders, Mail and Messages, personal files outside the Downloads review list, app support files (except the browser folders listed above), apps that are part of macOS, removing languages from apps, and "memory cleaning". The app never asks for Full Disk Access; anything it can't read is skipped and the page says so.
 
 ## Protection rules
 
@@ -287,6 +289,9 @@ devclean menubar uninstall
 - `~/Library/Developer/Xcode/Archives`, `~/Downloads`, `~/.Trash`, `~/Desktop`, `~/Pictures`, `~/Movies`, `~/Music`, `~/.ssh`, `~/.android/avd`, and any folder that *contains* one of these (for example `~/Library/Developer/Xcode`). Archives and Downloads files can only be moved to the Trash.
 - `$HOME`, `/`, symlinks, and anything outside `$HOME`.
 - Everything under `~/Documents`, except folders named `build`, `.dart_tool`, `node_modules` or `.next` that sit inside one of your project folders next to a `pubspec.yaml` (for `build` and `.dart_tool`) or a `package.json` (for `node_modules` and `.next`). A web project's `build/` is never touched.
+- Inside `~/Library/Application Support`, only the exact AI model and cache folder names of a known browser's data folder may be deleted, never in `System Profile` or `Guest Profile`, and never while that browser runs.
+- `~/.cache/huggingface` is never deleted whole, and its login is kept.
+- The uv and pnpm commands are pinned like Docker's: exactly `uv cache clean` and `pnpm store prune`, run from the home folder with a minimal environment.
 - Files moved to the Trash must be regular files (not folders or symlinks) directly in `~/Downloads` or one level down, must still match their rule when re-checked just before the move, and must be the same file the scan saw (same inode, size and modification time). A file written to since it was last opened counts as used then.
 
 **You choose; Labyrinth Cleaner warns.** Items that might break something are offered, never preselected, with a red warning that says what breaks:
@@ -332,6 +337,10 @@ Testing flags: `--home DIR` treats DIR as `$HOME` and turns off real simulator s
 ## If less space is freed than expected
 
 APFS can release space lazily, and Time Machine local snapshots can hold on to deleted data. Check with `tmutil listlocalsnapshots /`.
+
+## Credits
+
+The list of browser folders comes from MacSweep (MIT).
 
 ## License
 

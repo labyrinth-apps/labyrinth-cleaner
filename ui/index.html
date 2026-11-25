@@ -14,7 +14,7 @@
     --sans:-apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;
     --safe:#97b48a; --time:#cbb26a; --check:#d98772; --review:#93a9c6; --kept:#8f887b;
     --sim:#a996bd; --android:#a9c08f; --xcode:#9aa0c9; --node:#cbb26a; --cache:#7fa58e; --sys:#3a3631;
-    --appcache:#b3b56f; --docker:#82aeac; --downloads:#c99aa0; --trash:#cc9470; --apps:#b9a58a; --brew:#bf8f4a;
+    --appcache:#b3b56f; --docker:#82aeac; --downloads:#c99aa0; --trash:#cc9470; --apps:#b9a58a; --brew:#bf8f4a; --browsers:#6fa3c4;
     --grain:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='240'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 .93 0 0 0 0 .9 0 0 0 0 .85 0 0 0 .055 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
   }
   *{box-sizing:border-box}
@@ -610,10 +610,10 @@ const GROUPS = [
 ];
 const GROUP = Object.fromEntries(GROUPS.map(g => [g.id, g]));
 const SEG_COLOR = { sim: "var(--sim)", android: "var(--android)", xcode: "var(--xcode)", web: "var(--node)", caches: "var(--cache)",
-  appcache: "var(--appcache)", docker: "var(--docker)", downloads: "var(--downloads)", trash: "var(--trash)", apps: "var(--apps)", homebrew: "var(--brew)", other: "var(--sys)", free: "transparent" };
+  appcache: "var(--appcache)", browsers: "var(--browsers)", docker: "var(--docker)", downloads: "var(--downloads)", trash: "var(--trash)", apps: "var(--apps)", homebrew: "var(--brew)", other: "var(--sys)", free: "transparent" };
 // Two-letter marks, like the symbols in a map's key.
 const ICON = { Flutter: "Fl", Web: "Js", Cache: "Ca", Gradle: "Gr", DeviceSupport: "Ds", Android: "An", Simulator: "Si", Protected: "Pr",
-  "App cache": "Ap", Logs: "Lg", Trash: "Tr", "iOS backups": "Bk", Docker: "Dk", Downloads: "Dl", "Xcode Archives": "Xa", Applications: "Ax", Homebrew: "Hb" };
+  "App cache": "Ap", Logs: "Lg", Trash: "Tr", "iOS backups": "Bk", Docker: "Dk", Downloads: "Dl", "Xcode Archives": "Xa", Applications: "Ax", Homebrew: "Hb", Browser: "Br" };
 // The native app (plan 2) injects this bridge; a plain browser doesn't have it.
 const BRIDGE = (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.labyrinth) || null;
 // How to get going again after the server stops: the app restarts it on relaunch, a browser
@@ -629,7 +629,8 @@ const MAX_POLL_FAILS = 10;
 
 function rowsOf(group) { return S.data.rows.filter(r => r.group === group); }
 function selectedRows() { return S.data ? S.data.rows.filter(r => S.sel.has(r.id)) : []; }
-function sum(rows) { return rows.reduce((a, r) => a + (r.size || 0), 0); }
+// An upper bound (pnpm's whole store) says "up to" and adds nothing to a total.
+function sum(rows) { return rows.reduce((a, r) => a + (r.upper_bound ? 0 : (r.size || 0)), 0); }
 // Moving to the Trash frees nothing until the Trash is emptied.
 // Both kinds go to the Trash: "trash" through the helper, "finder-trash" through Finder.
 function isTrashMove(r) { return r.kind === "trash" || r.kind === "finder-trash"; }
@@ -849,7 +850,7 @@ function rowEl(g, r, max) {
     "aria-controls": wid, "aria-label": "What happens: " + r.label, title: "What happens", text: "›",
     onclick: e => toggleWhat(r.id, e.currentTarget, wid) });
   // A kept Homebrew row (a service, a pinned package) isn't measured: no size, not "?".
-  const size = el("div", { class: "size" }, kept && g.id === "brew" && r.size == null ? null : human(r.size));
+  const size = el("div", { class: "size" }, kept && g.id === "brew" && r.size == null ? null : (r.upper_bound ? "up to " : "") + human(r.size));
   if (isTrashMove(r)) size.append(el("span", { class: "totrash", text: "Moves to Trash" }));
   else if (!kept) size.append(el("div", { class: "mini" }, el("div", { style: "width:" + pct.toFixed(1) + "%;background:" + g.color })));
   size.append(el("small", { text: age(r.mtime) }));

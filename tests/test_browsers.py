@@ -97,7 +97,7 @@ class ModelAndCacheTests(BrowserBase):
         self.assertTrue(m.cost_tag.endswith(" DL"), m.cost_tag)
         self.assertEqual(m.cost, "Google's on-device language model: Help me write, page summaries, "
                                  "tab organising. Chrome downloads it again unless you turn off "
-                                 "on-device AI in its settings (Settings › System › On-device AI).")
+                                 "on-device AI in its settings (Settings › AI innovations › On-device AI).")
         self.assertEqual((caches.cost_tag, caches.cost), ("SLOWER", browsers.PAGE_CACHE_COST))
         self.assertEqual(m.restore, "The browser downloads it again unless on-device AI is off.")
         self.assertEqual(caches.restore, "The browser rebuilds them as you browse.")
@@ -251,7 +251,7 @@ class LockedTests(BrowserBase):
                          "Chrome's folder is locked by macOS. Its AI models and caches can't be measured.")
         self.assertIsNone(it.path)
 
-    def test_locked_and_running_says_quit_first(self):
+    def test_locked_and_running_still_says_locked(self):
         self.make_chrome()
         os.chmod(self.chrome, 0)
         self.addCleanup(os.chmod, self.chrome, stat.S_IRWXU)
@@ -259,7 +259,7 @@ class LockedTests(BrowserBase):
         self.assertEqual(list(d), [f"browser:{CHROME}:locked"])
         it = d[f"browser:{CHROME}:locked"]
         self.assertEqual((it.tier, it.kind, it.note, it.path),
-                         (core.PROTECTED, "info", "Quit Chrome first", None))
+                         (core.PROTECTED, "info", browsers.LOCKED_NOTE.format(name="Chrome"), None))
 
 
 class OperaTests(BrowserBase):
